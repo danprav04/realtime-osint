@@ -1,0 +1,85 @@
+import os
+from functools import lru_cache
+from typing import List, Optional
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Application configuration loaded from environment variables and defaults."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    # Server configuration
+    APP_NAME: str = "Real-time OSINT Gathering Service"
+    APP_VERSION: str = "1.0.0"
+    ENVIRONMENT: str = "production"
+    DEBUG: bool = False
+    HOST: str = "0.0.0.0"
+    PORT: int = Field(
+        default=8000,
+        validation_alias=AliasChoices("PORT", "HOST_PORT"),
+    )
+    LOG_LEVEL: str = "INFO"
+
+    # Database configuration
+    # By default, use SQLite async for zero-dependency local runtime, or PostgreSQL via env
+    DATABASE_URL: str = Field(
+        default="sqlite+aiosqlite:///./osint.db",
+        description="Async SQLAlchemy database connection string",
+    )
+    DATABASE_URL_FALLBACK: str = "sqlite+aiosqlite:///./osint.db"
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 5
+    DB_POOL_TIMEOUT: int = 30
+
+    # Redis bus & caching
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_ENABLED: bool = True
+    REDIS_FALLBACK_ON_ERROR: bool = True
+    REDIS_RECONNECT_INTERVAL_SEC: int = 5
+
+    # Security & Auth
+    # Support both API_KEY and API_AUTH_SECRET environment variable names
+    API_KEY: str = Field(
+        default="osint_secret_key_2026",
+        validation_alias=AliasChoices("API_KEY", "API_AUTH_SECRET"),
+        description="Admin API Key for REST & WebSocket authentication",
+    )
+    ADMIN_PASSWORD: str = "admin123"
+    CORS_ORIGINS: List[str] = ["*"]
+
+    # AI Pipeline credentials
+    GEMINI_API_KEY: Optional[str] = None
+    GROQ_API_KEY: Optional[str] = None
+
+    # Alert notification defaults
+    TELEGRAM_BOT_TOKEN: Optional[str] = None
+    TELEGRAM_CHAT_ID: Optional[str] = None
+    DEFAULT_ALERT_THRESHOLD: int = 7
+
+    # Memory & System resource limits (<900MB Linux container budget)
+    MEMORY_BUDGET_MB: int = 900
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def normalize_database_url(cls, v: Optional[str]) -> str:
+        if not v:
+            return "sqlite+aiosqlite:///./osint.db"
+        # Convert standard postgres:// or postgresql:// to postgresql+asyncpg:// if needed
+        if v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        if v.startswith("postgresql://") and not v.startswith("postgresql+asyncpg://"):
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    """Return cached application settings instance."""
+    return Settings()
