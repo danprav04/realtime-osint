@@ -1,14 +1,25 @@
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict, Any
+from typing import AsyncGenerator, Dict, Any, List
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api import health_router, pipeline_router, settings_router
+from backend.app.api.themes import router as themes_router
+from backend.app.api.sources import router as sources_router
+from backend.app.api.events import router as events_router
+from backend.app.api.stats import router as stats_router
 from backend.app.auth import require_api_key
 from backend.app.config import get_settings
 from backend.app.db.seed import seed_initial_data
 from backend.app.db.session import close_db, get_session_factory, init_db
 from backend.app.services.redis_bus import get_redis_bus
+from backend.app.services.socket_server import (
+    get_broadcast_logs,
+    init_socket_server,
+    shutdown_socket_server,
+    sio_app,
+)
+from backend.app.services.telegram_bot import get_telegram_bot
 
 # Configure logging
 logging.basicConfig(
@@ -42,11 +53,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     bus = get_redis_bus()
     await bus.connect()
 
+    # 4. Initialize Real-Time Gateway and Telegram Alert Dispatcher
+    await init_socket_server(bus)
+    telegram_bot = get_telegram_bot()
+    await telegram_bot.start()
+
     logger.info("Application startup sequence completed successfully.")
     yield
 
     # Shutdown sequence
     logger.info("Initiating graceful shutdown sequence...")
+    await telegram_bot.stop()
+    await shutdown_socket_server(bus)
     await bus.disconnect()
     await close_db()
     logger.info("Application shutdown completed.")
@@ -74,10 +92,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Mount Socket.IO ASGI server at /socket.io
+    application.mount("/socket.io", sio_app)
+
     # Include routers
     application.include_router(health_router)
     application.include_router(settings_router)
     application.include_router(pipeline_router)
+    application.include_router(themes_router)
+    application.include_router(sources_router)
+    application.include_router(events_router)
+    application.include_router(stats_router)
 
     # Root endpoint
     @application.get("/", tags=["General"])
@@ -98,7 +123,13 @@ def create_app() -> FastAPI:
             "message": "API key successfully verified",
         }
 
+    # Test inspection endpoint for test verification of WebSocket broadcasts
+    @application.get("/test/websocket-logs", tags=["Testing"])
+    async def get_test_websocket_logs() -> List[Dict[str, Any]]:
+        return get_broadcast_logs()
+
     return application
 
 
 app = create_app()
+

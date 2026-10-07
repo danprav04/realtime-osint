@@ -39,6 +39,7 @@ class Theme(Base):
     __tablename__ = "themes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[Optional[str]] = mapped_column(String(150), unique=True, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(150), unique=True, index=True, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     keywords: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -60,8 +61,10 @@ class Theme(Base):
     )
 
     def to_dict(self) -> Dict[str, Any]:
+        slug_val = self.slug or (self.name.lower().replace(" ", "-") if self.name else None)
         return {
             "id": self.id,
+            "slug": slug_val,
             "name": self.name,
             "description": self.description,
             "keywords": self.keywords or [],
@@ -69,6 +72,7 @@ class Theme(Base):
             "scoring_prompt": self.scoring_prompt,
             "is_active": self.is_active,
             "alert_threshold": self.alert_threshold,
+            "importance_threshold": self.alert_threshold,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -94,18 +98,25 @@ class Source(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     # Relationships
-    theme: Mapped["Theme"] = relationship("Theme", back_populates="sources")
+    theme: Mapped["Theme"] = relationship("Theme", back_populates="sources", lazy="selectin")
     events: Mapped[List["Event"]] = relationship("Event", back_populates="source", lazy="selectin")
 
     def to_dict(self) -> Dict[str, Any]:
+        target = None
+        if isinstance(self.config_json, dict):
+            target = self.config_json.get("target") or self.config_json.get("url")
         return {
             "id": self.id,
             "theme_id": self.theme_id,
             "name": self.name,
             "source_type": self.source_type,
+            "target": target,
             "config_json": self.config_json or {},
+            "enabled": self.is_enabled,
             "is_enabled": self.is_enabled,
+            "interval_seconds": self.polling_interval_sec,
             "polling_interval_sec": self.polling_interval_sec,
+            "status": "active" if self.is_enabled else "paused",
             "last_polled_at": self.last_polled_at.isoformat() if self.last_polled_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
@@ -126,6 +137,7 @@ class Event(Base):
     )
     source_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     source_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    source_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     external_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     
     # Text content
@@ -160,7 +172,7 @@ class Event(Base):
     )
 
     # Relationships
-    theme: Mapped["Theme"] = relationship("Theme", back_populates="events")
+    theme: Mapped["Theme"] = relationship("Theme", back_populates="events", lazy="selectin")
     source: Mapped[Optional["Source"]] = relationship("Source", back_populates="events")
     alerts: Mapped[List["Alert"]] = relationship(
         "Alert", back_populates="event", cascade="all, delete-orphan", lazy="selectin"
@@ -173,6 +185,7 @@ class Event(Base):
             "source_id": self.source_id,
             "source_type": self.source_type,
             "source_name": self.source_name,
+            "source_url": getattr(self, "source_url", None),
             "external_id": self.external_id,
             "title": self.title,
             "raw_text": self.raw_text,
@@ -191,6 +204,7 @@ class Event(Base):
             "published_at": self.published_at.isoformat() if self.published_at else None,
             "ingested_at": self.ingested_at.isoformat() if self.ingested_at else None,
         }
+
 
 
 class Alert(Base):
