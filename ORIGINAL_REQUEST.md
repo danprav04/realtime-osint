@@ -126,3 +126,20 @@ The entire system must run on a **1GB RAM Linux server** via Docker Compose. Thi
 - [ ] API endpoints require authentication (API key)
 - [ ] Application logs are structured (JSON) and include request tracing
 - [ ] System recovers gracefully from temporary source failures (network errors, API rate limits) without crashing
+
+
+## 2026-10-07T01:11:32Z
+
+Build a production-grade, real-time OSINT (Open Source Intelligence) gathering service. The system scrapes, parses, and analyzes live data from multiple configurable source types using AI (Gemini and Groq APIs), presents analyzed intelligence on a modern interactive dashboard, and sends critical event notifications via a Telegram bot. The entire system is theme-driven — changing the monitoring topic (e.g., from "US-Iran conflict" to "China-Taiwan tensions") requires only reconfiguring settings through the dashboard UI, with zero code changes. Must run on a 1GB RAM Linux server via Docker.
+
+Working directory: c:\Users\Developer\realtime-osint
+Integrity mode: demo
+
+NOTE ON CURRENT STATE:
+Milestone 1 (Foundations: DB models, Redis pub/sub bus, auth, seeding) and Milestone 2 (Data Source Ingestion Plugins: RSS, Telegram Telethon/Web, NewsAPI/GDELT, Reddit AsyncPRAW, Maritime AIS, and IngestionSupervisor) are already implemented and committed in `backend/` and tested in `tests/` (96 E2E tests + 57 backend tests passing).
+Resume seamlessly and continue execution from Milestone 3 onwards:
+- Milestone 3: Multi-Stage AI Pipeline (Gemini & Groq, per-stage configurable model, data parsing, importance scoring with user-configurable prompt, summarization, dashboard visual generation, translation)
+- Milestone 4: Real-time Gateway (WebSocket/Socket.IO), Theme Engine (zero-code configuration, dynamic reload), and Telegram Notification Bot
+- Milestone 5: Modern Interactive Dashboard (Next.js + Tailwind CSS, dark-mode-native, live feed timeline, charts, stats, full settings UI)
+- Milestone 6: Production Containerization & Resource Optimization (<900MB RAM footprint for 1GB RAM Linux server via Docker Compose)
+- Milestone 7: Final E2E Test Suite Verification & Hardening

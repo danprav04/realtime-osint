@@ -167,6 +167,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
+get_db_session = get_db
+
+
 async def check_db_health() -> Dict[str, Any]:
     """Perform database ping query and report dialect, latency, and status."""
     engine = get_engine()

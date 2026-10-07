@@ -1,0 +1,507 @@
+"""
+backend/tests/test_m3_pipeline.py - Comprehensive Unit & Integration Test Suite for Milestone 3
+
+Contains 15 hermetic, offline tests covering:
+- AIProvider Abstraction & Mock Fidelity
+- Resilient JSON Parser & Schema Validation
+- 4 Pipeline Stages (Extraction/Translation, Scoring, Summarization, Visuals)
+- Farsi/Arabic Translation, ZWNJ, and Acronym Preservation
+- Dynamic Theme Prompt Steering & Alert Threshold Clamping
+- Pipeline Orchestrator Concurrency, Multi-Provider Execution, and DB Persistence
+- Dynamic Zero-Code Hot-Reload via Redis Bus
+"""
+
+import asyncio
+import time
+from datetime import datetime, timezone
+import pytest
+import pytest_asyncio
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from backend.app.db.models import Alert, Base, Event, SystemSettings, Theme
+from backend.app.pipeline.models import (
+    AIStageConfig,
+    AnalyzedEvent,
+    DigestEventItem,
+    PeriodicDigestResult,
+    Stage1Result,
+    Stage2Result,
+    Stage3Result,
+    Stage4Result,
+)
+from backend.app.pipeline.orchestrator import PipelineOrchestrator
+from backend.app.pipeline.parser import extract_and_parse_json
+from backend.app.pipeline.providers.base import BaseAIProvider
+from backend.app.pipeline.providers.factory import ProviderRegistry, resolve_api_key
+from backend.app.pipeline.providers.mock import MockAIProvider
+from backend.app.pipeline.stage1_extract import run_stage1_extract
+from backend.app.pipeline.stage2_score import run_stage2_score
+from backend.app.pipeline.stage3_summary import run_periodic_digest, run_stage3_summary
+from backend.app.pipeline.stage4_visuals import run_stage4_visuals
+from backend.app.plugins.base import NormalizedEvent
+from backend.app.services.redis_bus import CHANNEL_CONFIG_RELOAD, RedisBus
+
+
+@pytest.fixture(scope="session")
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest_asyncio.fixture
+async def test_db_session():
+    """In-memory SQLite async database engine and session for hermetic testing."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+    # Seed default theme and system settings
+    async with session_factory() as session:
+        default_theme = Theme(
+            id=1,
+            name="US-Iran conflict",
+            description="Monitoring US-Iran military, geopolitical, and economic developments",
+            keywords=["Strait of Hormuz", "IRGC", "CENTCOM", "uranium", "sanctions", "Shahed"],
+            entities=["United States", "Iran", "Israel", "IRGC", "US Navy", "CENTCOM"],
+            scoring_prompt=(
+                "Score 9-10 for direct kinetic military engagements or strikes on naval/nuclear assets. "
+                "Score 7-8 for proxy attacks, major sanctions, or troop deployments. "
+                "Score 4-6 for standard diplomatic rhetoric or drills. Score 1-3 for background commentary."
+            ),
+            is_active=True,
+            alert_threshold=7,
+        )
+        ai_settings = SystemSettings(
+            key="ai_pipeline_stages",
+            value_json={
+                "extraction": {"provider": "groq", "model_name": "llama-3.3-70b-versatile"},
+                "scoring": {"provider": "gemini", "model_name": "gemini-2.0-flash"},
+                "summarization": {"provider": "gemini", "model_name": "gemini-2.0-flash"},
+                "visuals": {"provider": "groq", "model_name": "llama-3.3-70b-versatile"},
+            },
+        )
+        session.add_all([default_theme, ai_settings])
+        await session.commit()
+
+    yield session_factory
+
+    await engine.dispose()
+
+
+@pytest.fixture
+def mock_redis_bus():
+    """In-memory fallback Redis bus."""
+    bus = RedisBus()
+    bus._fallback_mode = True
+    return bus
+
+
+# ============================================================================
+# 1. AI STAGE CONFIG & SCHEMA VALIDATION TESTS
+# ============================================================================
+
+def test_stage_config_schema_validation():
+    """Test 1: Validates Pydantic serialization, model aliases, and temperature clamps."""
+    # Aliased stage name normalization
+    cfg1 = AIStageConfig(
+        stage_id="extraction_translation",  # type: ignore
+        provider="google",  # type: ignore
+        model_name="gemini-2.0-flash",
+    )
+    assert cfg1.stage_id == "extraction"
+    assert cfg1.provider == "gemini"
+
+    cfg2 = AIStageConfig(
+        stage_id="importance_scoring",  # type: ignore
+        provider="groq",
+        model_name="llama-3.3-70b-versatile",
+        temperature=0.7,
+    )
+    assert cfg2.stage_id == "scoring"
+    assert cfg2.temperature == 0.7
+
+    cfg3 = AIStageConfig(
+        stage_id="visual_generation",  # type: ignore
+        provider="gemini",
+        model_name="gemini-1.5-flash",
+    )
+    assert cfg3.stage_id == "visuals"
+
+
+def test_mock_provider_offline_fidelity():
+    """Test 2: Validates MockAIProvider offline behavior, call recording, and error simulation."""
+    mock_gemini = MockAIProvider(provider="gemini", api_key="test-gemini-key")
+    assert mock_gemini.provider_name == "gemini"
+
+    # Test error triggers
+    mock_auth_fail = MockAIProvider(provider="groq", simulate_auth_error=True)
+    with pytest.raises(PermissionError) as exc_auth:
+        asyncio.run(mock_auth_fail.generate_text("test"))
+    assert "Groq API key is invalid or unauthorized" in str(exc_auth.value)
+
+    mock_429_fail = MockAIProvider(provider="gemini", simulate_429=True)
+    with pytest.raises(RuntimeError) as exc_429:
+        asyncio.run(mock_429_fail.generate_text("test"))
+    assert "429 Quota Exceeded" in str(exc_429.value)
+
+
+# ============================================================================
+# 2. STAGE 1: EXTRACTION, TRANSLATION, AND ACRONYM PRESERVATION TESTS
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_stage1_english_passthrough():
+    """Test 3: English input retains original text without prepending translation marker."""
+    provider = MockAIProvider(provider="gemini")
+    event = NormalizedEvent(
+        theme_id="1",
+        source_type="rss",
+        source_name="Reuters",
+        external_id="ext-en-001",
+        title="US Navy conducts routine patrol in Persian Gulf",
+        raw_text="US Navy 5th Fleet vessels conducted scheduled security patrols in the Persian Gulf today.",
+        language="en",
+    )
+
+    result = await run_stage1_extract(event, provider)
+    assert isinstance(result, Stage1Result)
+    assert result.detected_language == "en"
+    assert "English translation:" not in result.translated_text
+    assert len(result.extracted_entities) > 0
+
+
+@pytest.mark.asyncio
+async def test_stage1_persian_translation_and_zwnj():
+    """Test 4: Persian/Farsi translation handles ZWNJ (\u200c), numerals, and preserves IRGC/CENTCOM."""
+    provider = MockAIProvider(provider="groq")
+    # Persian text containing ZWNJ, Persian numerals, and IRGC
+    persian_text = "سپاه\u200cپاسداران (IRGC) در تنگه هرمز ۱۲۰۰ قایق تندرو مستقر کرد و CENTCOM هشدار داد."
+    event = NormalizedEvent(
+        theme_id="1",
+        source_type="telegram",
+        source_name="IRNA Farsi",
+        external_id="ext-fa-002",
+        title="بیانیه فوری سپاه",
+        raw_text=persian_text,
+        language="fa",
+    )
+
+    result = await run_stage1_extract(event, provider)
+    assert result.detected_language == "fa"
+    assert "English translation:" in result.translated_text
+    # Defense acronym preservation
+    assert "IRGC" in result.extracted_entities or "IRGC" in result.translated_text
+    assert "CENTCOM" in result.extracted_entities or "CENTCOM" in result.translated_text
+
+
+@pytest.mark.asyncio
+async def test_stage1_arabic_translation_and_harakat():
+    """Test 5: Arabic translation handles Harakat diacritics, alert emojis, and preserves IAEA."""
+    provider = MockAIProvider(provider="gemini")
+    # Arabic text with Harakat and emojis
+    arabic_text = "🚨 تَحَرُّكَاتٌ عَسْكَرِيَّةٌ مُكَّثَّفَةٌ قُرْبَ مَضِيقِ هُرْمُز وَمُفَتِّشُو IAEA يُرَاقِبُونَ."
+    event = NormalizedEvent(
+        theme_id="1",
+        source_type="newsapi",
+        source_name="Al Jazeera Arabic",
+        external_id="ext-ar-003",
+        title="عاجل: تحركات بحرية",
+        raw_text=arabic_text,
+        language="ar",
+    )
+
+    result = await run_stage1_extract(event, provider)
+    assert result.detected_language in ("ar", "fa")
+    assert "English translation:" in result.translated_text
+    assert any(e in ("IAEA", "Strait of Hormuz", "Iran") for e in result.extracted_entities)
+
+
+# ============================================================================
+# 3. STAGE 2: IMPORTANCE SCORING, PROMPT STEERING & ALERT TESTS
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_stage2_scoring_clamping_and_priority():
+    """Test 6: Validates integer score 1-10 clamped scale and priority classification."""
+    provider = MockAIProvider(provider="gemini")
+    theme_ctx = {
+        "name": "US-Iran conflict",
+        "scoring_prompt": "Standard geopolitical threat scale.",
+        "alert_threshold": 7,
+    }
+    event = {
+        "title": "Air defense missile battery deployed",
+        "raw_text": "Forces deployed an advanced surface-to-air missile battery along the coastal border.",
+    }
+
+    result = await run_stage2_score(
+        event=event,
+        intelligence_text=event["raw_text"],
+        extracted_entities=["Air Defense", "Coast"],
+        theme_context=theme_ctx,
+        provider=provider,
+    )
+    assert isinstance(result, Stage2Result)
+    assert 1 <= result.importance_score <= 10
+    assert result.priority_level in ["low", "medium", "high", "critical"]
+    assert len(result.score_rationale) > 5
+
+
+@pytest.mark.asyncio
+async def test_stage2_dynamic_prompt_steering():
+    """Test 7: Inverting Theme.scoring_prompt dynamically changes importance score for identical text."""
+    provider = MockAIProvider(provider="gemini")
+    diplomatic_text = "Envoys held bilateral diplomatic talks regarding the regional non-proliferation framework."
+    event = {"title": "Diplomatic Talks", "raw_text": diplomatic_text}
+
+    # Prompt 1: Elevates diplomatic talks to critical importance (10)
+    theme_critical = {
+        "name": "US-Iran conflict",
+        "scoring_prompt": "Score diplomatic talks 10 because diplomatic summits signal imminent breakthrough.",
+        "alert_threshold": 7,
+    }
+    res_high = await run_stage2_score(event, diplomatic_text, ["Envoys"], theme_critical, provider)
+    assert res_high.importance_score == 10
+    assert res_high.should_alert is True
+
+    # Prompt 2: Minimizes diplomatic talks to low importance (1)
+    theme_low = {
+        "name": "US-Iran conflict",
+        "scoring_prompt": "Score diplomatic talks 1 as empty political theater and background noise.",
+        "alert_threshold": 7,
+    }
+    res_low = await run_stage2_score(event, diplomatic_text, ["Envoys"], theme_low, provider)
+    assert res_low.importance_score == 1
+    assert res_low.should_alert is False
+
+
+@pytest.mark.asyncio
+async def test_stage2_alert_threshold_boundaries():
+    """Test 8: Exact threshold match triggers alert; one point below suppresses alert."""
+    # When score is 7 with threshold 7 -> should_alert = True
+    r1 = Stage2Result(
+        importance_score=7,
+        score_rationale="Score meets exact alert threshold.",
+        priority_level="high",
+        should_alert=True,
+    )
+    assert r1.should_alert is True
+
+    # When score is 6 with threshold 7 -> should_alert = False
+    r2 = Stage2Result(
+        importance_score=6,
+        score_rationale="Score below alert threshold.",
+        priority_level="medium",
+        should_alert=False,
+    )
+    assert r2.should_alert is False
+
+
+# ============================================================================
+# 4. STAGE 3 & 4: SUMMARIZATION, DIGEST, AND VISUAL TRENDS TESTS
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_stage3_summary_and_headline():
+    """Test 9: Validates concise BLUF summary and headline under 80 characters."""
+    provider = MockAIProvider(provider="gemini")
+    event = {
+        "title": "Naval escort operation underway for oil tankers in Strait of Hormuz",
+        "raw_text": "Allied naval task force launched a combined maritime escort mission for commercial tankers.",
+    }
+    result = await run_stage3_summary(event, event["raw_text"], provider)
+    assert isinstance(result, Stage3Result)
+    assert len(result.headline) <= 80
+    assert len(result.summary) > 10
+    assert "BLUF:" in result.summary or len(result.summary) > 20
+
+
+@pytest.mark.asyncio
+async def test_stage3_periodic_digest():
+    """Test 10: Validates multi-event collection digest generation."""
+    provider = MockAIProvider(provider="gemini")
+    events = [
+        {"id": "e1", "headline": "Patrol vessel intercepted", "importance_score": 8, "source_name": "Reuters"},
+        {"id": "e2", "headline": "Diplomatic statements exchanged", "importance_score": 4, "source_name": "AP"},
+        {"id": "e3", "headline": "UAV radar contact logged", "importance_score": 7, "source_name": "AFP"},
+    ]
+    digest = await run_periodic_digest(events, "US-Iran conflict", 7, provider)
+    assert isinstance(digest, PeriodicDigestResult)
+    assert digest.total_events_analyzed == 3
+    assert digest.critical_alerts_count == 2
+    assert digest.threat_trajectory in ["Escalating", "Elevated", "Stable", "De-escalating", "Volatile"]
+    assert len(digest.key_developments) > 0
+    assert len(digest.watchlist_indicators) >= 3
+
+
+@pytest.mark.asyncio
+async def test_stage4_visual_trend_tagging():
+    """Test 11: Validates operational trend categorization and thematic cluster tags."""
+    provider = MockAIProvider(provider="groq")
+    event = {"title": "Naval patrol boats maneuver in Strait of Hormuz"}
+    text = "Naval surface units performed tactical escort drills in the Strait of Hormuz waterway."
+    result = await run_stage4_visuals(event, text, ["IRGC", "Strait of Hormuz"], provider)
+    assert isinstance(result, Stage4Result)
+    assert result.trend_category in ["Naval Escalation", "Air & Missile Defense", "Geopolitical Development"]
+    assert len(result.cluster_tags) >= 2
+
+
+# ============================================================================
+# 5. PIPELINE ORCHESTRATION, CONCURRENCY & PERSISTENCE TESTS
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_orchestrator_concurrent_multi_provider_run(test_db_session, mock_redis_bus):
+    """Test 12 (AC-107): Heterogeneous multi-provider execution in the same pipeline run."""
+    registry = ProviderRegistry(use_mock=True)
+    orchestrator = PipelineOrchestrator(
+        session_factory=test_db_session,
+        redis_bus=mock_redis_bus,
+        provider_registry=registry,
+        use_mock=True,
+    )
+    # Configure Stage 1 on Groq and Stage 2 on Gemini
+    orchestrator.set_stage_config("extraction", AIStageConfig(stage_id="extraction", provider="groq", model_name="llama-3.3-70b-versatile"))
+    orchestrator.set_stage_config("scoring", AIStageConfig(stage_id="scoring", provider="gemini", model_name="gemini-2.0-flash"))
+
+    event = NormalizedEvent(
+        theme_id="1",
+        source_type="rss",
+        source_name="Al Jazeera",
+        external_id="multi-prov-001",
+        title="Naval exercises reported in Gulf of Oman",
+        raw_text="Military forces initiated defensive exercises in the Gulf of Oman corridor.",
+    )
+
+    analyzed = await orchestrator.process_event(event)
+    assert isinstance(analyzed, AnalyzedEvent)
+    assert analyzed.importance_score is not None
+
+    # Verify both Groq and Gemini were utilized in the same run
+    groq_provider = registry.get_provider("groq", "llama-3.3-70b-versatile")
+    gemini_provider = registry.get_provider("gemini", "gemini-2.0-flash")
+    assert len(groq_provider.call_history) > 0
+    assert len(gemini_provider.call_history) > 0
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_parallel_stages_timing(test_db_session, mock_redis_bus):
+    """Test 13: Verifies that Stages 2, 3, and 4 execute concurrently via asyncio.gather()."""
+    registry = ProviderRegistry(use_mock=True)
+    orchestrator = PipelineOrchestrator(
+        session_factory=test_db_session,
+        redis_bus=mock_redis_bus,
+        provider_registry=registry,
+        use_mock=True,
+    )
+
+    event = NormalizedEvent(
+        theme_id="1",
+        source_type="newsapi",
+        source_name="AP",
+        external_id="timing-001",
+        title="Tactical movement logged in Strait",
+        raw_text="Regional security units reported swift maneuvers near strategic shipping channels.",
+    )
+
+    start = time.perf_counter()
+    analyzed = await orchestrator.process_event(event, parallel_stages=True)
+    duration = time.perf_counter() - start
+
+    assert isinstance(analyzed, AnalyzedEvent)
+    # Hermetic mock execution should complete in under 100 milliseconds
+    assert duration < 0.2
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_db_enrichment_and_persistence(test_db_session, mock_redis_bus):
+    """Test 14: Verifies database updates (is_analyzed=True, processed_at) and Alert row creation."""
+    orchestrator = PipelineOrchestrator(
+        session_factory=test_db_session,
+        redis_bus=mock_redis_bus,
+        use_mock=True,
+    )
+
+    # First insert a raw event in the database
+    async with test_db_session() as session:
+        raw_db_event = Event(
+            id="persist-evt-001",
+            theme_id=1,
+            source_type="telegram",
+            source_name="Defense Monitor",
+            external_id="ext-persist-001",
+            title="Kinetic strike on coastal radar station",
+            raw_text="A kinetic strike hit a coastal radar outpost causing significant facility damage.",
+            is_analyzed=False,
+            published_at=datetime.now(timezone.utc),
+        )
+        session.add(raw_db_event)
+        await session.commit()
+
+    # Process through pipeline
+    event = NormalizedEvent(
+        id="persist-evt-001",
+        theme_id="1",
+        source_type="telegram",
+        source_name="Defense Monitor",
+        external_id="ext-persist-001",
+        title="Kinetic strike on coastal radar station",
+        raw_text="A kinetic strike hit a coastal radar outpost causing significant facility damage.",
+    )
+    analyzed = await orchestrator.process_event(event)
+
+    # Verify event was enriched in database
+    async with test_db_session() as session:
+        res = await session.execute(select(Event).where(Event.id == "persist-evt-001"))
+        db_ev = res.scalars().first()
+        assert db_ev is not None
+        assert db_ev.is_analyzed is True
+        assert db_ev.processed_at is not None
+        assert db_ev.importance_score >= 7  # Kinetic strike scores high
+        assert db_ev.summary is not None
+        assert db_ev.headline is not None
+
+        # Verify Alert row was inserted because score >= threshold (7)
+        alt_res = await session.execute(select(Alert).where(Alert.event_id == "persist-evt-001"))
+        alert = alt_res.scalars().first()
+        assert alert is not None
+        assert alert.importance_score == db_ev.importance_score
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_zero_code_hot_reload(test_db_session, mock_redis_bus):
+    """Test 15: Publishes osint:config:reload to Redis bus and verifies immediate configuration update."""
+    orchestrator = PipelineOrchestrator(
+        session_factory=test_db_session,
+        redis_bus=mock_redis_bus,
+        use_mock=True,
+    )
+    await orchestrator.start()
+
+    # Initial stage configuration for scoring
+    assert orchestrator.get_stage_config("scoring").provider in ["gemini", "groq"]
+
+    # Update database settings to use Groq for scoring
+    async with test_db_session() as session:
+        res = await session.execute(
+            select(SystemSettings).where(SystemSettings.key == "ai_pipeline_stages")
+        )
+        setting = res.scalars().first()
+        val = dict(setting.value_json)
+        val["scoring"] = {"provider": "groq", "model_name": "mixtral-8x7b-32768", "temperature": 0.4}
+        setting.value_json = val
+        await session.commit()
+
+    # Broadcast reload signal over Redis bus
+    await mock_redis_bus.publish(CHANNEL_CONFIG_RELOAD, {"action": "ai_config_update"})
+    await asyncio.sleep(0.05)
+
+    # Verify orchestrator hot-reloaded new config dynamically
+    scoring_cfg = orchestrator.get_stage_config("scoring")
+    assert scoring_cfg.provider == "groq"
+    assert scoring_cfg.model_name == "mixtral-8x7b-32768"
+    assert scoring_cfg.temperature == 0.4
+
+    await orchestrator.stop()

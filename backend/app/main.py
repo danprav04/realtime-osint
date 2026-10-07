@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Dict, Any
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.app.api.health import router as health_router
+from backend.app.api import health_router, pipeline_router, settings_router
 from backend.app.auth import require_api_key
 from backend.app.config import get_settings
 from backend.app.db.seed import seed_initial_data
@@ -76,6 +76,8 @@ def create_app() -> FastAPI:
 
     # Include routers
     application.include_router(health_router)
+    application.include_router(settings_router)
+    application.include_router(pipeline_router)
 
     # Root endpoint
     @application.get("/", tags=["General"])

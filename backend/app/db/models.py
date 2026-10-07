@@ -145,6 +145,8 @@ class Event(Base):
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     headline: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     entities_json: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
+    is_analyzed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
@@ -184,6 +186,8 @@ class Event(Base):
             "summary": self.summary,
             "headline": self.headline,
             "entities_json": self.entities_json or [],
+            "is_analyzed": getattr(self, "is_analyzed", self.importance_score is not None),
+            "processed_at": self.processed_at.isoformat() if getattr(self, "processed_at", None) else None,
             "published_at": self.published_at.isoformat() if self.published_at else None,
             "ingested_at": self.ingested_at.isoformat() if self.ingested_at else None,
         }
