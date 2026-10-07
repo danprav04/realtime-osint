@@ -1,0 +1,160 @@
+services:
+  # ----------------------------------------------------------------------------
+  # 1. PostgreSQL 16 (Relational Persistence)
+  # Memory Limit: 150MB | Typical RSS: ~55MB
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: osint-postgres
+    restart: unless-stopped
+    command: >
+      postgres
+      -c shared_buffers=32MB
+      -c max_connections=20
+      -c work_mem=2MB
+      -c maintenance_work_mem=16MB
+      -c effective_cache_size=64MB
+    environment:
+      POSTGRES_DB: osint
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d osint || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 150M
+        reservations:
+          memory: 64M
+    networks:
+      - osint-net
+
+  # ----------------------------------------------------------------------------
+  # 2. Redis 7 (Real-time Pub/Sub Bus & Cache)
+  # Memory Limit: 80MB | Typical RSS: ~18MB
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: osint-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 32mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 80M
+        reservations:
+          memory: 32M
+    networks:
+      - osint-net
+
+  # ----------------------------------------------------------------------------
+  # 3. Python FastAPI Backend (Ingestion, Pipeline, REST & WebSocket Gateway)
+  # Memory Limit: 380MB | Typical RSS: ~180MB
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: osint-backend
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres_password@postgres:5432/osint
+      REDIS_URL: redis://redis:6379/0
+      API_KEY: osint_secret_key_2026
+      HOST: 0.0.0.0
+      PORT: 8000
+      ENVIRONMENT: production
+      LOG_LEVEL: INFO
+      LOG_FORMAT: json
+      MEMORY_BUDGET_MB: 380
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 380M
+        reservations:
+          memory: 150M
+    networks:
+      - osint-net
+
+  # ----------------------------------------------------------------------------
+  # 4. Next.js 15 Standalone Dashboard (Dark Mode UI)
+  # Memory Limit: 220MB | Typical RSS: ~120MB
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_WS_URL: http://localhost:8000
+    container_name: osint-frontend
+    restart: unless-stopped
+    command: ["node", "server.js"]
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      NODE_OPTIONS: "--max-old-space-size=180"
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_WS_URL: http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 220M
+        reservations:
+          memory: 100M
+    networks:
+      - osint-net
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  osint-net:
+    driver: bridge

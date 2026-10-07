@@ -1,17 +1,30 @@
+import json
 import logging
+import os
+import sys
+import time
+import uuid
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict, Any, List
+from contextvars import ContextVar
+from datetime import datetime, timezone
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
 from backend.app.api import health_router, pipeline_router, settings_router
-from backend.app.api.themes import router as themes_router
-from backend.app.api.sources import router as sources_router
 from backend.app.api.events import router as events_router
+from backend.app.api.sources import router as sources_router
 from backend.app.api.stats import router as stats_router
+from backend.app.api.themes import router as themes_router
 from backend.app.auth import require_api_key
 from backend.app.config import get_settings
 from backend.app.db.seed import seed_initial_data
 from backend.app.db.session import close_db, get_session_factory, init_db
+from backend.app.plugins.supervisor import get_ingestion_supervisor
 from backend.app.services.redis_bus import get_redis_bus
 from backend.app.services.socket_server import (
     get_broadcast_logs,
@@ -21,12 +34,87 @@ from backend.app.services.socket_server import (
 )
 from backend.app.services.telegram_bot import get_telegram_bot
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# Context variable for request trace ID correlation
+trace_id_ctx: ContextVar[Optional[str]] = ContextVar("trace_id", default=None)
+
+
+class JSONLogFormatter(logging.Formatter):
+    """Structured JSON formatter with request tracing for container observability."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: Dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "environment": os.getenv("ENVIRONMENT", "production"),
+        }
+        trace_id = trace_id_ctx.get() or getattr(record, "trace_id", None)
+        if trace_id:
+            payload["trace_id"] = trace_id
+
+        if record.levelno >= logging.WARNING:
+            payload["source_file"] = record.filename
+            payload["line_number"] = record.lineno
+            payload["function"] = record.funcName
+
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+
+        if hasattr(record, "extra_data") and isinstance(record.extra_data, dict):
+            payload.update(record.extra_data)
+
+        return json.dumps(payload, default=str)
+
+
+def setup_application_logging() -> None:
+    """Initialize structured JSON or standard format logging based on environment."""
+    log_format = os.getenv("LOG_FORMAT", "text").lower()
+    log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = getattr(logging, log_level_name, logging.INFO)
+
+    root = logging.getLogger()
+    root.setLevel(log_level)
+    root.handlers.clear()
+
+    handler = logging.StreamHandler(sys.stdout)
+    if log_format == "json":
+        handler.setFormatter(JSONLogFormatter())
+    else:
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    root.addHandler(handler)
+
+
+setup_application_logging()
 logger = logging.getLogger("osint.main")
+
+
+class RequestTracingMiddleware(BaseHTTPMiddleware):
+    """Assigns trace ID to incoming requests, propagates via response header, and emits structured log."""
+
+    async def dispatch(self, request: Request, call_next):
+        trace_id = request.headers.get("X-Request-ID") or request.headers.get("X-Trace-ID") or str(uuid.uuid4())
+        token = trace_id_ctx.set(trace_id)
+        start_time = time.perf_counter()
+
+        try:
+            response: Response = await call_next(request)
+            duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            response.headers["X-Request-ID"] = trace_id
+
+            if request.url.path not in ("/health", "/api/health", "/health/live", "/ready", "/live", "/health/ready"):
+                logger.info(
+                    f"{request.method} {request.url.path} {response.status_code} ({duration_ms}ms)",
+                    extra={"extra_data": {
+                        "http_method": request.method,
+                        "http_path": request.url.path,
+                        "status_code": response.status_code,
+                        "duration_ms": duration_ms,
+                    }},
+                )
+            return response
+        finally:
+            trace_id_ctx.reset(token)
 
 
 @asynccontextmanager
@@ -58,11 +146,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     telegram_bot = get_telegram_bot()
     await telegram_bot.start()
 
+    # 5. Start Background Ingestion Supervisor
+    supervisor = get_ingestion_supervisor()
+    await supervisor.start()
+
     logger.info("Application startup sequence completed successfully.")
     yield
 
     # Shutdown sequence
     logger.info("Initiating graceful shutdown sequence...")
+    await supervisor.stop()
     await telegram_bot.stop()
     await shutdown_socket_server(bus)
     await bus.disconnect()
@@ -90,7 +183,11 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["*"],
     )
+
+    # Request Tracing Middleware
+    application.add_middleware(RequestTracingMiddleware)
 
     # Mount Socket.IO ASGI server at /socket.io
     application.mount("/socket.io", sio_app)
@@ -132,4 +229,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

@@ -70,6 +70,7 @@ async def build_health_payload() -> Dict[str, Any]:
         overall_status = "healthy"
 
     uptime_sec = round(time.time() - _START_TIME, 2)
+    process_rss_mb = mem_stats.get("process_rss_mb", 0.0)
 
     return {
         "status": overall_status,
@@ -81,6 +82,7 @@ async def build_health_payload() -> Dict[str, Any]:
         "database": db_health,
         "redis": redis_health,
         "memory": mem_stats,
+        "memory_mb": process_rss_mb,
     }
 
 
@@ -91,9 +93,11 @@ async def get_health_report(response: Response) -> Dict[str, Any]:
     payload = await build_health_payload()
     if payload["status"] == "unhealthy":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    payload["memory_mb"] = payload["memory"].get("process_rss_mb", 0.0)
     return payload
 
 
+@router.get("/ready", summary="Readiness Probe Alias")
 @router.get("/health/ready", summary="Readiness Probe")
 async def get_readiness() -> Dict[str, Any]:
     """Readiness probe checking database connectivity and event bus health."""
@@ -111,12 +115,14 @@ async def get_readiness() -> Dict[str, Any]:
         )
 
     return {
+        "ready": True,
         "status": "ready",
         "database": db_health,
         "redis": redis_health,
     }
 
 
+@router.get("/live", summary="Liveness Probe Alias")
 @router.get("/health/live", summary="Liveness Probe")
 async def get_liveness() -> Dict[str, Any]:
     """Liveness probe verifying HTTP application process responsiveness."""

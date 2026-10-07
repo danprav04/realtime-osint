@@ -26,6 +26,8 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PORT", "HOST_PORT"),
     )
     LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "text"
+
 
     # Database configuration
     # By default, use SQLite async for zero-dependency local runtime, or PostgreSQL via env
