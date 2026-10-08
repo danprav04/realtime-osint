@@ -100,6 +100,10 @@ class AISSourcePlugin(BaseSourcePlugin):
                 ts_ms = props.get("timestampExternal") or int(datetime.now(timezone.utc).timestamp() * 1000)
                 published_at = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
 
+                # Discard telemetry points older than configured lookback window
+                if not self.is_event_within_lookback(published_at):
+                    continue
+
                 ship_name = props.get("shipName") or f"Vessel-{mmsi}"
                 destination = props.get("destination") or "Undisclosed"
 
@@ -180,6 +184,10 @@ class AISSourcePlugin(BaseSourcePlugin):
                 loc_name = s.get("location_name") or self.location_name
 
                 loc = Location(name=loc_name, lat=lat, lon=lon)
+                published_at = datetime.now(timezone.utc)
+                if not self.is_event_within_lookback(published_at):
+                    continue
+
                 external_id = f"ais_{mmsi}_{int(datetime.now(timezone.utc).timestamp())}_{hashlib.sha256(f'{lat}_{lon}'.encode()).hexdigest()[:6]}"
 
                 title = f"Naval Signal: {ship_name} (MMSI: {mmsi}) reported near {loc_name}"
@@ -199,7 +207,7 @@ class AISSourcePlugin(BaseSourcePlugin):
                     language="en",
                     author=f"MMSI-{mmsi}",
                     location=loc,
-                    published_at=datetime.now(timezone.utc),
+                    published_at=published_at,
                     metadata={
                         "mmsi": mmsi,
                         "ship_name": ship_name,

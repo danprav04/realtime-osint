@@ -12,13 +12,18 @@ logger = logging.getLogger("osint.plugin.telegram")
 
 
 def is_farsi(text: str) -> bool:
-    """Check for distinctive Persian characters."""
-    return any(c in text for c in "سپچگکژآ")
+    """Check for distinctive Persian characters (Gachpazh, Persian Kaf/Yeh, ZWNJ)."""
+    return any(c in text for c in "پچگژ\u200c") or bool(re.search(r"[\u06A9\u06CC]", text))
 
 
 def is_arabic(text: str) -> bool:
     """Check for Arabic characters."""
     return any(c in text for c in "ابتثجحخدذرزسشصضطظعغفقكلمنهوي")
+
+
+def is_hebrew(text: str) -> bool:
+    """Check for Hebrew characters."""
+    return any("\u0590" <= c <= "\u05EA" for c in text)
 
 
 def clean_html(raw: str) -> str:
@@ -65,6 +70,13 @@ class TelegramSourcePlugin(BaseSourcePlugin):
         self.api_hash: Optional[str] = self.config.get("api_hash")
         self.session_string: Optional[str] = (
             self.config.get("session_string") or self.config.get("string_session")
+        )
+        self.filter_keywords: List[str] = [
+            kw.strip().lower() for kw in (self.config.get("filter_keywords") or []) if kw.strip()
+        ]
+        self.is_alert_channel: bool = bool(
+            self.config.get("is_alert_channel")
+            or any(k in self.channel_name.lower() for k in ("rocketalert", "miklat", "tzeva", "siren"))
         )
         self._http_client: Optional[httpx.AsyncClient] = None
         self._telethon_client: Optional[Any] = None
@@ -184,7 +196,18 @@ class TelegramSourcePlugin(BaseSourcePlugin):
             external_id = f"tg_{self.channel_name}_{msg_id}"
             published_at = msg.date.replace(tzinfo=timezone.utc) if msg.date else datetime.now(timezone.utc)
 
-            lang = "fa" if is_farsi(raw_text) else ("ar" if is_arabic(raw_text) else "en")
+            # Discard messages older than configured lookback window
+            if not self.is_event_within_lookback(published_at):
+                continue
+
+            # Keyword filter (for high-volume discussion groups or filtered channels)
+            if self.filter_keywords and not any(kw in raw_text.lower() for kw in self.filter_keywords):
+                continue
+
+            lang = "fa" if is_farsi(raw_text) else ("ar" if is_arabic(raw_text) else ("he" if is_hebrew(raw_text) else "en"))
+            is_urgent = self.is_alert_channel or any(
+                s in raw_text for s in ("🚨", "🔴", "صفارات الإنذار", "צבע אדום", "rocket alert", "red alert")
+            )
             title = raw_text[:90].replace("\n", " ").strip()
             if len(raw_text) > 90:
                 title += "..."
@@ -205,6 +228,8 @@ class TelegramSourcePlugin(BaseSourcePlugin):
                     "message_id": msg_id,
                     "views": getattr(msg, "views", None),
                     "forwards": getattr(msg, "forwards", None),
+                    "is_urgent_alert": is_urgent,
+                    "is_alert_channel": self.is_alert_channel,
                 },
             )
             events.append(event)
@@ -268,7 +293,18 @@ class TelegramSourcePlugin(BaseSourcePlugin):
             else:
                 published_at = datetime.now(timezone.utc)
 
-            lang = "fa" if is_farsi(text) else ("ar" if is_arabic(text) else "en")
+            # Discard messages older than configured lookback window
+            if not self.is_event_within_lookback(published_at):
+                continue
+
+            # Keyword filter (for high-volume discussion groups or filtered channels)
+            if self.filter_keywords and not any(kw in text.lower() for kw in self.filter_keywords):
+                continue
+
+            lang = "fa" if is_farsi(text) else ("ar" if is_arabic(text) else ("he" if is_hebrew(text) else "en"))
+            is_urgent = self.is_alert_channel or any(
+                s in text for s in ("🚨", "🔴", "صفارات الإنذار", "צבע אדوم", "rocket alert", "red alert")
+            )
             title = text[:90].replace("\n", " ").strip()
             if len(text) > 90:
                 title += "..."
@@ -288,6 +324,8 @@ class TelegramSourcePlugin(BaseSourcePlugin):
                     "channel_id": f"@{self.channel_name}",
                     "message_id": msg_id,
                     "channel": self.channel_name,
+                    "is_urgent_alert": is_urgent,
+                    "is_alert_channel": self.is_alert_channel,
                 },
             )
             events.append(event)

@@ -306,6 +306,123 @@ async def test_telegram_plugin_error_resilience(monkeypatch):
     await plugin.stop()
 
 
+@pytest.mark.asyncio
+async def test_telegram_plugin_hebrew_and_siren_detection(monkeypatch):
+    """TelegramSourcePlugin tags Hebrew correctly and identifies rocket sirens/urgent alerts."""
+    from backend.app.plugins.telegram_plugin import is_hebrew
+
+    assert is_hebrew("צבע אדום בגליל העליון") is True
+    assert is_hebrew("عاجل: غارة جوية") is False
+    assert is_hebrew("Breaking news: rocket strike") is False
+
+    html_fixture = """
+    <div class="tgme_page">
+        <div class="tgme_widget_message_wrap">
+            <div class="tgme_widget_message" data-post="RocketAlert/5001">
+                <div class="tgme_widget_message_text js-message_text">
+                    🚨 צבע אדום (12:00): ירי רקטות וטילים באזור הגליל המערבי
+                </div>
+                <time datetime="2026-10-08T12:00:00+00:00" class="time">12:00</time>
+            </div>
+        </div>
+    </div>
+    """
+
+    class MockResp:
+        status_code = 200
+        text = html_fixture
+
+    async def mock_get(self, url, *args, **kwargs):
+        return MockResp()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    plugin = TelegramSourcePlugin(
+        source_id=205,
+        theme_id="us-iran-conflict",
+        name="Rocket Alert Sirens",
+        config={"channel": "@RocketAlert", "is_alert_channel": True},
+    )
+    events = await plugin.poll()
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.language == "he"
+    assert ev.metadata["is_urgent_alert"] is True
+    assert ev.metadata["is_alert_channel"] is True
+    await plugin.stop()
+
+
+@pytest.mark.asyncio
+async def test_telegram_plugin_keyword_filter(monkeypatch):
+    """TelegramSourcePlugin drops messages that do not match configured filter keywords."""
+    html_fixture = """
+    <div class="tgme_page">
+        <div class="tgme_widget_message_wrap">
+            <div class="tgme_widget_message" data-post="MiddleEastWatch/101">
+                <div class="tgme_widget_message_text js-message_text">
+                    Just a casual community chat message about dinner
+                </div>
+                <time datetime="2026-10-08T12:00:00+00:00" class="time">12:00</time>
+            </div>
+            <div class="tgme_widget_message" data-post="MiddleEastWatch/102">
+                <div class="tgme_widget_message_text js-message_text">
+                    عاجل: انفجار في محيط الميناء وسماع دوي صفارات الإنذار
+                </div>
+                <time datetime="2026-10-08T12:01:00+00:00" class="time">12:01</time>
+            </div>
+        </div>
+    </div>
+    """
+
+    class MockResp:
+        status_code = 200
+        text = html_fixture
+
+    async def mock_get(self, url, *args, **kwargs):
+        return MockResp()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    plugin = TelegramSourcePlugin(
+        source_id=206,
+        theme_id="us-iran-conflict",
+        name="Filtered Discussion Group",
+        config={"channel": "@MiddleEastWatch", "filter_keywords": ["عاجل", "انفجار", "strike"]},
+    )
+    events = await plugin.poll()
+    assert len(events) == 1
+    assert "عاجل: انفجار" in events[0].raw_text
+    assert events[0].language == "ar"
+    await plugin.stop()
+
+
+def test_expanded_seed_data_sources():
+    """Verify DEFAULT_SOURCES_DATA contains newly curated Arabic and OSINT sources."""
+    from backend.app.db.seed import DEFAULT_SOURCES_DATA, DEFAULT_THEME_DATA
+
+    targets = [str(s.get("config_json", {}).get("target") or "") for s in DEFAULT_SOURCES_DATA]
+    targets_lower = [t.lower() for t in targets]
+
+    # Arabic Breaking
+    assert "@ajabreaking" in targets_lower or "@ajnews" in targets_lower
+    assert "@alhadath" in targets_lower
+    assert "@alarabiya_brk" in targets_lower
+    # Tactical Field & OSINT
+    assert "@clashreport" in targets_lower
+    assert "@bintjbeilnews" in targets_lower
+    assert "@qudsn" in targets_lower
+    assert "@warmonitors" in targets_lower
+    # Siren Alerts
+    assert "@rocketalert" in targets_lower
+    assert "@miklat_alerts_ar" in targets_lower
+
+    # Theme keywords and entities
+    assert "Hezbollah" in DEFAULT_THEME_DATA["keywords"]
+    assert "Houthis" in DEFAULT_THEME_DATA["keywords"]
+    assert "Red Sea" in DEFAULT_THEME_DATA["keywords"]
+    assert "Ansar Allah" in DEFAULT_THEME_DATA["entities"]
+
+
 # ============================================================================
 # 4. News API Plugin Tests (GDELT 2.0 & NewsAPI)
 # ============================================================================
@@ -983,3 +1100,170 @@ async def test_supervisor_manual_crud_lifecycle():
     await supervisor.remove_plugin("manual_src_1")
     assert supervisor.get_plugin("manual_src_1") is None
     assert len(supervisor.list_plugins()) == 0
+
+
+# ============================================================================
+# 9. Provider 1-Hour Lookback Filtering Tests
+# ============================================================================
+
+def test_base_plugin_lookback_logic():
+    """is_event_within_lookback correctly accepts events <= lookback and rejects older events."""
+    class DummyPlugin(BaseSourcePlugin):
+        async def poll(self): return []
+        async def test_connection(self): return True
+
+    now = datetime.now(timezone.utc)
+    # Default 1.0 hour lookback
+    p1 = DummyPlugin(1, 1, "P1", config={"max_lookback_hours": 1.0})
+    assert p1.is_event_within_lookback(now - timedelta(minutes=30)) is True
+    assert p1.is_event_within_lookback(now - timedelta(minutes=59)) is True
+    assert p1.is_event_within_lookback(now - timedelta(minutes=61)) is False
+    assert p1.is_event_within_lookback(now - timedelta(hours=2)) is False
+
+    # Disabled / infinite lookback (0 or None)
+    p0 = DummyPlugin(2, 1, "P0", config={"max_lookback_hours": 0})
+    assert p0.is_event_within_lookback(now - timedelta(days=365)) is True
+
+
+@pytest.mark.asyncio
+async def test_rss_plugin_1h_lookback_filtering(monkeypatch):
+    """RSSSourcePlugin filters out feed items published more than 1 hour ago."""
+    now = datetime.now(timezone.utc)
+    recent_date = (now - timedelta(minutes=20)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    old_date = (now - timedelta(hours=3)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    sample_rss_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0">
+        <channel>
+            <title>Live Wire</title>
+            <item>
+                <title>Recent Live Breaking Update</title>
+                <link>https://example.com/recent</link>
+                <description>Published 20m ago.</description>
+                <pubDate>{recent_date}</pubDate>
+                <guid>recent_1</guid>
+            </item>
+            <item>
+                <title>Stale Old News From Earlier Today</title>
+                <link>https://example.com/old</link>
+                <description>Published 3h ago.</description>
+                <pubDate>{old_date}</pubDate>
+                <guid>old_1</guid>
+            </item>
+        </channel>
+    </rss>
+    """
+
+    class MockResponse:
+        status_code = 200
+        text = sample_rss_xml
+        def raise_for_status(self): pass
+
+    async def mock_get(self, url, *args, **kwargs):
+        return MockResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    plugin = RSSSourcePlugin(
+        source_id=801,
+        theme_id="us-iran-conflict",
+        name="1h Filtered RSS",
+        config={"url": "https://example.com/rss", "max_lookback_hours": 1.0},
+    )
+    events = await plugin.poll()
+    assert len(events) == 1
+    assert events[0].title == "Recent Live Breaking Update"
+    await plugin.stop()
+
+
+@pytest.mark.asyncio
+async def test_reddit_plugin_1h_lookback_filtering(monkeypatch):
+    """RedditSourcePlugin drops posts created more than 1 hour ago."""
+    now = datetime.now(timezone.utc)
+    recent_utc = (now - timedelta(minutes=15)).timestamp()
+    old_utc = (now - timedelta(hours=2)).timestamp()
+
+    reddit_fixture = {
+        "data": {
+            "children": [
+                {
+                    "data": {
+                        "id": "recent_post",
+                        "title": "CENTCOM Live Fleet Movement Update",
+                        "selftext": "Patrol reported in Strait.",
+                        "score": 100,
+                        "created_utc": recent_utc,
+                    }
+                },
+                {
+                    "data": {
+                        "id": "old_post",
+                        "title": "CENTCOM Stale Briefing",
+                        "selftext": "Old details.",
+                        "score": 100,
+                        "created_utc": old_utc,
+                    }
+                },
+            ]
+        }
+    }
+
+    class MockResp:
+        status_code = 200
+        def json(self): return reddit_fixture
+
+    async def mock_get(self, url, *args, **kwargs): return MockResp()
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    plugin = RedditSourcePlugin(
+        source_id=802,
+        theme_id="us-iran-conflict",
+        name="1h Filtered Reddit",
+        config={"subreddits": ["worldnews"], "keywords": ["CENTCOM"], "max_lookback_hours": 1.0},
+    )
+    events = await plugin.poll()
+    assert len(events) == 1
+    assert events[0].title == "CENTCOM Live Fleet Movement Update"
+    await plugin.stop()
+
+
+@pytest.mark.asyncio
+async def test_telegram_plugin_1h_lookback_filtering(monkeypatch):
+    """TelegramSourcePlugin drops messages posted more than 1 hour ago."""
+    now = datetime.now(timezone.utc)
+    recent_iso = (now - timedelta(minutes=10)).isoformat()
+    old_iso = (now - timedelta(hours=3)).isoformat()
+
+    html_fixture = f"""
+    <div class="tgme_page">
+        <div class="tgme_widget_message_wrap">
+            <div class="tgme_widget_message" data-post="Channel/1">
+                <div class="tgme_widget_message_text js-message_text">Live field alert 10m ago</div>
+                <time datetime="{recent_iso}" class="time">12:00</time>
+            </div>
+            <div class="tgme_widget_message" data-post="Channel/2">
+                <div class="tgme_widget_message_text js-message_text">Old field report 3h ago</div>
+                <time datetime="{old_iso}" class="time">09:00</time>
+            </div>
+        </div>
+    </div>
+    """
+
+    class MockResp:
+        status_code = 200
+        text = html_fixture
+
+    async def mock_get(self, url, *args, **kwargs): return MockResp()
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    plugin = TelegramSourcePlugin(
+        source_id=803,
+        theme_id="us-iran-conflict",
+        name="1h Filtered Telegram",
+        config={"channel": "@LiveChannel", "max_lookback_hours": 1.0},
+    )
+    events = await plugin.poll()
+    assert len(events) == 1
+    assert "Live field alert" in events[0].raw_text
+    await plugin.stop()
+

@@ -33,6 +33,7 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
   const [newType, setNewType] = useState('rss');
   const [newTarget, setNewTarget] = useState('');
   const [newInterval, setNewInterval] = useState(300);
+  const [newLookback, setNewLookback] = useState(1);
 
   const handleToggle = async (source: Source) => {
     const currentEnabled = source.is_enabled ?? source.enabled ?? true;
@@ -100,13 +101,15 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
         source_type: newType,
         target: newTarget,
         interval_seconds: Number(newInterval),
+        max_lookback_hours: Number(newLookback),
         is_enabled: true,
-        config_json: { target: newTarget },
+        config_json: { target: newTarget, max_lookback_hours: Number(newLookback) },
       });
       setFeedback({ type: 'success', message: `Added new source "${newName}" successfully!` });
       setIsAddOpen(false);
       setNewName('');
       setNewTarget('');
+      setNewLookback(1);
       onRefresh();
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Failed to add source' });
@@ -164,7 +167,7 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
             <tr className="border-b border-white/5 text-zinc-500 font-mono uppercase text-[11px]">
               <th className="pb-3 font-semibold">Engine / Source</th>
               <th className="pb-3 font-semibold">Target / Feed URL</th>
-              <th className="pb-3 font-semibold">Interval</th>
+              <th className="pb-3 font-semibold">Interval / Lookback</th>
               <th className="pb-3 font-semibold">Status / Last Polled</th>
               <th className="pb-3 font-semibold text-right">Actions</th>
             </tr>
@@ -174,6 +177,7 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
               const isEnabled = source.is_enabled ?? source.enabled ?? true;
               const isTriggering = loadingId === `trigger-${source.id}`;
               const interval = source.interval_seconds || source.polling_interval_sec || 300;
+              const lookback = source.max_lookback_hours ?? source.config_json?.max_lookback_hours ?? 1;
 
               return (
                 <tr key={source.id} className="hover:bg-surface-card/50 transition-colors">
@@ -191,9 +195,14 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
                   </td>
 
                   <td className="py-3.5 pr-4 font-mono tabular text-zinc-300">
-                    <div className="flex items-center space-x-1">
-                      <Clock className="w-3 h-3 text-zinc-500" />
-                      <span>{interval}s</span>
+                    <div className="flex flex-col space-y-0.5">
+                      <div className="flex items-center space-x-1">
+                        <Clock className="w-3 h-3 text-zinc-500" />
+                        <span>{interval}s</span>
+                      </div>
+                      <span className="text-[10px] text-zinc-400">
+                        {lookback}h lookback
+                      </span>
                     </div>
                   </td>
 
@@ -314,18 +323,34 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
                 />
               </div>
 
-              <div>
-                <label className="block text-zinc-300 font-medium mb-1">
-                  Polling Interval (Seconds)
-                </label>
-                <input
-                  type="number"
-                  min="30"
-                  max="3600"
-                  value={newInterval}
-                  onChange={(e) => setNewInterval(Number(e.target.value))}
-                  className="w-full rounded-lg bg-canvas-recessed px-3.5 py-2 text-zinc-100 hairline-border focus:outline-none focus:border-accent-cyan font-mono tabular"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-zinc-300 font-medium mb-1">
+                    Polling Interval (Sec)
+                  </label>
+                  <input
+                    type="number"
+                    min="30"
+                    max="3600"
+                    value={newInterval}
+                    onChange={(e) => setNewInterval(Number(e.target.value))}
+                    className="w-full rounded-lg bg-canvas-recessed px-3.5 py-2 text-zinc-100 hairline-border focus:outline-none focus:border-accent-cyan font-mono tabular"
+                  />
+                </div>
+                <div>
+                  <label className="block text-zinc-300 font-medium mb-1">
+                    Lookback Max (Hours)
+                  </label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="72"
+                    step="0.5"
+                    value={newLookback}
+                    onChange={(e) => setNewLookback(Number(e.target.value))}
+                    className="w-full rounded-lg bg-canvas-recessed px-3.5 py-2 text-zinc-100 hairline-border focus:outline-none focus:border-accent-cyan font-mono tabular"
+                  />
+                </div>
               </div>
 
               <div className="flex items-center justify-end space-x-3 pt-3 hairline-t">

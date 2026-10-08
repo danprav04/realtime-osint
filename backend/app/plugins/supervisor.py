@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.db.models import Event, Source, Theme
+from backend.app.db.models import Event, Source, SystemSettings, Theme
 from backend.app.db.session import get_session_factory
 from backend.app.plugins.ais_plugin import AISSourcePlugin
 from backend.app.plugins.base import BaseSourcePlugin, NormalizedEvent
@@ -175,12 +175,27 @@ class IngestionSupervisor:
                 sources_stmt = select(Source).where(Source.theme_id.in_(active_theme_ids))
                 sources = (await session.execute(sources_stmt)).scalars().all()
                 db_source_map = {str(s.id): s for s in sources}
+
+                # Query default provider lookback hours from SystemSettings
+                lb_stmt = select(SystemSettings).where(SystemSettings.key == "max_lookback_hours")
+                lb_row = (await session.execute(lb_stmt)).scalars().first()
+                provider_lookbacks = lb_row.value_json if lb_row and lb_row.value_json else {
+                    "rss": 1.0, "telegram": 1.0, "newsapi": 1.0, "reddit": 1.0, "ais": 1.0
+                }
         except Exception as exc:
             logger.error(f"Failed to query database for sources during reconciliation: {exc}", exc_info=True)
             return
 
         # 1. Add or update plugins from database
         for sid_str, source_obj in db_source_map.items():
+            src_cfg = dict(source_obj.config_json or {})
+            st_clean = (
+                "newsapi" if source_obj.source_type in ("news_api", "newsapi")
+                else ("ais" if source_obj.source_type in ("maritime_ais", "ais") else source_obj.source_type)
+            )
+            if "max_lookback_hours" not in src_cfg:
+                src_cfg["max_lookback_hours"] = float(provider_lookbacks.get(st_clean, 1.0))
+
             if sid_str not in self.plugins:
                 # New source: instantiate and start task if enabled
                 plugin = create_plugin_instance(
@@ -188,7 +203,7 @@ class IngestionSupervisor:
                     source_id=source_obj.id,
                     theme_id=source_obj.theme_id,
                     name=source_obj.name,
-                    config=source_obj.config_json,
+                    config=src_cfg,
                     poll_interval=source_obj.polling_interval_sec,
                     is_enabled=source_obj.is_enabled,
                 )
@@ -196,10 +211,11 @@ class IngestionSupervisor:
                 if plugin.is_enabled and self._running:
                     self._start_plugin_task(sid_str, plugin)
             else:
-                # Existing plugin: check if interval, config, or enabled state changed
+                # Existing plugin: check if interval, config, lookback, or enabled state changed
                 plugin = self.plugins[sid_str]
                 plugin.name = source_obj.name
-                plugin.config = source_obj.config_json or {}
+                plugin.config = src_cfg
+                plugin.max_lookback_hours = float(src_cfg.get("max_lookback_hours", 1.0))
                 plugin.poll_interval = max(1, int(source_obj.polling_interval_sec))
 
                 if source_obj.is_enabled and not plugin.is_enabled:
@@ -291,9 +307,12 @@ class IngestionSupervisor:
         if not plugin:
             raise KeyError(f"Source ID '{source_id}' not found.")
         events = await plugin.poll()
+        persisted_events = []
         for event in events:
-            await self.dispatch_and_persist(event)
-        return events
+            if plugin.is_event_within_lookback(event.published_at):
+                await self.dispatch_and_persist(event)
+                persisted_events.append(event)
+        return persisted_events
 
     async def _run_plugin_worker(self, plugin: BaseSourcePlugin) -> None:
         """
@@ -306,7 +325,8 @@ class IngestionSupervisor:
                 try:
                     events = await plugin.poll()
                     for event in events:
-                        await self.dispatch_and_persist(event)
+                        if plugin.is_event_within_lookback(event.published_at):
+                            await self.dispatch_and_persist(event)
                     plugin.last_polled_at = datetime.now(timezone.utc)
                     plugin.status = "active"
                     plugin.last_error = None

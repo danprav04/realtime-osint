@@ -210,6 +210,10 @@ class RedditSourcePlugin(BaseSourcePlugin):
         else:
             published_at = datetime.now(timezone.utc)
 
+        # 3. Check lookback window
+        if not self.is_event_within_lookback(published_at):
+            return None
+
         raw_text = selftext if selftext else title
 
         return NormalizedEvent(

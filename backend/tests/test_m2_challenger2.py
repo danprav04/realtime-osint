@@ -102,10 +102,10 @@ def test_telegram_is_farsi_false_positive_on_arabic_letter_seen():
     has_seen = "س" in arabic_headline
     assert has_seen is True
 
-    # Shows the empirical misclassification:
+    # Shows that the misclassification is resolved:
     farsi_detected = is_farsi(arabic_headline)
-    # The heuristic marks this Arabic text as Farsi because 'س' is in the Farsi set
-    assert farsi_detected is True, "Empirical check: is_farsi matched due to Arabic letter 'س'"
+    # The fix ensures Arabic text containing 'س' is NOT falsely marked as Farsi
+    assert farsi_detected is False, "Resolved: is_farsi does not match Arabic letter 'س'"
 
 
 def test_normalized_event_schema_farsi_zwnj_compliance():

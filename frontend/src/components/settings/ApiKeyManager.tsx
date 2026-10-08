@@ -39,6 +39,16 @@ export function ApiKeyManager({ initialSettings, onRefresh }: ApiKeyManagerProps
     }
   );
 
+  const [maxLookbackHours, setMaxLookbackHours] = useState<Record<string, number>>(
+    initialSettings?.max_lookback_hours || {
+      rss: 1,
+      telegram: 1,
+      newsapi: 1,
+      reddit: 1,
+      ais: 1,
+    }
+  );
+
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -55,6 +65,10 @@ export function ApiKeyManager({ initialSettings, onRefresh }: ApiKeyManagerProps
     setPollingIntervals((prev) => ({ ...prev, [sourceKey]: value }));
   };
 
+  const handleLookbackChange = (sourceKey: string, value: number) => {
+    setMaxLookbackHours((prev) => ({ ...prev, [sourceKey]: value }));
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -64,6 +78,7 @@ export function ApiKeyManager({ initialSettings, onRefresh }: ApiKeyManagerProps
         api_keys: apiKeys,
         notification_threshold: notificationThreshold,
         polling_intervals: pollingIntervals,
+        max_lookback_hours: maxLookbackHours,
       });
       setFeedback({
         type: 'success',
@@ -227,6 +242,43 @@ export function ApiKeyManager({ initialSettings, onRefresh }: ApiKeyManagerProps
                   onChange={(e) => handleIntervalChange(source.id, Number(e.target.value))}
                   className="w-full rounded-lg bg-canvas-recessed px-3 py-1.5 text-zinc-100 font-mono text-xs hairline-border focus:outline-none focus:border-accent-rose tabular"
                 />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Default Historical Lookback Window */}
+        <div className="space-y-3 pt-2">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <h4 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+              Default Historical Lookback Window (Hours)
+            </h4>
+            <span className="text-[11px] text-zinc-400">
+              Only ingests events published within this window (1h default for live intelligence)
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {[
+              { id: 'rss', label: 'RSS Feeds' },
+              { id: 'telegram', label: 'Telegram MTProto' },
+              { id: 'newsapi', label: 'News APIs' },
+              { id: 'reddit', label: 'Reddit PRAW' },
+              { id: 'ais', label: 'AIS Stream' },
+            ].map((source) => (
+              <div key={source.id} className="space-y-1">
+                <label className="block text-zinc-400 font-medium text-[11px]">{source.label}</label>
+                <div className="relative flex items-center">
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="72"
+                    step="0.5"
+                    value={maxLookbackHours[source.id] ?? 1}
+                    onChange={(e) => handleLookbackChange(source.id, Number(e.target.value))}
+                    className="w-full rounded-lg bg-canvas-recessed px-3 py-1.5 pr-7 text-zinc-100 font-mono text-xs hairline-border focus:outline-none focus:border-accent-rose tabular"
+                  />
+                  <span className="absolute right-2 text-[10px] text-zinc-500 font-mono pointer-events-none">h</span>
+                </div>
               </div>
             ))}
           </div>

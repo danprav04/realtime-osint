@@ -1,6 +1,6 @@
 import hashlib
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 import httpx
 
@@ -116,6 +116,10 @@ class NewsAPISourcePlugin(BaseSourcePlugin):
                 else:
                     published_at = datetime.now(timezone.utc)
 
+                # Discard articles older than configured lookback window
+                if not self.is_event_within_lookback(published_at):
+                    continue
+
                 external_id = hashlib.sha256((article_url or f"{title}_{domain}").encode("utf-8")).hexdigest()[:24]
 
                 event = NormalizedEvent(
@@ -156,6 +160,9 @@ class NewsAPISourcePlugin(BaseSourcePlugin):
             "pageSize": min(self.max_records, 100),
             "apiKey": self.api_key,
         }
+        if self.max_lookback_hours and self.max_lookback_hours > 0:
+            cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=self.max_lookback_hours)
+            params["from"] = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         try:
             client = await self._get_client()
@@ -192,6 +199,10 @@ class NewsAPISourcePlugin(BaseSourcePlugin):
                         published_at = datetime.now(timezone.utc)
                 else:
                     published_at = datetime.now(timezone.utc)
+
+                # Discard articles older than configured lookback window
+                if not self.is_event_within_lookback(published_at):
+                    continue
 
                 external_id = hashlib.sha256((article_url or f"{title}_{source_name}").encode("utf-8")).hexdigest()[:24]
 
@@ -257,6 +268,10 @@ class NewsAPISourcePlugin(BaseSourcePlugin):
                         published_at = datetime.now(timezone.utc)
                 else:
                     published_at = datetime.now(timezone.utc)
+
+                # Discard articles older than configured lookback window
+                if not self.is_event_within_lookback(published_at):
+                    continue
 
                 external_id = hashlib.sha256((item_url or f"{title}_{author}").encode("utf-8")).hexdigest()[:24]
 

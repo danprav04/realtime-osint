@@ -126,6 +126,10 @@ class RSSSourcePlugin(BaseSourcePlugin):
                 else:
                     published_at = datetime.now(timezone.utc)
 
+                # Discard articles older than configured lookback window
+                if not self.is_event_within_lookback(published_at):
+                    continue
+
                 # Language detection
                 lang = entry.get("language") or feed_meta.get("language")
                 if not lang:

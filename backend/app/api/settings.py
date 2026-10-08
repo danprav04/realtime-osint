@@ -68,7 +68,7 @@ async def get_system_settings(
     """Retrieve global system settings with masked API credentials."""
     res = await session.execute(
         select(SystemSettings).where(
-            SystemSettings.key.in_(["api_keys", "notification_threshold", "polling_intervals"])
+            SystemSettings.key.in_(["api_keys", "notification_threshold", "polling_intervals", "max_lookback_hours"])
         )
     )
     rows = {r.key: r.value_json for r in res.scalars().all()}
@@ -81,10 +81,22 @@ async def get_system_settings(
         else:
             masked_keys[k] = "***"
 
+    default_lookbacks = {
+        "rss": 1.0,
+        "telegram": 1.0,
+        "newsapi": 1.0,
+        "reddit": 1.0,
+        "ais": 1.0,
+    }
+    configured_lookbacks = dict(default_lookbacks)
+    if "max_lookback_hours" in rows and isinstance(rows["max_lookback_hours"], dict):
+        configured_lookbacks.update({k: float(v) for k, v in rows["max_lookback_hours"].items()})
+
     return {
         "api_keys": masked_keys,
         "notification_threshold": rows.get("notification_threshold", {}).get("threshold", 7),
         "polling_intervals": rows.get("polling_intervals", {}),
+        "max_lookback_hours": configured_lookbacks,
     }
 
 
@@ -93,7 +105,7 @@ async def update_system_settings(
     payload: Dict[str, Any],
     session: AsyncSession = Depends(get_db_session),
 ) -> Dict[str, Any]:
-    """Update system settings (API keys, threshold, intervals) and notify workers."""
+    """Update system settings (API keys, threshold, intervals, lookback) and notify workers."""
     if "api_keys" in payload:
         res = await session.execute(
             select(SystemSettings).where(SystemSettings.key == "api_keys")
@@ -130,6 +142,18 @@ async def update_system_settings(
             existing.value_json = current_ints
         else:
             session.add(SystemSettings(key="polling_intervals", value_json=current_ints))
+
+    if "max_lookback_hours" in payload:
+        res = await session.execute(
+            select(SystemSettings).where(SystemSettings.key == "max_lookback_hours")
+        )
+        existing = res.scalars().first()
+        current_lb = existing.value_json if existing else {}
+        current_lb.update({k: float(v) for k, v in payload["max_lookback_hours"].items()})
+        if existing:
+            existing.value_json = current_lb
+        else:
+            session.add(SystemSettings(key="max_lookback_hours", value_json=current_lb))
 
     await session.commit()
 

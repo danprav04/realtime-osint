@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import require_api_key
-from backend.app.db.models import Source, Theme, utc_now
+from backend.app.db.models import Source, SystemSettings, Theme, utc_now
 from backend.app.db.session import get_db_session
 from backend.app.services.redis_bus import (
     CHANNEL_CONFIG_RELOAD,
@@ -42,6 +42,8 @@ def serialize_source(source: Source) -> Dict[str, Any]:
     if not theme_slug:
         theme_slug = str(source.theme_id)
 
+    max_lookback_hours = float(cfg.get("max_lookback_hours", 1.0))
+
     return {
         "id": str(source.id),
         "theme_id": theme_slug,
@@ -53,6 +55,7 @@ def serialize_source(source: Source) -> Dict[str, Any]:
         "is_enabled": source.is_enabled,
         "interval_seconds": source.polling_interval_sec,
         "polling_interval_sec": source.polling_interval_sec,
+        "max_lookback_hours": max_lookback_hours,
         "status": status_str,
         "error_message": cfg.get("error_message"),
         "last_polled_at": source.last_polled_at.isoformat() if source.last_polled_at else None,
@@ -170,6 +173,16 @@ async def create_source(
     if "error_message" in payload:
         config["error_message"] = payload["error_message"]
 
+    raw_lb = payload.get("max_lookback_hours", config.get("max_lookback_hours"))
+    if raw_lb is not None:
+        config["max_lookback_hours"] = float(raw_lb)
+    else:
+        st_clean = "newsapi" if source_type in ("news_api", "newsapi") else ("ais" if source_type in ("maritime_ais", "ais") else source_type)
+        sys_res = await session.execute(select(SystemSettings).where(SystemSettings.key == "max_lookback_hours"))
+        sys_row = sys_res.scalars().first()
+        lb_map = sys_row.value_json if sys_row and sys_row.value_json else {}
+        config["max_lookback_hours"] = float(lb_map.get(st_clean, 1.0))
+
     enabled = payload.get("enabled", payload.get("is_enabled", True))
     interval = payload.get("interval_seconds", payload.get("polling_interval_sec", 300))
 
@@ -239,6 +252,8 @@ async def update_source(
         current_cfg["status"] = payload["status"]
     if "error_message" in payload:
         current_cfg["error_message"] = payload["error_message"]
+    if "max_lookback_hours" in payload and payload["max_lookback_hours"] is not None:
+        current_cfg["max_lookback_hours"] = float(payload["max_lookback_hours"])
 
     source.config_json = current_cfg
 

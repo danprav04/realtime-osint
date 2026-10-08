@@ -1,7 +1,7 @@
 import abc
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 
@@ -129,7 +129,21 @@ class BaseSourcePlugin(abc.ABC):
         self.last_error: Optional[str] = None
         self.last_polled_at: Optional[datetime] = None
         self.events_count: int = 0
+        raw_lookback = self.config.get("max_lookback_hours")
+        self.max_lookback_hours: Optional[float] = float(raw_lookback) if raw_lookback is not None else None
         self.logger = logging.getLogger(f"osint.plugin.{self.__class__.__name__}.{self.source_id}")
+
+    def is_event_within_lookback(self, published_at: datetime) -> bool:
+        """
+        Verify if an event's publication timestamp falls within the configured lookback window.
+        Returns True if within lookback or if no lookback is configured (None or <= 0).
+        """
+        if self.max_lookback_hours is None or self.max_lookback_hours <= 0:
+            return True
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=self.max_lookback_hours)
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=timezone.utc)
+        return published_at >= cutoff
 
     @property
     def is_enabled(self) -> bool:
