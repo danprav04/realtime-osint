@@ -4,7 +4,7 @@ backend/app/pipeline/models.py - Pydantic Data Models for Multi-Stage AI Pipelin
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AIStageConfig(BaseModel):
@@ -65,6 +65,10 @@ class Stage1Result(BaseModel):
     translated_text: str = Field(
         description="Fluent English intelligence translation. Original text if already English.",
     )
+    translated_title: Optional[str] = Field(
+        default=None,
+        description="Fluent English translation of the event title if original is non-English.",
+    )
     key_facts: List[str] = Field(
         default_factory=list,
         description="2 to 5 atomic factual statements extracted from the intelligence text.",
@@ -79,6 +83,30 @@ class Stage1Result(BaseModel):
         },
         description="Categorized entity taxonomy.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def remap_flexible_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Map translated_text from aliases
+            if not data.get("translated_text"):
+                for candidate in ("translated_content", "translation", "english_translation", "content", "translated_body"):
+                    if data.get(candidate):
+                        data["translated_text"] = data[candidate]
+                        break
+            # Map detected_language from aliases
+            if not data.get("detected_language"):
+                for candidate in ("source_language", "language", "lang", "detected_lang"):
+                    if data.get(candidate):
+                        data["detected_language"] = data[candidate]
+                        break
+            # Map translated_title from aliases
+            if not data.get("translated_title"):
+                for candidate in ("title_translation", "english_title", "translated_heading", "headline"):
+                    if data.get(candidate):
+                        data["translated_title"] = data[candidate]
+                        break
+        return data
 
     @field_validator("detected_language", mode="before")
     @classmethod
@@ -260,6 +288,7 @@ class AnalyzedEvent(BaseModel):
     summary: str = ""
     headline: str = ""
     entities: List[str] = Field(default_factory=list)
+    entities_json: List[str] = Field(default_factory=list)
     trend_category: Optional[str] = None
     notification_dispatched: bool = False
     notification_dispatched_at: Optional[Union[datetime, str]] = None
@@ -267,6 +296,11 @@ class AnalyzedEvent(BaseModel):
     processed_at: Optional[datetime] = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def model_post_init(self, __context: Any) -> None:
+        if self.entities and not self.entities_json:
+            self.entities_json = list(self.entities)
+        elif self.entities_json and not self.entities:
+            self.entities = list(self.entities_json)
+
         if self.location and not self.location_json:
             self.location_json = self.location
         elif self.location_json and not self.location:

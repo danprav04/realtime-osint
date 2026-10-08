@@ -4,6 +4,7 @@ backend/app/pipeline/orchestrator.py - Asynchronous Multi-Stage AI Pipeline Orch
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -26,7 +27,8 @@ from backend.app.pipeline.providers.factory import (
     get_provider_registry,
     resolve_api_key,
 )
-from backend.app.pipeline.stage1_extract import run_stage1_extract
+from backend.app.pipeline.providers.base import BaseAIProvider
+from backend.app.pipeline.stage1_extract import _heuristic_stage1_fallback, run_stage1_extract
 from backend.app.pipeline.stage2_score import run_stage2_score
 from backend.app.pipeline.stage3_summary import run_stage3_summary
 from backend.app.pipeline.stage4_visuals import run_stage4_visuals
@@ -90,8 +92,8 @@ class PipelineOrchestrator:
         self._stage_configs = {
             "extraction": AIStageConfig(
                 stage_id="extraction",
-                provider="groq",
-                model_name="qwen/qwen3.8-27b",
+                provider="gemini",
+                model_name="gemini-3.5-flash-lite",
                 temperature=0.2,
             ),
             "scoring": AIStageConfig(
@@ -102,14 +104,14 @@ class PipelineOrchestrator:
             ),
             "summarization": AIStageConfig(
                 stage_id="summarization",
-                provider="groq",
-                model_name="openai/gpt-oss-120b",
+                provider="gemini",
+                model_name="gemini-3.5-flash-lite",
                 temperature=0.2,
             ),
             "visuals": AIStageConfig(
                 stage_id="visuals",
                 provider="groq",
-                model_name="openai/gpt-oss-20b",
+                model_name="qwen/qwen3.8-27b",
                 temperature=0.2,
             ),
         }
@@ -177,6 +179,9 @@ class PipelineOrchestrator:
                 )
                 self._worker_tasks.append(task)
 
+            # Backfill any existing unanalyzed events from database
+            asyncio.create_task(self._backfill_unanalyzed_events())
+
             logger.info(f"Pipeline Orchestrator started with {self._num_workers} workers.")
 
     async def stop(self) -> None:
@@ -230,6 +235,62 @@ class PipelineOrchestrator:
             except Exception as err:
                 logger.error(f"Worker {worker_id} loop unexpected error: {err}")
                 await asyncio.sleep(0.5)
+
+    def _get_fallback_provider(self, primary_provider_name: str, stage_id: str) -> Optional[BaseAIProvider]:
+        """
+        If the primary provider hits 429 or fails, select an alternate healthy provider
+        (e.g., failover Groq -> Gemini, or Gemini -> Groq) if its API key is configured.
+        """
+        if self.use_mock:
+            return None
+        p_norm = primary_provider_name.lower().strip()
+        alt_provider = "gemini" if p_norm == "groq" else "groq"
+        alt_key = resolve_api_key(alt_provider, None, self._db_api_keys)
+        if alt_key:
+            alt_model = "gemini-3.5-flash-lite" if alt_provider == "gemini" else "qwen/qwen3.8-27b"
+            try:
+                return self._registry.get_provider(
+                    provider=alt_provider,
+                    model_name=alt_model,
+                    api_key=alt_key,
+                )
+            except Exception as e:
+                logger.debug(f"Could not initialize fallback provider {alt_provider}: {e}")
+        return None
+
+    async def _backfill_unanalyzed_events(self) -> None:
+        """Query DB for unanalyzed events and enqueue them for processing."""
+        try:
+            await asyncio.sleep(2)
+            factory = self._get_session_factory()
+            async with factory() as session:
+                stmt = (
+                    select(Event)
+                    .where(Event.is_analyzed == False)
+                    .order_by(Event.published_at.desc())
+                    .limit(100)
+                )
+                events = (await session.execute(stmt)).scalars().all()
+                if events:
+                    logger.info(f"Backfilling {len(events)} unanalyzed events into pipeline queue...")
+                    for ev in events:
+                        norm = NormalizedEvent(
+                            id=ev.id,
+                            theme_id=str(ev.theme_id),
+                            source_type=ev.source_type,
+                            source_name=ev.source_name,
+                            source_url=ev.source_url,
+                            external_id=ev.external_id,
+                            title=ev.title,
+                            raw_text=ev.raw_text,
+                            language=ev.language,
+                            author=ev.author,
+                            published_at=ev.published_at,
+                            ingested_at=ev.ingested_at,
+                        )
+                        await self.enqueue_event(norm)
+        except Exception as exc:
+            logger.warning(f"Backfill unanalyzed events encountered error: {exc}")
 
     async def handle_config_reload(self, channel: str, message: Any) -> None:
         """Dynamic hot-reload subscriber callback."""
@@ -349,12 +410,35 @@ class PipelineOrchestrator:
             api_key=resolve_api_key(stage1_cfg.provider, stage1_cfg.api_key_override, self._db_api_keys),
             temperature=stage1_cfg.temperature,
         )
-        res_s1: Stage1Result = await run_stage1_extract(
-            event=event,
-            provider=provider_s1,
-            model=stage1_cfg.model_name,
-            temperature=stage1_cfg.temperature,
-        )
+        try:
+            res_s1: Stage1Result = await run_stage1_extract(
+                event=event,
+                provider=provider_s1,
+                model=stage1_cfg.model_name,
+                temperature=stage1_cfg.temperature,
+            )
+        except Exception as exc:
+            logger.warning(f"Stage 1 primary provider '{stage1_cfg.provider}' failed ({exc}), attempting failover...")
+            fallback_s1 = self._get_fallback_provider(stage1_cfg.provider, "extraction")
+            if fallback_s1:
+                try:
+                    res_s1 = await run_stage1_extract(
+                        event=event,
+                        provider=fallback_s1,
+                        model=fallback_s1.default_model,
+                        temperature=stage1_cfg.temperature,
+                    )
+                except Exception as fb_exc:
+                    logger.warning(f"Stage 1 fallback provider also failed ({fb_exc}). Using heuristics.")
+                    res_s1 = _heuristic_stage1_fallback(
+                        raw_text=getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else ""),
+                        title=getattr(event, "title", "") or (event.get("title", "") if isinstance(event, dict) else ""),
+                    )
+            else:
+                res_s1 = _heuristic_stage1_fallback(
+                    raw_text=getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else ""),
+                    title=getattr(event, "title", "") or (event.get("title", "") if isinstance(event, dict) else ""),
+                )
 
         intelligence_text = res_s1.translated_text or (
             getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else "")
@@ -457,6 +541,20 @@ class PipelineOrchestrator:
             except Exception:
                 ing_at = datetime.now(timezone.utc)
 
+        # Determine English headline
+        raw_hl = getattr(res_s3, "headline", "") or ""
+        has_non_latin = bool(re.search(r"[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]", raw_hl)) if raw_hl else True
+        if has_non_latin or not raw_hl:
+            if getattr(res_s1, "translated_title", None):
+                final_headline = res_s1.translated_title
+            elif res_s1.translated_text:
+                clean_t = res_s1.translated_text.replace("English translation:", "").strip()
+                final_headline = clean_t.split(".")[0].strip()[:75]
+            else:
+                final_headline = title[:75]
+        else:
+            final_headline = raw_hl
+
         # Construct AnalyzedEvent
         analyzed = AnalyzedEvent(
             id=ev_id,
@@ -478,8 +576,9 @@ class PipelineOrchestrator:
             importance_score=res_s2.importance_score,
             score_rationale=res_s2.score_rationale,
             summary=res_s3.summary,
-            headline=res_s3.headline,
+            headline=final_headline,
             entities=res_s1.extracted_entities,
+            entities_json=res_s1.extracted_entities,
             trend_category=res_s4.trend_category,
             notification_dispatched=should_alert,
             notification_dispatched_at=datetime.now(timezone.utc) if should_alert else None,
@@ -549,7 +648,8 @@ class PipelineOrchestrator:
         if should_alert:
             alert_payload = {
                 "event_id": analyzed.id,
-                "title": analyzed.title,
+                "title": analyzed.headline or analyzed.title,
+                "headline": analyzed.headline,
                 "summary": analyzed.summary,
                 "importance_score": analyzed.importance_score,
                 "source_name": analyzed.source_name,

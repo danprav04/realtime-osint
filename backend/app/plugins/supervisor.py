@@ -80,6 +80,7 @@ class IngestionSupervisor:
         self._running: bool = False
         self._lock = asyncio.Lock()
         self._reload_subscribed: bool = False
+        self.last_ingested_at: Optional[datetime] = None
 
     @property
     def is_running(self) -> bool:
@@ -408,6 +409,9 @@ class IngestionSupervisor:
                     session.add(db_event)
                     await session.commit()
 
+                    # Update supervisor heartbeat timestamp
+                    self.last_ingested_at = datetime.now(timezone.utc)
+
                     # Enqueue newly ingested event into pipeline orchestrator for AI analysis if running
                     try:
                         from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
@@ -416,15 +420,17 @@ class IngestionSupervisor:
                             await orch.enqueue_event(event)
                     except Exception as pipe_err:
                         logger.debug(f"Pipeline enqueue deferred for '{event.id}': {pipe_err}")
+
+                    # 2. Publish to Redis bus ONLY for newly ingested events
+                    try:
+                        bus = self._get_redis_bus()
+                        await bus.publish(CHANNEL_EVENTS_NEW, event.model_dump())
+                    except Exception as exc:
+                        logger.warning(f"Event bus publish failed for event '{event.id}': {exc}")
+                else:
+                    logger.debug(f"Duplicate event skipped: theme={numeric_theme_id}, ext_id={event.external_id}")
         except Exception as exc:
             logger.warning(f"Database persistence skipped/failed for event '{event.id}': {exc}")
-
-        # 2. Publish to Redis bus
-        try:
-            bus = self._get_redis_bus()
-            await bus.publish(CHANNEL_EVENTS_NEW, event.model_dump())
-        except Exception as exc:
-            logger.warning(f"Event bus publish failed for event '{event.id}': {exc}")
 
     def get_status(self) -> Dict[str, Any]:
         """Return supervisor health and status overview."""
@@ -433,6 +439,7 @@ class IngestionSupervisor:
             "is_running": self._running,
             "total_plugins": len(self.plugins),
             "active_tasks": active_count,
+            "last_ingested_at": self.last_ingested_at.isoformat() if self.last_ingested_at else None,
             "plugins": {
                 sid: {
                     "name": p.name,

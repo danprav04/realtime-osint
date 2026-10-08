@@ -64,20 +64,38 @@ export default function DashboardPage() {
     themeId: activeTheme?.id,
     onNewEvent: (newEvent) => {
       if (isPaused) return;
+      let isExisting = false;
       setEvents((prev) => {
-        // Optimistic deduplication by event id
-        if (prev.some((e) => e.id === newEvent.id)) return prev;
-        return [newEvent, ...prev.slice(0, 99)];
+        const index = prev.findIndex(
+          (e) => e.id === newEvent.id || (e.external_id && e.external_id === newEvent.external_id)
+        );
+        if (index >= 0) {
+          isExisting = true;
+          const updated = [...prev];
+          const existing = updated[index];
+          const mergedEntities =
+            (newEvent as any).entities || newEvent.entities_json || existing.entities_json || [];
+          updated[index] = {
+            ...existing,
+            ...newEvent,
+            entities_json: mergedEntities,
+          };
+          return updated;
+        }
+        const initialEntities = (newEvent as any).entities || newEvent.entities_json || [];
+        return [{ ...newEvent, entities_json: initialEntities }, ...prev.slice(0, 99)];
       });
-      // Increment total count in stats
+      // Update stats: only increment count if this is genuinely a new card, and use ingestion heartbeat
       setStats((prev) => {
         if (!prev) return null;
         const isHigh = (newEvent.importance_score ?? 0) >= 7;
+        const heartbeatTime = newEvent.ingested_at || new Date().toISOString();
         return {
           ...prev,
-          total_events: prev.total_events + 1,
-          high_priority_events: isHigh ? prev.high_priority_events + 1 : prev.high_priority_events,
-          last_updated: newEvent.published_at || new Date().toISOString(),
+          total_events: isExisting ? prev.total_events : prev.total_events + 1,
+          high_priority_events: isHigh && !isExisting ? prev.high_priority_events + 1 : prev.high_priority_events,
+          last_updated: heartbeatTime,
+          last_update_timestamp: heartbeatTime,
         };
       });
     },
@@ -152,7 +170,7 @@ export default function DashboardPage() {
               </span>
             </div>
             <p className="text-sm font-semibold text-zinc-100">
-              {criticalToast.title || criticalToast.headline}
+              {criticalToast.headline || criticalToast.title}
             </p>
             <p className="text-xs text-zinc-300">{criticalToast.summary}</p>
           </div>

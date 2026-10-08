@@ -3,6 +3,7 @@ backend/app/pipeline/stage3_summary.py - Stage 3: Summarization & Periodic Diges
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -14,8 +15,11 @@ logger = logging.getLogger("osint.pipeline.stage3")
 
 STAGE3_SYSTEM_PROMPT = """You are an executive intelligence briefer for strategic and tactical commanders.
 Synthesize the provided intelligence event into:
-1. A punchy, informative headline (maximum 80 characters) optimized for instant live feed timeline cards and mobile notifications.
-2. A concise 2-3 sentence executive intelligence summary following the Bottom Line Up Front (BLUF) standard: state what happened, who is involved, and immediate operational implications. Eliminate editorial filler.
+1. A punchy, informative headline (maximum 80 characters) translated into English and optimized for instant live feed timeline cards and mobile notifications.
+2. A concise 2-3 sentence executive intelligence summary following the Bottom Line Up Front (BLUF) standard in English: state what happened, who is involved, and immediate operational implications. Eliminate editorial filler.
+
+CRITICAL TRANSLATION MANDATE:
+The headline and summary MUST ALWAYS BE WRITTEN IN 100% FLUENT ENGLISH. If the incoming event title or content is in Arabic, Persian, Hebrew, or any other non-English language, you MUST translate and synthesize it into English. NEVER output Arabic or non-Latin script in the headline or summary.
 
 You MUST respond strictly with a valid JSON object matching the requested schema. No markdown backticks."""
 
@@ -35,9 +39,20 @@ You MUST respond strictly with a valid JSON object matching the requested schema
 def _heuristic_stage3_fallback(intelligence_text: str, title: str = "") -> Stage3Result:
     """
     Deterministic offline heuristic summary fallback.
+    Ensures headlines and summaries are always fluent English even when the original
+    source title was in Arabic, Hebrew, or Persian.
     """
     clean_text = intelligence_text.replace("English translation:", "").strip()
-    headline = (title or clean_text.split(".")[0]).strip()
+    
+    # Check if title has non-Latin characters (Arabic, Hebrew, Persian)
+    has_non_latin = bool(re.search(r"[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]", title))
+    if has_non_latin and clean_text:
+        # Use first English sentence/clause from translated clean_text as headline
+        first_clause = clean_text.split(".")[0].strip()
+        headline = first_clause
+    else:
+        headline = (title or (clean_text.split(".")[0].strip() if clean_text else "")).strip()
+
     if len(headline) > 75:
         headline = headline[:72] + "..."
     if not headline:
@@ -144,12 +159,10 @@ async def run_stage3_summary(
     except PermissionError:
         raise
     except RuntimeError as r_err:
-        if "429" in str(r_err):
-            raise
-        logger.warning(f"RuntimeError in Stage 3, falling back to heuristics: {r_err}")
+        logger.warning(f"RuntimeError in Stage 3 ({r_err}), gracefully falling back to heuristics.")
         return fallback()
     except Exception as exc:
-        logger.warning(f"Stage 3 execution exception, using fallback: {exc}")
+        logger.warning(f"Stage 3 execution exception ({exc}), using fallback.")
         return fallback()
 
 

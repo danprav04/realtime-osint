@@ -21,7 +21,8 @@ Guidelines:
 2. Translation:
    - If the text is in Persian/Farsi, Arabic, Hebrew, or another non-English language, translate it into fluent, objective English intelligence text.
    - Begin the translated text with "English translation: " followed by the fluent translation.
-   - Accurately translate tactical military terms: "مسيرة" -> drone/UAV, "رشقة صاروخية" -> rocket barrage, "صفارات الإنذار" -> air raid sirens, "استهداف" -> targeting/strike, "اعتراض" -> air defense interception, "צבע אדوم" -> Red Alert siren.
+   - In `translated_title`, provide a fluent, concise English translation of the event Title if non-English (keep original if already English).
+   - Accurately translate tactical military terms: "مسيرة" -> drone/UAV, "رشقة صاروخية" -> rocket barrage, "صفارات الإنذار" -> air raid sirens, "استهداف" -> targeting/strike, "اعتراض" -> air defense interception, "צבע אדום" -> Red Alert siren.
    - Cleanly handle Persian Zero-Width Non-Joiners (\u200c), Persian numerals, Arabic diacritics, and alert emojis.
    - Strictly preserve all defense and geopolitical acronyms (e.g., IRGC, CENTCOM, IAEA, UNIFIL, IDF, NATO).
    - If the source is already English, provide the clean text without adding "English translation: ".
@@ -35,7 +36,22 @@ Guidelines:
    - Return a flat deduplicated list in `extracted_entities` and grouped lists in `entity_breakdown`.
 4. Key Facts: Extract 2-5 concise, atomic bullet points summarizing the core factual claims.
 
-You MUST respond strictly with a valid JSON object matching the requested schema. No markdown backticks, no preamble."""
+You MUST respond strictly with a valid JSON object matching this exact schema:
+{
+  "detected_language": "ar|fa|he|en",
+  "translated_title": "Concise English translation of event title",
+  "translated_text": "English translation: Full fluent English translation of the raw content...",
+  "key_facts": ["fact 1", "fact 2"],
+  "extracted_entities": ["Entity1", "Entity2"],
+  "entity_breakdown": {
+    "people": [],
+    "organizations": [],
+    "locations": [],
+    "military_assets": [],
+    "geopolitical_events": []
+  }
+}
+No markdown backticks, no preamble."""
 
 
 def _heuristic_stage1_fallback(raw_text: str, title: str = "") -> Stage1Result:
@@ -63,6 +79,7 @@ def _heuristic_stage1_fallback(raw_text: str, title: str = "") -> Stage1Result:
     all_entities = list(dict.fromkeys(acronyms + matched_entities))
 
     # Resolve common Arabic phrases to English entities
+    # Resolve common Arabic phrases to English entities
     arabic_entity_map = {
         "حزب الله": "Hezbollah",
         "أنصار الله": "Houthis",
@@ -74,6 +91,12 @@ def _heuristic_stage1_fallback(raw_text: str, title: str = "") -> Stage1Result:
         "لبنان": "Lebanon",
         "اليمن": "Yemen",
         "غزة": "Gaza",
+        "نابلس": "Nablus",
+        "جنين": "Jenin",
+        "القدس": "Jerusalem",
+        "الضفة الغربية": "West Bank",
+        "الضفة": "West Bank",
+        "خان يونس": "Khan Younis",
     }
     for ar_term, en_ent in arabic_entity_map.items():
         if ar_term in combined and en_ent not in all_entities:
@@ -87,6 +110,12 @@ def _heuristic_stage1_fallback(raw_text: str, title: str = "") -> Stage1Result:
             f"English translation: Real-time tactical alert regarding sirens or defense activity. "
             f"Entities involved include {entity_str}. Threat telemetry active."
         )
+        if "צבע אدום" in combined or "צבע אדום" in combined:
+            translated_title = f"Red Alert Siren: {entity_str}"
+        elif "אזעק" in combined:
+            translated_title = f"Air Raid Sirens Sounding: {entity_str}"
+        else:
+            translated_title = f"Tactical Telemetry: {entity_str}"
         if not all_entities:
             all_entities = ["Israel", "IDF"]
     elif arabic_chars > 0:
@@ -102,14 +131,34 @@ def _heuristic_stage1_fallback(raw_text: str, title: str = "") -> Stage1Result:
 
         entity_str = ", ".join(all_entities) if all_entities else "regional actors"
         translated = (
-            f"English translation: Intelligence report regarding military and defense developments. "
+            f"English translation: Field intelligence report regarding defense developments and regional activity. "
             f"Entities involved include {entity_str}. Operational monitoring remains active."
         )
+        if "صفارات الإنذار" in combined:
+            translated_title = f"Air Raid Sirens: {entity_str}"
+        elif any(k in combined for k in ["رشقة صاروخية", "صواريخ", "قصف"]):
+            translated_title = f"Rocket / Shelling Alert: {entity_str}"
+        elif any(k in combined for k in ["مسيرة", "طيران", "طائرة"]):
+            translated_title = f"Aviation / UAV Activity: {entity_str}"
+        elif any(k in combined for k in ["استهداف", "غارة", "ضربة"]):
+            translated_title = f"Strike Reported: {entity_str}"
+        elif any(k in combined for k in ["جثمان", "شهيد", "ارتقاء"]):
+            translated_title = f"Casualty Report: {entity_str}"
+        elif any(k in combined for k in ["اعتقال", "اقتحام", "مداهمة"]):
+            translated_title = f"Security Raid & Detentions: {entity_str}"
+        elif any(k in combined for k in ["خيمة", "نازحين", "مواصي"]):
+            translated_title = f"Displaced Encampment Incident: {entity_str}"
+        elif "عاجل" in combined:
+            translated_title = f"Breaking Wire: {entity_str}"
+        else:
+            translated_title = f"Field Intelligence: {entity_str}"
+
         if not all_entities:
-            all_entities = ["Iran", "IRGC", "Strait of Hormuz"]
+            all_entities = ["Regional Command", "Middle East Theater"]
     else:
         lang = "en"
         translated = combined
+        translated_title = title or "Intelligence Update"
         if not all_entities:
             caps = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", combined)
             all_entities = list(dict.fromkeys([c for c in caps if len(c) > 3][:5])) or ["Regional Command"]
@@ -129,6 +178,7 @@ def _heuristic_stage1_fallback(raw_text: str, title: str = "") -> Stage1Result:
         extracted_entities=all_entities,
         detected_language=lang,
         translated_text=translated,
+        translated_title=translated_title,
         key_facts=extra_facts,
         entity_breakdown={
             "organizations": [e for e in all_entities if e in ("IRGC", "CENTCOM", "IAEA", "IDF", "NATO", "Houthis", "Hezbollah")],
@@ -161,7 +211,7 @@ async def run_stage1_extract(
         f"Title: {title}\n"
         f"Reported Language Hint: {lang_hint}\n"
         f"Raw Content:\n{raw_text}\n\n"
-        f"Provide valid JSON matching the Stage1Result schema."
+        f"Provide valid JSON with exact keys: 'detected_language', 'translated_title', 'translated_text', 'key_facts', 'extracted_entities', 'entity_breakdown'."
     )
 
     def fallback():
@@ -184,10 +234,8 @@ async def run_stage1_extract(
     except PermissionError:
         raise
     except RuntimeError as r_err:
-        if "429" in str(r_err):
-            raise
-        logger.warning(f"RuntimeError in Stage 1, falling back to heuristics: {r_err}")
+        logger.warning(f"RuntimeError in Stage 1 ({r_err}), gracefully falling back to heuristics.")
         return fallback()
     except Exception as exc:
-        logger.warning(f"Stage 1 execution exception, using fallback: {exc}")
+        logger.warning(f"Stage 1 execution exception ({exc}), using fallback.")
         return fallback()

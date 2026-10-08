@@ -51,8 +51,18 @@ async def get_dashboard_stats(
         select(func.max(Event.ingested_at))
     )).scalar_one_or_none()
 
+    latest_heartbeat = latest_event_time
+    try:
+        from backend.app.plugins.supervisor import get_ingestion_supervisor
+        sup = get_ingestion_supervisor()
+        if sup and getattr(sup, "last_ingested_at", None):
+            if not latest_heartbeat or sup.last_ingested_at > latest_heartbeat:
+                latest_heartbeat = sup.last_ingested_at
+    except Exception:
+        pass
+
     now_iso = utc_now().isoformat()
-    last_updated_str = latest_event_time.isoformat() if latest_event_time else now_iso
+    last_updated_str = latest_heartbeat.isoformat() if latest_heartbeat else now_iso
 
     # 6. Score distribution (1-10)
     score_rows = (await session.execute(

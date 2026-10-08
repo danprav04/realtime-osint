@@ -25,7 +25,41 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const isTranslated = !!event.translated_text && event.language && event.language !== 'en';
-  const entities = event.entities_json || [];
+  const entities: string[] = (event.entities_json || (event as any).entities || []) as string[];
+  const isPending = !event.is_analyzed && (event.importance_score === null || event.importance_score === undefined);
+
+  const hasNonLatin = (str?: string | null) =>
+    str ? /[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str) : false;
+
+  const displayTitle = (() => {
+    if (event.headline && !hasNonLatin(event.headline)) {
+      return event.headline;
+    }
+    if (event.translated_text && (hasNonLatin(event.title) || (event.language && event.language !== 'en'))) {
+      const clean = event.translated_text.replace(/^English translation:\s*/i, '').trim();
+      const first = clean.split('.')[0]?.trim();
+      if (first && first.length > 5) {
+        return first.length > 85 ? first.slice(0, 82) + '...' : first;
+      }
+    }
+    if (isPending && hasNonLatin(event.title)) {
+      return `[Translating...] ${event.title}`;
+    }
+    return event.headline || event.title;
+  })();
+
+  const displaySummary = (() => {
+    if (event.summary && !hasNonLatin(event.summary)) {
+      return event.summary;
+    }
+    if (event.translated_text) {
+      return event.translated_text.replace(/^English translation:\s*/i, '').trim();
+    }
+    if (isPending && hasNonLatin(event.raw_text || event.title)) {
+      return "Translating and analyzing intelligence content from source...";
+    }
+    return event.summary || event.raw_text;
+  })();
 
   return (
     <article className="card-slick rounded-xl p-4 sm:p-5 relative transition-all duration-150">
@@ -52,7 +86,7 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
             <Clock className="w-3 h-3 text-zinc-500" />
             <span>{formatRelativeTime(event.published_at)}</span>
           </div>
-          <ImportanceBadge score={event.importance_score} size="sm" />
+          <ImportanceBadge score={event.importance_score} isPending={isPending} size="sm" />
         </div>
       </div>
 
@@ -61,13 +95,13 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
         onClick={() => onOpenDetails(event)}
         className="text-sm sm:text-base font-semibold text-zinc-100 hover:text-accent-cyan transition-colors tracking-tight cursor-pointer leading-snug mb-2"
       >
-        {event.headline || event.title}
+        {displayTitle}
       </h3>
 
       {/* AI Intelligence Summary */}
       <div className="text-xs sm:text-sm text-zinc-300 leading-relaxed mb-3">
-        {event.summary ? (
-          <p className="line-clamp-3">{event.summary}</p>
+        {event.summary || event.translated_text ? (
+          <p className="line-clamp-3">{displaySummary}</p>
         ) : (
           <p className="line-clamp-2 text-zinc-400 font-mono text-xs">{event.raw_text}</p>
         )}

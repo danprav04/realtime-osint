@@ -122,9 +122,16 @@ class BaseAIProvider(abc.ABC):
                     delay = self.base_backoff * (2 ** attempt) + random.uniform(0.1, self.jitter)
                     if retry_header:
                         try:
-                            delay = max(float(retry_header), delay)
+                            r_val = float(retry_header)
+                            if r_val > 15:
+                                # Long rate limit lockout: fail fast to trigger alternative provider failover immediately
+                                raise RuntimeError(f"{self.provider_name.capitalize()} RateLimitError: 429 lockout ({retry_header}s)")
+                            delay = max(r_val, delay)
                         except ValueError:
                             pass
+                    if delay > 15:
+                        raise RuntimeError(f"{self.provider_name.capitalize()} RateLimitError: 429 Rate limit reached (excessive backoff)")
+
                     logger.warning(
                         f"[{self.provider_name}] 429 Rate Limit encountered (reset: {reset_header}). Retrying in {delay:.2f}s "
                         f"(attempt {attempt + 1}/{self.max_retries})"

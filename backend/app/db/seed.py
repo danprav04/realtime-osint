@@ -378,8 +378,8 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
     "ai_pipeline_stages": {
         "extraction_translation": {
             "stage_id": "extraction_translation",
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
+            "provider": "gemini",
+            "model": "gemini-3.5-flash-lite",
             "temperature": 0.2,
             "enabled": True,
         },
@@ -392,15 +392,15 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
         },
         "summarization": {
             "stage_id": "summarization",
-            "provider": "groq",
-            "model": "openai/gpt-oss-120b",
+            "provider": "gemini",
+            "model": "gemini-3.5-flash-lite",
             "temperature": 0.2,
             "enabled": True,
         },
         "visual_generation": {
             "stage_id": "visual_generation",
             "provider": "groq",
-            "model": "openai/gpt-oss-20b",
+            "model": "qwen/qwen3.8-27b",
             "temperature": 0.2,
             "enabled": True,
         },

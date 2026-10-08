@@ -168,12 +168,10 @@ async def run_stage4_visuals(
     except PermissionError:
         raise
     except RuntimeError as r_err:
-        if "429" in str(r_err):
-            raise
-        logger.warning(f"RuntimeError in Stage 4, falling back to heuristics: {r_err}")
+        logger.warning(f"RuntimeError in Stage 4 ({r_err}), gracefully falling back to heuristics.")
         return fallback()
     except Exception as exc:
-        logger.warning(f"Stage 4 execution exception, using fallback: {exc}")
+        logger.warning(f"Stage 4 execution exception ({exc}), using fallback.")
         return fallback()
 
 

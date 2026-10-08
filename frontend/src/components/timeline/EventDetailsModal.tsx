@@ -37,8 +37,42 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const entities = event.entities_json || [];
+  const entities: string[] = (event.entities_json || (event as any).entities || []) as string[];
   const isTranslated = !!event.translated_text && event.language && event.language !== 'en';
+  const isPending = !event.is_analyzed && (event.importance_score === null || event.importance_score === undefined);
+
+  const hasNonLatin = (str?: string | null) =>
+    str ? /[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str) : false;
+
+  const displayTitle = (() => {
+    if (event.headline && !hasNonLatin(event.headline)) {
+      return event.headline;
+    }
+    if (event.translated_text && (hasNonLatin(event.title) || (event.language && event.language !== 'en'))) {
+      const clean = event.translated_text.replace(/^English translation:\s*/i, '').trim();
+      const first = clean.split('.')[0]?.trim();
+      if (first && first.length > 5) {
+        return first.length > 90 ? first.slice(0, 87) + '...' : first;
+      }
+    }
+    if (isPending && hasNonLatin(event.title)) {
+      return `[Translating...] ${event.title}`;
+    }
+    return event.headline || event.title;
+  })();
+
+  const displaySummary = (() => {
+    if (event.summary && !hasNonLatin(event.summary)) {
+      return event.summary;
+    }
+    if (event.translated_text) {
+      return event.translated_text.replace(/^English translation:\s*/i, '').trim();
+    }
+    if (isPending && hasNonLatin(event.raw_text || event.title)) {
+      return "Translating and analyzing intelligence content from source...";
+    }
+    return event.summary || event.raw_text;
+  })();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/75 backdrop-blur-sm overflow-y-auto">
@@ -47,7 +81,7 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
         <div className="flex items-start justify-between pb-4 hairline-b">
           <div className="space-y-2 pr-4">
             <div className="flex flex-wrap items-center gap-2">
-              <ImportanceBadge score={event.importance_score} size="md" />
+              <ImportanceBadge score={event.importance_score} isPending={isPending} size="md" />
               <SourceBadge sourceType={event.source_type} sourceName={event.source_name} />
               {isTranslated && (
                 <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20">
@@ -57,7 +91,7 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
               )}
             </div>
             <h2 className="text-lg font-semibold text-zinc-100 tracking-tight leading-snug">
-              {event.headline || event.title}
+              {displayTitle}
             </h2>
           </div>
           <button
@@ -144,7 +178,7 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                   <span>AI INTELLIGENCE SUMMARY</span>
                 </div>
                 <p className="text-sm text-zinc-200 leading-relaxed">
-                  {event.summary || 'Summary pending processing...'}
+                  {displaySummary || 'Summary pending processing...'}
                 </p>
               </div>
 
