@@ -196,16 +196,69 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
                     <div className="flex justify-between items-center mb-1">
                       <label className="text-zinc-400 font-medium">Model Name</label>
                       <span className="text-[10px] text-zinc-500 font-mono">
-                        {isGemini ? 'Free: 15 RPM / 500 RPD' : 'Free: 30 RPM / 1K RPD'}
+                        {isGemini ? 'Flash: 500 RPD | Gemma: 14.4K RPD' : 'Free: 30 RPM / 1K RPD'}
                       </span>
                     </div>
                     <input
                       type="text"
+                      list={`models-${stage.key}`}
                       value={currentStageConfig.model_name}
                       onChange={(e) => handleModelChange(stage.key, e.target.value)}
                       placeholder={isGemini ? 'gemini-3.5-flash-lite' : 'qwen/qwen3.8-27b'}
                       className="w-full rounded-lg bg-surface-card px-3 py-2 text-zinc-100 font-mono text-xs hairline-border focus:outline-none focus:border-accent-indigo"
                     />
+                    <datalist id={`models-${stage.key}`}>
+                      {isGemini ? (
+                        <>
+                          <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Fastest ~0.4s | 500 RPD)</option>
+                          <option value="gemma-4-26b-a4b-it">gemma-4-26b-a4b-it (High Quota | 14,400 RPD)</option>
+                          <option value="gemma-4-31b-it">gemma-4-31b-it (High Quota | 14,400 RPD)</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Fastest Multilingual | 1K RPD)</option>
+                          <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Deep Reasoning | 1K RPD)</option>
+                          <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (Lightweight | 1K RPD)</option>
+                        </>
+                      )}
+                    </datalist>
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {isGemini ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleModelChange(stage.key, 'gemini-3.5-flash-lite')}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                          >
+                            ⚡ 3.5-flash-lite (0.4s)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleModelChange(stage.key, 'gemma-4-26b-a4b-it')}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                          >
+                            📦 gemma-4-26b (14.4K RPD)
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleModelChange(stage.key, 'qwen/qwen3.8-27b')}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                          >
+                            ⚡ qwen3.8-27b (1K RPD)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleModelChange(stage.key, 'openai/gpt-oss-120b')}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                          >
+                            🧠 gpt-oss-120b (1K RPD)
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
 
                   {/* Temperature slider */}
