@@ -53,10 +53,96 @@ DEFAULT_THEME_DATA: Dict[str, Any] = {
 }
 
 DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
+    # --- On-Field & Real-Time Tactical Telegram Channels ---
     {
-        "name": "Reuters World News",
+        "name": "301 Arab World News (Field Alerts)",
+        "source_type": "telegram",
+        "config_json": {"target": "@arabworld301news"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Clash Report (Tactical Military OSINT)",
+        "source_type": "telegram",
+        "config_json": {"target": "@clashreport"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "OSINTdefender (Defense Telemetry)",
+        "source_type": "telegram",
+        "config_json": {"target": "@OSINTdefender"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Iran International English",
+        "source_type": "telegram",
+        "config_json": {"target": "@IranIntl_En"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "IntelSky (Air & Radar Tracking)",
+        "source_type": "telegram",
+        "config_json": {"target": "@intelsky"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Aurora Intel (Conflict Verification)",
+        "source_type": "telegram",
+        "config_json": {"target": "@auroraintel"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Al Mayadeen English",
+        "source_type": "telegram",
+        "config_json": {"target": "@AlMayadeenEnglish"},
+        "polling_interval_sec": 240,
+        "is_enabled": True,
+    },
+    # --- Specialized Naval, Defense & Geopolitical RSS Wires ---
+    {
+        "name": "USNI News (Naval Operations)",
         "source_type": "rss",
-        "config_json": {"url": "https://feeds.reuters.com/reuters/worldNews"},
+        "config_json": {"url": "https://news.usni.org/feed"},
+        "polling_interval_sec": 300,
+        "is_enabled": True,
+    },
+    {
+        "name": "Al-Monitor (Middle East Pulse)",
+        "source_type": "rss",
+        "config_json": {"url": "https://www.al-monitor.com/rss"},
+        "polling_interval_sec": 300,
+        "is_enabled": True,
+    },
+    {
+        "name": "Long War Journal (IRGC & Proxy Networks)",
+        "source_type": "rss",
+        "config_json": {"url": "http://feeds.feedburner.com/LongWarJournal"},
+        "polling_interval_sec": 300,
+        "is_enabled": True,
+    },
+    {
+        "name": "Defense News (Air & Missile Defense)",
+        "source_type": "rss",
+        "config_json": {"url": "https://www.defensenews.com/arc/outboundfeeds/rss/"},
+        "polling_interval_sec": 300,
+        "is_enabled": True,
+    },
+    {
+        "name": "NYT Middle East Intelligence",
+        "source_type": "rss",
+        "config_json": {"url": "https://rss.nytimes.com/services/xml/rss/nyt/MiddleEast.xml"},
+        "polling_interval_sec": 300,
+        "is_enabled": True,
+    },
+    {
+        "name": "IRNA English (Tehran State Wire)",
+        "source_type": "rss",
+        "config_json": {"url": "https://en.irna.ir/rss"},
         "polling_interval_sec": 300,
         "is_enabled": True,
     },
@@ -67,34 +153,15 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
         "polling_interval_sec": 300,
         "is_enabled": True,
     },
-    {
-        "name": "Al Jazeera English",
-        "source_type": "rss",
-        "config_json": {"url": "https://www.aljazeera.com/xml/rss/all.xml"},
-        "polling_interval_sec": 300,
-        "is_enabled": True,
-    },
-    {
-        "name": "IRNA English",
-        "source_type": "rss",
-        "config_json": {"url": "https://en.irna.ir/rss"},
-        "polling_interval_sec": 600,
-        "is_enabled": True,
-    },
-    {
-        "name": "Suggested Telegram Channels",
-        "source_type": "telegram",
-        "config_json": {"channels": ["@OSINTdefender", "@MiddleEastSpectator", "@iraborna"]},
-        "polling_interval_sec": 300,
-        "is_enabled": True,
-    },
+    # --- Community OSINT & Open-Source Forum Signals ---
     {
         "name": "Reddit Geopolitics & WorldNews",
         "source_type": "reddit",
-        "config_json": {"subreddits": ["worldnews", "geopolitics"], "min_upvotes": 50},
+        "config_json": {"subreddits": ["worldnews", "geopolitics", "OSINT"], "min_upvotes": 50},
         "polling_interval_sec": 600,
         "is_enabled": True,
     },
+    # --- Strategic Maritime Chokepoint Tracking ---
     {
         "name": "Maritime Strait of Hormuz",
         "source_type": "maritime_ais",
@@ -103,7 +170,18 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
             "zone_name": "Strait of Hormuz",
             "provider": "aisstream",
         },
-        "polling_interval_sec": 900,
+        "polling_interval_sec": 600,
+        "is_enabled": True,
+    },
+    {
+        "name": "Maritime Bab el-Mandeb (Red Sea)",
+        "source_type": "maritime_ais",
+        "config_json": {
+            "bbox": [11.5, 42.5, 14.5, 44.5],
+            "zone_name": "Bab el-Mandeb & Red Sea",
+            "provider": "aisstream",
+        },
+        "polling_interval_sec": 600,
         "is_enabled": True,
     },
 ]

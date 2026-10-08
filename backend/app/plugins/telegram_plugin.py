@@ -51,10 +51,13 @@ class TelegramSourcePlugin(BaseSourcePlugin):
     ):
         super().__init__(source_id, theme_id, name, config, poll_interval, is_enabled)
         # Channel can be specified as @channel_name, https://t.me/channel_name, or channel_name
+        channels_list = self.config.get("channels")
+        first_channel = channels_list[0] if isinstance(channels_list, list) and channels_list else ""
         self.raw_target: str = (
             self.config.get("target")
             or self.config.get("channel")
             or self.config.get("channel_id")
+            or first_channel
             or ""
         )
         self.channel_name: str = self._sanitize_channel_name(self.raw_target)
