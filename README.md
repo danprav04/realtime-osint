@@ -13,29 +13,11 @@
 
 <br/>
 
-```
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│  🛰️ OSINT RADAR          [● Connected]   Theme: [US-Iran conflict ▼]   [🔑 API Key]   │
-├────────────────────────────────────────────────────────────────────────────────────────┤
-│  📊 Total Events: 142    🚨 High Priority (≥7): 18   📡 Active Sources: 7   🕒 Just now │
-├────────────────────────────────────────────────────────────────────────────────────────┤
-│  🔍 Search events...     Source: [All ▼]   Min Score: [1]  Max Score: [10]             │
-├────────────────────────────────────────────────────────────────────────────────────────┤
-│  🔴 [CRITICAL 9/10]  [REUTERS · RSS]                                      12 mins ago  │
-│  IRGC fast-attack naval craft conduct unannounced live-fire drills in Hormuz           │
-│  AI Summary (BLUF): Iranian naval forces launched anti-ship missiles near commercial    │
-│  shipping lanes. US CENTCOM issued a maritime advisory for vessels in the Persian Gulf.│
-│  Tags: #StraitOfHormuz #IRGC #CENTCOM #MaritimeSecurity                [View Raw Data] │
-├────────────────────────────────────────────────────────────────────────────────────────┤
-│  🟠 [HIGH 8/10]      [TELEGRAM]                                            28 mins ago │
-│  Diplomatic communique issued regarding IAEA inspectors access in Natanz               │
-│  AI Summary (BLUF): PEZESHKIAN administration declared conditionality on centrifuge     │
-│  inspections following unilateral European sanctions package.                          │
-│  Tags: #IAEA #Natanz #NuclearEnrichment #Sanctions                     [View Raw Data] │
-└────────────────────────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/images/dashboard_live_feed.png" alt="Real-Time OSINT Live Feed Dashboard" width="100%" style="border-radius: 12px; border: 1px solid #2A2C33;" />
+</p>
 
-*An accurate representation of the Next.js live event feed interface.*
+*Figure 1: The real-time OSINT intelligence dashboard running live in production dark mode with streaming events, AI BLUF summaries, 1–10 importance scores, and multi-source attribution.*
 
 </div>
 
@@ -131,27 +113,35 @@ flowchart TD
 The frontend is built with **Next.js 14/15 App Router** and styled with **Tailwind CSS** using a dark-mode palette designed for comfortable, low-glare operational monitoring (canvas `#08090A`, card containers `#141518`, subtle borders `#2A2C33`).
 
 ### 1. Main Timeline View (`/`)
-- **Live Event Stream**: Real-time Socket.IO connection that pushes new events to the top of the feed without requiring manual page refreshes.
-- **Importance Badges**:
-  - 🔴 **Critical (9–10)**: Red indicator with ambient border highlight.
-  - 🟠 **High (7–8)**: Orange/amber indicator.
-  - 🟡 **Medium (5–6)**: Yellow indicator.
-  - 🔵 **Low (1–4)**: Blue/slate indicator.
-- **Source Attribution Chips**: Distinct badges identifying whether an event originated from RSS, Telegram, NewsAPI, Reddit, or Maritime AIS.
-- **Event Inspection Modal**: Clicking any event card opens an expanded modal displaying the full raw text, AI summary, detected entities, extracted coordinates, and original source URL.
-- **Summary Stat Cards**: Displays total events ingested, high-priority count ($\ge 7$), active source count, and timestamp of the last ingestion.
-- **Filtering & Search**: Filter by text search, source type, or min/max score sliders.
+The primary operations view provides continuous real-time intelligence monitoring without requiring manual page refreshes:
+- **Streaming Telemetry Cards**:
+  - **Total Ingested Events**: Real-time counter of all normalized and AI-analyzed intelligence items with an active `STREAMING` indicator.
+  - **High Priority (Score ≥ 7)**: Instant count and percentage of critical threats with an amber `ALERT TRIGGER` warning badge.
+  - **Active Monitored Sources**: Dynamic tally of active ingestion plugins across all 5 engine types (RSS, Telegram, NewsAPI, Reddit, AIS).
+  - **Last Ingestion Heartbeat**: Relative time since the latest event with sub-second Pub/Sub stream latency.
+- **Unified Intelligence Filter Bar**:
+  - **Search Query Bar**: Full-text searching across raw content, AI summaries, named entities, and locations.
+  - **Min Score Slider**: Adjustable threshold slider (from `All` up to `10`) to filter noise instantly in-memory.
+  - **Source Type Filter Chips**: One-click toggles for `All Sources`, `RSS`, `Telegram`, `News APIs`, `Reddit`, and `Maritime AIS`.
+  - **Live Stream Toggle**: Pause or resume incoming WebSocket event prepend animations on the fly.
+- **Card-Slick Event Intelligence Items**:
+  - **Source Attribution & Timing**: Clear source engine badges (e.g., `RSS BBC World News`, `TELEGRAM Channel`) with relative timestamps.
+  - **Dynamic Importance Indicators**: Color-coded badges indicating severity (`0/10 LOW` through `10/10 CRITICAL`).
+  - **BLUF Summaries**: Direct, actionable Bottom-Line-Up-Front syntheses highlighting key actors and tactical impact.
+  - **Multilingual Support**: Foreign-language original text (Arabic, Hebrew, Farsi) presented with translated English titles and summaries.
+  - **Extracted Entity Pills**: Clickable named entity tags (e.g. `#IRGC`, `#CENTCOM`, `#StraitOfHormuz`, `#Spain`).
+  - **Deep Forensics (`Inspect ↗`)**: Slide-over drawer displaying full raw JSON metadata, translation details, and original source hyperlinks.
 
 ### 2. Analytics & Trends (`/trends`)
-- **Hourly Volume Timeline**: Bar chart displaying event ingestion frequency over time.
-- **Score Distribution Histogram**: Breakdown of events across the 1–10 importance scale.
-- **Source Activity Breakdown**: Percentage distribution of data intake by source plugin.
+- **Hourly Volume Timeline**: Time-series bar visualization tracking event influx over 24-hour windows.
+- **Score Distribution Histogram**: Density histogram showing distribution across the 1–10 severity scale.
+- **Source Engine Activity**: Radial breakdown of ingested intelligence across all 5 active plugins.
 
 ### 3. Settings Control Center (`/settings`)
-- **Theme Configuration**: Switch active themes, edit tracked keywords, named entities, alert threshold, and the natural-language scoring prompt.
-- **Source Manager**: Add new feed URLs/channels, enable/disable existing sources, adjust polling intervals (in seconds), or trigger immediate on-demand polling.
-- **AI Model Matrix**: Independently select the provider (**Gemini** vs. **Groq**) and model name for each of the 4 pipeline stages.
-- **API Key Manager**: Securely input and save keys for Gemini, Groq, Telegram Bot Token, Telegram Chat ID, and NewsAPI.
+- **Theme Configuration**: Zero-code monitoring topic switching, keyword lists, entity tracking, alert thresholds, and dynamic AI scoring prompts.
+- **Source Ingestion Manager**: Add/remove feed URLs, toggle active status, adjust polling frequencies, or execute manual on-demand triggers.
+- **AI Matrix Configuration**: Independent provider (**Gemini** vs. **Groq**), model selection, and temperature tuning for each of the 4 pipeline stages.
+- **API Key & Credentials Vault**: In-browser secure configuration for Gemini, Groq, NewsAPI, and Telegram Bot credentials with live connectivity testing.
 
 ---
 
