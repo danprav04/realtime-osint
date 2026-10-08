@@ -17,6 +17,7 @@ import { NormalizedEvent, DashboardStats, Theme } from '@/lib/types';
 import { getEvents, getStats, getActiveTheme } from '@/lib/api';
 import { useRealtimeFeed } from '@/lib/socket';
 import { StatCards } from '@/components/stats/StatCards';
+import { PentagonPizzaMeter } from '@/components/stats/PentagonPizzaMeter';
 import { EventCard } from '@/components/timeline/EventCard';
 import { EventDetailsModal } from '@/components/timeline/EventDetailsModal';
 import { SourceBadge } from '@/components/timeline/SourceBadge';
@@ -166,6 +167,9 @@ export default function DashboardPage() {
 
       {/* 4 Summary Stat Cards */}
       <StatCards stats={stats} loading={loading} />
+
+      {/* Pentagon Pizza Meter (Unobtrusive OSINT Info Source) */}
+      <PentagonPizzaMeter />
 
       {/* Filter and Control Toolbar */}
       <div className="card-slick rounded-xl p-4 space-y-4">

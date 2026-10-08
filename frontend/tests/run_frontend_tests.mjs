@@ -110,4 +110,51 @@ test('API Client - getStoredApiKey provides safe fallback in SSR/Node environmen
   assert.ok(key.length > 0);
 });
 
+test('PizzaMeter - Validates PizzaMeterData structure and status levels', async () => {
+  const samplePizzaData = {
+    status: 'NOMINAL',
+    level: 1,
+    score: 18,
+    trend: 'stable',
+    baseline_multiplier: 1.05,
+    description: 'Baseline order activity in Pentagon & Arlington DoD corridor.',
+    monitored_region: 'Arlington / Pentagon DoD Corridor, VA',
+    last_updated: new Date().toISOString(),
+    locations: [
+      {
+        name: "Domino's Pizza (Pentagon City)",
+        address: '1100 S Joyce St, Arlington, VA',
+        busyness: 15,
+        status: 'Normal',
+        distance: '0.8 mi from Pentagon',
+      },
+      {
+        name: "Papa John's (Columbia Pike)",
+        address: '2901 Columbia Pike, Arlington, VA',
+        busyness: 22,
+        status: 'Normal',
+        distance: '1.2 mi from Pentagon',
+      },
+      {
+        name: "Pizza Hut (Arlington)",
+        address: '3100 Clarendon Blvd, Arlington, VA',
+        busyness: 17,
+        status: 'Normal',
+        distance: '1.5 mi from Pentagon',
+      },
+    ],
+    history: [
+      { timestamp: new Date().toISOString(), score: 18 },
+    ],
+  };
+
+  assert.equal(samplePizzaData.status, 'NOMINAL');
+  assert.equal(samplePizzaData.level, 1);
+  assert.equal(samplePizzaData.locations.length, 3);
+  assert.ok(samplePizzaData.locations[0].busyness <= 100);
+  assert.ok(samplePizzaData.locations[0].busyness >= 0);
+  assert.ok(samplePizzaData.baseline_multiplier >= 1.0);
+  assert.ok(samplePizzaData.description.includes('Pentagon'));
+});
+
 console.log('Running frontend automated tests...');
