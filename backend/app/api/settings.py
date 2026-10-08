@@ -20,22 +20,22 @@ router = APIRouter(prefix="/api/settings", tags=["Settings"])
 DEFAULT_AI_STAGES = {
     "extraction": {
         "provider": "groq",
-        "model_name": "llama-3.3-70b-versatile",
+        "model_name": "qwen/qwen3.8-27b",
         "temperature": 0.2,
     },
     "scoring": {
         "provider": "gemini",
-        "model_name": "gemini-2.0-flash",
+        "model_name": "gemini-3.5-flash-lite",
         "temperature": 0.1,
     },
     "summarization": {
-        "provider": "gemini",
-        "model_name": "gemini-2.0-flash",
+        "provider": "groq",
+        "model_name": "openai/gpt-oss-120b",
         "temperature": 0.2,
     },
     "visuals": {
         "provider": "groq",
-        "model_name": "llama-3.3-70b-versatile",
+        "model_name": "openai/gpt-oss-20b",
         "temperature": 0.2,
     },
 }
@@ -201,7 +201,7 @@ async def update_ai_pipeline_stages(
             AIStageConfig(
                 stage_id=s_id,  # type: ignore
                 provider=s_cfg.get("provider", "gemini"),
-                model_name=s_cfg.get("model_name") or s_cfg.get("model", "gemini-2.0-flash"),
+                model_name=s_cfg.get("model_name") or s_cfg.get("model", "gemini-3.5-flash-lite"),
                 temperature=s_cfg.get("temperature", 0.2),
                 api_key_override=s_cfg.get("api_key_override"),
             ),

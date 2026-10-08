@@ -19,10 +19,10 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
 
   const [settings, setSettings] = useState<AIPipelineSettings>(
     initialSettings || {
-      extraction: defaultStage('gemini', 'gemini-2.0-flash'),
-      scoring: defaultStage('groq', 'llama-3.3-70b-versatile'),
-      summarization: defaultStage('gemini', 'gemini-2.0-flash'),
-      visuals: defaultStage('groq', 'llama-3.3-70b-versatile'),
+      extraction: defaultStage('groq', 'qwen/qwen3.8-27b'),
+      scoring: defaultStage('gemini', 'gemini-3.5-flash-lite'),
+      summarization: defaultStage('groq', 'openai/gpt-oss-120b'),
+      visuals: defaultStage('groq', 'openai/gpt-oss-20b'),
     }
   );
 
@@ -57,7 +57,7 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
   ];
 
   const handleProviderChange = (stageKey: keyof AIPipelineSettings, provider: 'gemini' | 'groq') => {
-    const defaultModel = provider === 'gemini' ? 'gemini-2.0-flash' : 'llama-3.3-70b-versatile';
+    const defaultModel = provider === 'gemini' ? 'gemini-3.5-flash-lite' : 'qwen/qwen3.8-27b';
     setSettings((prev) => ({
       ...prev,
       [stageKey]: {
@@ -193,12 +193,17 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
 
                   {/* Model name input */}
                   <div>
-                    <label className="block text-zinc-400 font-medium mb-1">Model Name</label>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="text-zinc-400 font-medium">Model Name</label>
+                      <span className="text-[10px] text-zinc-500 font-mono">
+                        {isGemini ? 'Free: 15 RPM / 500 RPD' : 'Free: 30 RPM / 1K RPD'}
+                      </span>
+                    </div>
                     <input
                       type="text"
                       value={currentStageConfig.model_name}
                       onChange={(e) => handleModelChange(stage.key, e.target.value)}
-                      placeholder={isGemini ? 'gemini-2.0-flash' : 'llama-3.3-70b-versatile'}
+                      placeholder={isGemini ? 'gemini-3.5-flash-lite' : 'qwen/qwen3.8-27b'}
                       className="w-full rounded-lg bg-surface-card px-3 py-2 text-zinc-100 font-mono text-xs hairline-border focus:outline-none focus:border-accent-indigo"
                     />
                   </div>

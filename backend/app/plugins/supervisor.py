@@ -387,6 +387,15 @@ class IngestionSupervisor:
                     )
                     session.add(db_event)
                     await session.commit()
+
+                    # Enqueue newly ingested event into pipeline orchestrator for AI analysis if running
+                    try:
+                        from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
+                        orch = get_pipeline_orchestrator()
+                        if orch.is_running:
+                            await orch.enqueue_event(event)
+                    except Exception as pipe_err:
+                        logger.debug(f"Pipeline enqueue deferred for '{event.id}': {pipe_err}")
         except Exception as exc:
             logger.warning(f"Database persistence skipped/failed for event '{event.id}': {exc}")
 

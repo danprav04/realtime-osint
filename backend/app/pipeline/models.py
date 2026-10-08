@@ -15,7 +15,7 @@ class AIStageConfig(BaseModel):
     """
     stage_id: Literal["extraction", "scoring", "summarization", "visuals"]
     provider: Literal["gemini", "groq"] = "gemini"
-    model_name: str = "gemini-2.0-flash"
+    model_name: str = "gemini-3.5-flash-lite"
     api_key_override: Optional[str] = None
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     enabled: bool = True
@@ -45,7 +45,7 @@ class AIStageConfig(BaseModel):
     @field_validator("model_name", mode="before")
     @classmethod
     def normalize_model_name(cls, v: Any) -> str:
-        return str(v).strip() if v else "gemini-2.0-flash"
+        return str(v).strip() if v else "gemini-3.5-flash-lite"
 
 
 class Stage1Result(BaseModel):

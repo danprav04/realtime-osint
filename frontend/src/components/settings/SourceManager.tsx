@@ -32,7 +32,7 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState('rss');
   const [newTarget, setNewTarget] = useState('');
-  const [newInterval, setNewInterval] = useState(180);
+  const [newInterval, setNewInterval] = useState(300);
 
   const handleToggle = async (source: Source) => {
     const currentEnabled = source.is_enabled ?? source.enabled ?? true;

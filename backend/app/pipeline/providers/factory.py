@@ -103,9 +103,10 @@ class ProviderRegistry:
         temperature: float = 0.2,
     ) -> BaseAIProvider:
         p_norm = provider.lower().strip()
-        key = f"{p_norm}:{model_name}:{api_key or ''}"
+        is_mock = self.use_mock or os.environ.get("USE_MOCK_AI", "0") == "1"
+        key = f"{p_norm}:{model_name}:mock" if is_mock else f"{p_norm}:{model_name}:{api_key or ''}"
         if key not in self._providers:
-            if self.use_mock or os.environ.get("USE_MOCK_AI", "0") == "1":
+            if is_mock:
                 self._providers[key] = MockAIProvider(
                     provider=p_norm,
                     api_key=api_key or "mock-key",
@@ -136,6 +137,6 @@ _registry_instance: Optional[ProviderRegistry] = None
 
 def get_provider_registry(use_mock: bool = False) -> ProviderRegistry:
     global _registry_instance
-    if _registry_instance is None:
+    if _registry_instance is None or _registry_instance.use_mock != use_mock:
         _registry_instance = ProviderRegistry(use_mock=use_mock)
     return _registry_instance

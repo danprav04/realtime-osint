@@ -17,8 +17,28 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 class GroqProvider(BaseAIProvider):
     """
     Groq Cloud async REST provider via httpx.
-    Supports llama-3.3-70b-versatile, mixtral-8x7b-32768, llama-3.1-8b-instant.
+    Supports qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b, llama-3.3-70b-versatile.
     """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        default_model: str = "qwen/qwen3.8-27b",
+        timeout_seconds: float = 25.0,
+        max_retries: int = 3,
+        base_backoff_sec: float = 1.0,
+        jitter_sec: float = 0.5,
+    ):
+        super().__init__(
+            api_key=api_key,
+            default_model=default_model,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            base_backoff_sec=base_backoff_sec,
+            jitter_sec=jitter_sec,
+        )
+        # Safe pacing for Groq free tier (30 RPM limit = 2.0s minimum gap)
+        self.min_interval_sec = 1.5
 
     @property
     def provider_name(self) -> str:
@@ -33,7 +53,7 @@ class GroqProvider(BaseAIProvider):
         max_tokens: int = 1024,
         json_mode: bool = False,
     ) -> str:
-        model_name = model or self.default_model or "llama-3.3-70b-versatile"
+        model_name = model or self.default_model or "qwen/qwen3.8-27b"
         client = await self.get_client()
 
         headers = {
@@ -93,7 +113,7 @@ class GroqProvider(BaseAIProvider):
         Generic stage processing invoking generate_text with json_mode=True.
         """
         ctx = context or {}
-        model_name = model or self.default_model or "llama-3.3-70b-versatile"
+        model_name = model or self.default_model or "qwen/qwen3.8-27b"
         temp = temperature if temperature is not None else 0.2
 
         if stage in ("extraction", "extraction_translation"):

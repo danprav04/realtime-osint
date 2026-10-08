@@ -33,6 +33,9 @@ class BaseAIProvider(abc.ABC):
         self.max_retries = max_retries
         self.base_backoff = base_backoff_sec
         self.jitter = jitter_sec
+        self.min_interval_sec: float = 1.0
+        self._pacing_lock = asyncio.Lock()
+        self._last_request_time: float = 0.0
         self._client: Optional[httpx.AsyncClient] = None
         self.call_history: list[Dict[str, Any]] = []
 
@@ -95,6 +98,15 @@ class BaseAIProvider(abc.ABC):
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
+                # Free-tier rate limit pacing: ensure minimum delay between outbound calls
+                if self.min_interval_sec > 0:
+                    async with self._pacing_lock:
+                        now = asyncio.get_event_loop().time()
+                        elapsed = now - self._last_request_time
+                        if elapsed < self.min_interval_sec:
+                            await asyncio.sleep(self.min_interval_sec - elapsed)
+                        self._last_request_time = asyncio.get_event_loop().time()
+
                 response = await call_fn()
 
                 # Status 429: Rate Limit / Quota Exceeded
@@ -106,6 +118,7 @@ class BaseAIProvider(abc.ABC):
                             raise RuntimeError("Groq RateLimitError: 429 Rate limit reached")
 
                     retry_header = response.headers.get("retry-after")
+                    reset_header = response.headers.get("x-ratelimit-reset-requests") or response.headers.get("x-ratelimit-reset-tokens")
                     delay = self.base_backoff * (2 ** attempt) + random.uniform(0.1, self.jitter)
                     if retry_header:
                         try:
@@ -113,7 +126,7 @@ class BaseAIProvider(abc.ABC):
                         except ValueError:
                             pass
                     logger.warning(
-                        f"[{self.provider_name}] 429 Rate Limit encountered. Retrying in {delay:.2f}s "
+                        f"[{self.provider_name}] 429 Rate Limit encountered (reset: {reset_header}). Retrying in {delay:.2f}s "
                         f"(attempt {attempt + 1}/{self.max_retries})"
                     )
                     await asyncio.sleep(delay)

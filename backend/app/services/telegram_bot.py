@@ -177,6 +177,30 @@ class TelegramBotService:
         except Exception as exc:
             logger.debug(f"Failed to record alert in DB: {exc}")
 
+    async def auto_discover_chat_id(self) -> Optional[str]:
+        """
+        Polls Telegram getUpdates API to automatically discover the user's chat_id
+        when they message the bot (e.g. sending /start).
+        """
+        if not self.bot_token:
+            return None
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+            resp = await self.http_client.get(url)
+            if resp.status_code == 200:
+                data = resp.json()
+                results = data.get("result", [])
+                for update in reversed(results):
+                    msg = update.get("message") or update.get("channel_post")
+                    if msg and "chat" in msg:
+                        discovered_id = str(msg["chat"]["id"])
+                        logger.info(f"Auto-discovered Telegram chat_id: {discovered_id}")
+                        self.chat_id = discovered_id
+                        return discovered_id
+        except Exception as exc:
+            logger.debug(f"Auto-discover Telegram chat_id attempt: {exc}")
+        return None
+
     async def send_alert(self, payload: TelegramAlertPayload) -> Dict[str, Any]:
         """
         Process and dispatch a high-importance alert via Telegram.
@@ -214,6 +238,9 @@ class TelegramBotService:
         formatted_text = self.format_message(payload)
 
         # 5. Check credentials
+        if self.bot_token and not self.chat_id:
+            await self.auto_discover_chat_id()
+
         if not self.bot_token or not self.chat_id:
             logger.warning(
                 "Telegram bot token or chat ID not configured. Simulating successful local alert."
@@ -350,17 +377,28 @@ class TelegramBotService:
         try:
             session_factory = get_session_factory()
             async with session_factory() as session:
-                stmt = select(SystemSettings).where(SystemSettings.key == "notification_settings")
-                row = (await session.execute(stmt)).scalars().first()
-                if row and isinstance(row.value_json, dict):
-                    cfg = row.value_json
-                    if "cooldown_seconds" in cfg:
-                        self.rate_limit_seconds = float(cfg["cooldown_seconds"])
-                    if "bot_token" in cfg and cfg["bot_token"]:
-                        self.bot_token = cfg["bot_token"]
-                    if "chat_id" in cfg and cfg["chat_id"]:
-                        self.chat_id = cfg["chat_id"]
-                    logger.info("Hot-reloaded Telegram bot settings from DB.")
+                stmt = select(SystemSettings).where(
+                    SystemSettings.key.in_(["notification_settings", "api_keys"])
+                )
+                rows = (await session.execute(stmt)).scalars().all()
+                for row in rows:
+                    if not row or not isinstance(row.value_json, dict):
+                        continue
+                    if row.key == "notification_settings":
+                        cfg = row.value_json
+                        if "cooldown_seconds" in cfg:
+                            self.rate_limit_seconds = float(cfg["cooldown_seconds"])
+                        if "bot_token" in cfg and cfg["bot_token"]:
+                            self.bot_token = cfg["bot_token"]
+                        if "chat_id" in cfg and cfg["chat_id"]:
+                            self.chat_id = cfg["chat_id"]
+                    elif row.key == "api_keys":
+                        keys = row.value_json
+                        if keys.get("telegram_bot_token"):
+                            self.bot_token = keys["telegram_bot_token"]
+                        if keys.get("telegram_chat_id"):
+                            self.chat_id = keys["telegram_chat_id"]
+                logger.info("Hot-reloaded Telegram bot settings from DB.")
         except Exception as exc:
             logger.debug(f"Failed to hot-reload bot settings from DB: {exc}")
 

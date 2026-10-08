@@ -146,7 +146,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     telegram_bot = get_telegram_bot()
     await telegram_bot.start()
 
-    # 5. Start Background Ingestion Supervisor
+    # 5. Start AI Pipeline Orchestrator (with free-tier rate pacing & model matrix)
+    from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
+    orchestrator = get_pipeline_orchestrator()
+    await orchestrator.start()
+
+    # 6. Start Background Ingestion Supervisor
     supervisor = get_ingestion_supervisor()
     await supervisor.start()
 
@@ -156,6 +161,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown sequence
     logger.info("Initiating graceful shutdown sequence...")
     await supervisor.stop()
+    await orchestrator.stop()
     await telegram_bot.stop()
     await shutdown_socket_server(bus)
     await bus.disconnect()

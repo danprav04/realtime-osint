@@ -63,7 +63,12 @@ class PipelineOrchestrator:
         self._session_factory = session_factory
         self._redis_bus = redis_bus
         self.use_mock = use_mock
-        self._registry = provider_registry or get_provider_registry(use_mock=use_mock)
+        if provider_registry is not None:
+            self._registry = provider_registry
+        elif use_mock:
+            self._registry = ProviderRegistry(use_mock=True)
+        else:
+            self._registry = get_provider_registry(use_mock=False)
         self._stage_configs: Dict[str, AIStageConfig] = {}
         self._theme_cache: Dict[str, Dict[str, Any]] = {}
         self._db_api_keys: Dict[str, str] = {}
@@ -77,30 +82,34 @@ class PipelineOrchestrator:
         # Seed initial default stage configs
         self._init_default_configs()
 
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
     def _init_default_configs(self) -> None:
         self._stage_configs = {
             "extraction": AIStageConfig(
                 stage_id="extraction",
                 provider="groq",
-                model_name="llama-3.3-70b-versatile",
+                model_name="qwen/qwen3.8-27b",
                 temperature=0.2,
             ),
             "scoring": AIStageConfig(
                 stage_id="scoring",
                 provider="gemini",
-                model_name="gemini-2.0-flash",
+                model_name="gemini-3.5-flash-lite",
                 temperature=0.1,
             ),
             "summarization": AIStageConfig(
                 stage_id="summarization",
-                provider="gemini",
-                model_name="gemini-2.0-flash",
+                provider="groq",
+                model_name="openai/gpt-oss-120b",
                 temperature=0.2,
             ),
             "visuals": AIStageConfig(
                 stage_id="visuals",
                 provider="groq",
-                model_name="llama-3.3-70b-versatile",
+                model_name="openai/gpt-oss-20b",
                 temperature=0.2,
             ),
         }
@@ -246,7 +255,7 @@ class PipelineOrchestrator:
                             self._stage_configs[norm_id] = AIStageConfig(
                                 stage_id=norm_id,  # type: ignore
                                 provider=cfg_data.get("provider", "gemini"),
-                                model_name=cfg_data.get("model_name") or cfg_data.get("model", "gemini-2.0-flash"),
+                                model_name=cfg_data.get("model_name") or cfg_data.get("model", "gemini-3.5-flash-lite"),
                                 temperature=cfg_data.get("temperature", 0.2),
                                 api_key_override=cfg_data.get("api_key_override"),
                             )

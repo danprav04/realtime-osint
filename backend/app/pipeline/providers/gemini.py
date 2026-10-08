@@ -17,8 +17,28 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 class GeminiProvider(BaseAIProvider):
     """
     Google Gemini async REST provider via httpx.
-    Supports gemini-2.0-flash, gemini-1.5-flash, gemini-1.5-pro with zero external SDK bloat.
+    Supports gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-2.5-flash with zero external SDK bloat.
     """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        default_model: str = "gemini-3.5-flash-lite",
+        timeout_seconds: float = 25.0,
+        max_retries: int = 3,
+        base_backoff_sec: float = 1.0,
+        jitter_sec: float = 0.5,
+    ):
+        super().__init__(
+            api_key=api_key,
+            default_model=default_model,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            base_backoff_sec=base_backoff_sec,
+            jitter_sec=jitter_sec,
+        )
+        # Safe pacing for Gemini free tier (15 RPM limit = 4.0s minimum gap)
+        self.min_interval_sec = 3.0
 
     @property
     def provider_name(self) -> str:
@@ -33,7 +53,7 @@ class GeminiProvider(BaseAIProvider):
         max_tokens: int = 1024,
         json_mode: bool = False,
     ) -> str:
-        model_name = model or self.default_model or "gemini-2.0-flash"
+        model_name = model or self.default_model or "gemini-3.5-flash-lite"
         client = await self.get_client()
         url = f"{GEMINI_BASE_URL}/{model_name}:generateContent"
 
@@ -104,7 +124,7 @@ class GeminiProvider(BaseAIProvider):
         )
 
         ctx = context or {}
-        model_name = model or self.default_model or "gemini-2.0-flash"
+        model_name = model or self.default_model or "gemini-3.5-flash-lite"
         temp = temperature if temperature is not None else 0.2
 
         if stage in ("extraction", "extraction_translation"):

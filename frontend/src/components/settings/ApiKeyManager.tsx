@@ -31,11 +31,11 @@ export function ApiKeyManager({ initialSettings, onRefresh }: ApiKeyManagerProps
 
   const [pollingIntervals, setPollingIntervals] = useState<Record<string, number>>(
     initialSettings?.polling_intervals || {
-      rss: 180,
-      telegram: 60,
-      newsapi: 300,
+      rss: 300,
+      telegram: 300,
+      newsapi: 600,
       reddit: 600,
-      ais: 120,
+      ais: 900,
     }
   );
 

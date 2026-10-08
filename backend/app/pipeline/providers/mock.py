@@ -26,6 +26,7 @@ class MockAIProvider(BaseAIProvider):
         simulate_timeout: bool = False,
     ):
         super().__init__(api_key=api_key, default_model=default_model)
+        self.min_interval_sec = 0.0
         self._provider_name = provider.lower()
         self.simulate_429 = simulate_429
         self.simulate_auth_error = simulate_auth_error
