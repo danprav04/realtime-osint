@@ -262,12 +262,14 @@ async def test_seed_initial_data_idempotency():
         expire_on_commit=False,
     )
 
+    from backend.app.db.seed import DEFAULT_SOURCES_DATA, DEFAULT_SETTINGS_DATA
+
     async with session_maker() as session:
         # First seed execution: creates items
         counts_1 = await seed_initial_data(session)
         assert counts_1["themes"] == 1
-        assert counts_1["sources"] == 7
-        assert counts_1["settings"] == 3
+        assert counts_1["sources"] == len(DEFAULT_SOURCES_DATA)
+        assert counts_1["settings"] == len(DEFAULT_SETTINGS_DATA)
 
         # Verify theme properties
         res = await session.execute(
@@ -278,7 +280,7 @@ async def test_seed_initial_data_idempotency():
         assert "Strait of Hormuz" in theme.keywords
         assert "IRGC" in theme.keywords
         assert "CENTCOM" in theme.keywords
-        assert len(theme.sources) == 7
+        assert len(theme.sources) == len(DEFAULT_SOURCES_DATA)
 
         # Verify source types seeded
         source_types = {s.source_type for s in theme.sources}

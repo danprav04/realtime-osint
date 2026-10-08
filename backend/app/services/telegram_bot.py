@@ -239,17 +239,10 @@ class TelegramBotService:
         formatted_text = self.format_message(payload)
 
         # 5. Check credentials
-        # 5. Check credentials or testing isolation
-        is_test_run = (
-            bool(os.environ.get("PYTEST_CURRENT_TEST"))
-            or os.environ.get("ENVIRONMENT", "").lower() in ("test", "testing")
-            or not self.bot_token
-            or not self.chat_id
-        )
-
-        if is_test_run:
+        # 5. Check credentials
+        if not self.bot_token or not self.chat_id:
             logger.debug(
-                "Telegram bot operating in simulated local alert mode (test environment or unconfigured)."
+                "Telegram bot operating in simulated local alert mode (unconfigured credentials)."
             )
             # In testing or development without live credentials, deliver to in-memory log
             self.last_sent_timestamp = time.time()

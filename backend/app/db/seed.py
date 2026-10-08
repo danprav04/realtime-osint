@@ -28,6 +28,15 @@ DEFAULT_THEME_DATA: Dict[str, Any] = {
         "Houthis",
         "Hezbollah",
         "enrichment",
+        "Red Sea",
+        "Dahiyeh",
+        "Gaza",
+        "Nevatim",
+        "Dimona",
+        "Iron Dome",
+        "Arrow 3",
+        "Fattah",
+        "Al-Asad",
     ],
     "entities": [
         "United States",
@@ -38,6 +47,10 @@ DEFAULT_THEME_DATA: Dict[str, Any] = {
         "CENTCOM",
         "Khamenei",
         "Pezeshkian",
+        "Hezbollah",
+        "Houthis",
+        "Ansar Allah",
+        "IDF",
     ],
     "scoring_prompt": (
         "You are a senior geopolitical intelligence analyst. Score the following event on a "
@@ -53,39 +66,176 @@ DEFAULT_THEME_DATA: Dict[str, Any] = {
 }
 
 DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
-    # --- On-Field & Real-Time Tactical Telegram Channels ---
+    # --- Tactical Siren & Threat Feeds (High-Priority Fast Ingestion: Tier 1) ---
     {
-        "name": "301 Arab World News (Field Alerts)",
+        "name": "Rocket Alert (Tactical Sirens)",
         "source_type": "telegram",
-        "config_json": {"target": "@arabworld301news"},
+        "config_json": {"target": "@RocketAlert", "is_alert_channel": True},
+        "polling_interval_sec": 60,
+        "is_enabled": True,
+    },
+    {
+        "name": "Miklat Alerts (Arabic Mirror)",
+        "source_type": "telegram",
+        "config_json": {"target": "@miklat_alerts_ar", "is_alert_channel": True},
+        "polling_interval_sec": 60,
+        "is_enabled": True,
+    },
+    # --- High-Speed Arabic Breaking Wires (Tier 1 & 2: 1-3 min) ---
+    {
+        "name": "Al Jazeera Urgent (الجزيرة - عاجل)",
+        "source_type": "telegram",
+        "config_json": {"target": "@AJABreaking"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Al Arabiya Urgent (العربية - عاجل)",
+        "source_type": "telegram",
+        "config_json": {"target": "@AlArabiya_Brk"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Al Mayadeen Breaking (الميادين - عاجل)",
+        "source_type": "telegram",
+        "config_json": {"target": "@almayadeen"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Sky News Arabia Breaking (سكاي نيوز - عاجل)",
+        "source_type": "telegram",
+        "config_json": {"target": "@skynewsarabia_breaking"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Al Hadath Breaking News",
+        "source_type": "telegram",
+        "config_json": {"target": "@alhadath"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    # --- On-Field Tactical & Frontline Ground Sensors (Arabic: Tier 1, 30-90s) ---
+    {
+        "name": "Bint Jbeil News (South Lebanon Ground)",
+        "source_type": "telegram",
+        "config_json": {"target": "@bintjbeilnews"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Ali Shoeib (Blue Line Frontline Correspondent)",
+        "source_type": "telegram",
+        "config_json": {"target": "@alishoeib1970"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Quds News Network (Palestine / Gaza)",
+        "source_type": "telegram",
+        "config_json": {"target": "@QudsN"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Shehab News Agency (Palestine)",
+        "source_type": "telegram",
+        "config_json": {"target": "@ShehabTelegram"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Hezbollah Central Military Media",
+        "source_type": "telegram",
+        "config_json": {"target": "@mmirleb"},
         "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Sabereen News (Iraq Resistance Tripwire)",
+        "source_type": "telegram",
+        "config_json": {"target": "@Sabereen_News"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "PMF Media War (Iraqi Paramilitary)",
+        "source_type": "telegram",
+        "config_json": {"target": "@teamsmediawar_1"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Al-Masirah Urgent (Yemen / Red Sea Kinetic)",
+        "source_type": "telegram",
+        "config_json": {"target": "@almasirah2"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Yemeni Armed Forces Spox Yahya Saree",
+        "source_type": "telegram",
+        "config_json": {"target": "@army21ye"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "SANA Urgent (Syrian Official Media Wire)",
+        "source_type": "telegram",
+        "config_json": {"target": "@sana_gov_sy"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    # --- Open Discussion Supergroups & OSINT Communities ---
+    {
+        "name": "War Monitors Discussion Supergroup",
+        "source_type": "telegram",
+        "config_json": {"target": "@WarMonitors_Discussion"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    # --- Elite Multilingual & Defense OSINT Telegram Aggregators ---
+    {
+        "name": "War Monitor (Rapid OSINT Synthesis)",
+        "source_type": "telegram",
+        "config_json": {"target": "@warmonitors"},
+        "polling_interval_sec": 120,
         "is_enabled": True,
     },
     {
         "name": "Clash Report (Tactical Military OSINT)",
         "source_type": "telegram",
-        "config_json": {"target": "@clashreport"},
+        "config_json": {"target": "@ClashReport"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Middle East Spectator",
+        "source_type": "telegram",
+        "config_json": {"target": "@middleeastspectator"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Faytuks News (Breaking Wire OSINT)",
+        "source_type": "telegram",
+        "config_json": {"target": "@FaytuksNews"},
         "polling_interval_sec": 180,
         "is_enabled": True,
     },
     {
         "name": "OSINTdefender (Defense Telemetry)",
         "source_type": "telegram",
-        "config_json": {"target": "@OSINTdefender"},
+        "config_json": {"target": "@sentdefender"},
         "polling_interval_sec": 180,
         "is_enabled": True,
     },
     {
-        "name": "Iran International English",
+        "name": "IntelSky (Air & Radar ISR Tracking)",
         "source_type": "telegram",
-        "config_json": {"target": "@IranIntl_En"},
-        "polling_interval_sec": 180,
-        "is_enabled": True,
-    },
-    {
-        "name": "IntelSky (Air & Radar Tracking)",
-        "source_type": "telegram",
-        "config_json": {"target": "@intelsky"},
+        "config_json": {"target": "@Intel_Sky"},
         "polling_interval_sec": 180,
         "is_enabled": True,
     },
@@ -97,13 +247,62 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
         "is_enabled": True,
     },
     {
+        "name": "301 Arab World News (Field Alerts)",
+        "source_type": "telegram",
+        "config_json": {"target": "@arabworld301news"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Iran International English",
+        "source_type": "telegram",
+        "config_json": {"target": "@IranIntl_En"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
         "name": "Al Mayadeen English",
         "source_type": "telegram",
         "config_json": {"target": "@AlMayadeenEnglish"},
         "polling_interval_sec": 240,
         "is_enabled": True,
     },
-    # --- Specialized Naval, Defense & Geopolitical RSS Wires ---
+    # --- Low-Latency Regional Arabic & International Defense RSS Wires ---
+    {
+        "name": "Sky News Arabia RSS",
+        "source_type": "rss",
+        "config_json": {"url": "https://www.skynewsarabia.com/rss"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Al Jazeera Arabic Portal RSS",
+        "source_type": "rss",
+        "config_json": {"url": "https://www.aljazeera.net/aljazeerarss"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "BBC Arabic Breaking RSS",
+        "source_type": "rss",
+        "config_json": {"url": "https://feeds.bbci.co.uk/arabic/rss.xml"},
+        "polling_interval_sec": 240,
+        "is_enabled": True,
+    },
+    {
+        "name": "Syrian Arab News Agency (SANA RSS)",
+        "source_type": "rss",
+        "config_json": {"url": "https://sana.sy/en/?feed=rss2"},
+        "polling_interval_sec": 300,
+        "is_enabled": True,
+    },
+    {
+        "name": "The War Zone (TWZ Defense Tech)",
+        "source_type": "rss",
+        "config_json": {"url": "https://www.twz.com/feed"},
+        "polling_interval_sec": 300,
+        "is_enabled": True,
+    },
     {
         "name": "USNI News (Naval Operations)",
         "source_type": "rss",
@@ -133,31 +332,20 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
         "is_enabled": True,
     },
     {
-        "name": "NYT Middle East Intelligence",
-        "source_type": "rss",
-        "config_json": {"url": "https://rss.nytimes.com/services/xml/rss/nyt/MiddleEast.xml"},
-        "polling_interval_sec": 300,
-        "is_enabled": True,
-    },
-    {
         "name": "IRNA English (Tehran State Wire)",
         "source_type": "rss",
         "config_json": {"url": "https://en.irna.ir/rss"},
         "polling_interval_sec": 300,
         "is_enabled": True,
     },
-    {
-        "name": "BBC World News",
-        "source_type": "rss",
-        "config_json": {"url": "http://feeds.bbci.co.uk/news/world/rss.xml"},
-        "polling_interval_sec": 300,
-        "is_enabled": True,
-    },
     # --- Community OSINT & Open-Source Forum Signals ---
     {
-        "name": "Reddit Geopolitics & WorldNews",
+        "name": "Reddit Geopolitics, OSINT & CombatFootage",
         "source_type": "reddit",
-        "config_json": {"subreddits": ["worldnews", "geopolitics", "OSINT"], "min_upvotes": 50},
+        "config_json": {
+            "subreddits": ["worldnews", "geopolitics", "OSINT", "CombatFootage"],
+            "min_upvotes": 50,
+        },
         "polling_interval_sec": 600,
         "is_enabled": True,
     },
@@ -177,7 +365,7 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
         "name": "Maritime Bab el-Mandeb (Red Sea)",
         "source_type": "maritime_ais",
         "config_json": {
-            "bbox": [11.5, 42.5, 14.5, 44.5],
+            "bbox": [11.5, 42.5, 14.0, 44.5],
             "zone_name": "Bab el-Mandeb & Red Sea",
             "provider": "aisstream",
         },
@@ -227,6 +415,20 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
         "active_theme": "US-Iran conflict",
         "theme_switch_mode": "zero_code",
         "memory_budget_mb": 900,
+    },
+    "max_lookback_hours": {
+        "rss": 1.0,
+        "telegram": 1.0,
+        "newsapi": 1.0,
+        "reddit": 1.0,
+        "ais": 1.0,
+    },
+    "polling_intervals": {
+        "rss": 300,
+        "telegram": 300,
+        "newsapi": 600,
+        "reddit": 600,
+        "ais": 900,
     },
 }
 
@@ -278,11 +480,13 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
         existing_src = src_res.scalars().first()
 
         if not existing_src:
+            src_cfg = dict(src_data.get("config_json") or {})
+            src_cfg.setdefault("max_lookback_hours", 1.0)
             new_src = Source(
                 theme_id=theme.id,
                 name=src_data["name"],
                 source_type=src_data["source_type"],
-                config_json=src_data["config_json"],
+                config_json=src_cfg,
                 polling_interval_sec=src_data["polling_interval_sec"],
                 is_enabled=src_data["is_enabled"],
             )
