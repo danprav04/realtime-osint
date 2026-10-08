@@ -218,6 +218,28 @@ async def test_stage1_arabic_translation_and_harakat():
     assert any(e in ("IAEA", "Strait of Hormuz", "Iran") for e in result.extracted_entities)
 
 
+@pytest.mark.asyncio
+async def test_stage1_hebrew_and_tactical_entity_resolution():
+    """Test 5b: Stage 1 recognizes Hebrew sirens and maps Arabic regional entities."""
+    from backend.app.pipeline.stage1_extract import _heuristic_stage1_fallback
+
+    # Test Hebrew siren
+    hebrew_raw = "🚨 צבע אדوم בגליל העליון. שיגורים זוהו לעבר יישובי הצפון."
+    res_he = _heuristic_stage1_fallback(hebrew_raw, "צבע אדوم")
+    assert res_he.detected_language == "he"
+    assert "English translation:" in res_he.translated_text
+    assert "Israel" in res_he.extracted_entities or "IDF" in res_he.extracted_entities
+
+    # Test Arabic regional entity phrase resolution
+    arabic_raw = "عاجل: أعلن حزب الله استهداف مواقع في الجليل، وأكدت قوات أنصار الله تنفيذ عمليات في البحر الأحمر وباب المندب."
+    res_ar = _heuristic_stage1_fallback(arabic_raw, "بيان عسكري")
+    assert res_ar.detected_language == "ar"
+    assert "Hezbollah" in res_ar.extracted_entities
+    assert "Houthis" in res_ar.extracted_entities
+    assert "Red Sea" in res_ar.extracted_entities
+    assert "Bab el-Mandeb" in res_ar.extracted_entities
+
+
 # ============================================================================
 # 3. STAGE 2: IMPORTANCE SCORING, PROMPT STEERING & ALERT TESTS
 # ============================================================================
