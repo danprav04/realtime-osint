@@ -2,23 +2,40 @@
 
 # 🛰️ Real-Time OSINT Gathering Service
 
-### *Autonomous Multi-Source Intelligence Aggregator, AI Analysis Pipeline & Live Situation Dashboard*
+### *Autonomous Multi-Source Geopolitical Intelligence Aggregator, AI Analysis Pipeline & Live Dashboard*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Next.js 14/15](https://img.shields.io/badge/Next.js-14%2F15-black.svg?logo=next.js&logoColor=white)](https://nextjs.org/)
-[![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED.svg?logo=docker&logoColor=white)](docker-compose.yml)
 [![Tests: 332/332 Passing](https://img.shields.io/badge/Tests-332%20%2F%20332%20Passed%20(100%25)-success.svg)](tests/)
-[![RAM Budget: <830MB](https://img.shields.io/badge/RAM%20Budget-%3C830MB%20(1GB%20VPS)-green.svg)](#-production-infrastructure--1gb-ram-budget)
+[![RAM Footprint: <= 830MB](https://img.shields.io/badge/RAM%20Budget-%E2%89%A4%20830MB%20(1GB%20VPS)-green.svg)](#-production-infrastructure--1gb-ram-budget)
 
 <br/>
 
-<img src="docs/assets/hero_banner.jpg" alt="Real-Time OSINT Intelligence Dashboard" width="100%" style="border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.6);" />
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│  🛰️ OSINT RADAR          [● Connected]   Theme: [US-Iran conflict ▼]   [🔑 API Key]   │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  📊 Total Events: 142    🚨 High Priority (≥7): 18   📡 Active Sources: 7   🕒 Just now │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  🔍 Search events...     Source: [All ▼]   Min Score: [1]  Max Score: [10]             │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  🔴 [CRITICAL 9/10]  [REUTERS · RSS]                                      12 mins ago  │
+│  IRGC fast-attack naval craft conduct unannounced live-fire drills in Hormuz           │
+│  AI Summary (BLUF): Iranian naval forces launched anti-ship missiles near commercial    │
+│  shipping lanes. US CENTCOM issued a maritime advisory for vessels in the Persian Gulf.│
+│  Tags: #StraitOfHormuz #IRGC #CENTCOM #MaritimeSecurity                [View Raw Data] │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  🟠 [HIGH 8/10]      [TELEGRAM]                                            28 mins ago │
+│  Diplomatic communique issued regarding IAEA inspectors access in Natanz               │
+│  AI Summary (BLUF): PEZESHKIAN administration declared conditionality on centrifuge     │
+│  inspections following unilateral European sanctions package.                          │
+│  Tags: #IAEA #Natanz #NuclearEnrichment #Sanctions                     [View Raw Data] │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-<br/>
-<br/>
-
-**A production-grade, real-time Open Source Intelligence (OSINT) platform engineered to continuously ingest, translate, analyze, and visualize live multi-source geopolitical data.** Powered by a multi-stage AI pipeline (Google Gemini & Groq Cloud), low-latency WebSocket live streaming, zero-code dynamic topic configuration, instant Telegram alert dispatching, and a strict **<830MB RAM footprint** tuned specifically for 1GB Linux VPS instances.
+*An accurate representation of the Next.js live event feed interface.*
 
 </div>
 
@@ -26,245 +43,226 @@
 
 ## 📑 Table of Contents
 
-- [Key Capabilities](#-key-capabilities)
+- [Overview](#-overview)
 - [System Architecture](#-system-architecture)
+- [Dashboard & User Interface](#-dashboard--user-interface)
 - [Multi-Stage AI Pipeline](#-multi-stage-ai-pipeline)
 - [Zero-Code Dynamic Theme Engine](#-zero-code-dynamic-theme-engine)
-- [Modular Ingestion Plugins](#-modular-ingestion-plugins)
-- [Interactive Next.js Dashboard](#-interactive-nextjs-dashboard)
+- [Data Ingestion Plugins](#-data-ingestion-plugins)
 - [Telegram Notification Bot](#-telegram-notification-bot)
 - [Production Infrastructure & 1GB RAM Budget](#-production-infrastructure--1gb-ram-budget)
 - [Quick Start Guide](#-quick-start-guide)
-  - [Docker Compose Deployment (Recommended)](#1-docker-compose-deployment-recommended)
+  - [Production: Docker Compose (Recommended)](#1-production-docker-compose-recommended)
   - [Local Development Setup](#2-local-development-setup)
 - [Configuration Reference](#-configuration-reference)
-- [Testing & Quality Verification](#-testing--quality-verification)
-- [Project Directory Layout](#-project-directory-layout)
+- [Verification & Automated Test Suite](#-verification--automated-test-suite)
+- [Repository Structure](#-repository-structure)
 - [License](#-license)
 
 ---
 
-## ⚡ Key Capabilities
+## 🔎 Overview
 
-- **🌐 5 Pluggable Live Sources**: Concurrently ingests from RSS/Atom feeds, Telegram channels (Telethon MTProto + public web previews), News APIs (NewsAPI, Currents, unmetered GDELT 2.0), Reddit (AsyncPRAW + JSON feeds), and Maritime AIS vessel telemetry (Digitraffic Finland & AISStream).
-- **🧠 Granular AI Model Selection**: Independently assign different models and providers (e.g. `llama-3.3-70b-versatile` on Groq for ultra-fast translation vs. `gemini-2.0-flash` on Google for reasoning) across each of the 4 pipeline stages.
-- **🌍 Native Arabic & Persian Translation**: Automatically translates Arabic and Farsi OSINT sources into English while strictly preserving military acronyms (`CENTCOM`, `IRGC`, `IAEA`) and Persian zero-width non-joiners (ZWNJ).
-- **🎯 Dynamic Prompt-Driven Scoring**: Importance scores (1–10) are governed by a user-editable natural language prompt. Changing the criteria in the settings immediately shifts the AI's scoring focus without redeploying code.
-- **⚡ Instant Zero-Code Topic Switching**: Change the entire monitoring scope (e.g., from *US-Iran War* to *China-Taiwan Tensions*) via the Settings UI. Emits Redis reload signals (`osint:config:reload`) to hot-swap ingestion workers and prompts on the fly.
-- **🖥️ Tactile Dark-Mode Dashboard**: Next.js 14/15 App Router interface built with Obsidian surface elevation (`#08090A` canvas, `#141518` cards, specular hairline highlights), Socket.IO real-time feed, importance indicators, and interactive analytics charts.
-- **📲 Telegram Alert Dispatcher**: Pushes breaking events (score $\ge$ threshold) with HTML formatting, 30s token-bucket anti-flood rate limiting, 24h SHA-256 deduplication, and an emergency bypass for score 10 kinetic events.
-- **📦 1GB VPS RAM Optimization**: Hard-capped in `docker-compose.yml` to **830MB total memory** across PostgreSQL (150MB), Redis (80MB), FastAPI Backend (380MB), and Next.js Frontend (220MB), leaving >170MB OS safety headroom.
+The **Real-Time OSINT Gathering Service** is a modular intelligence gathering and monitoring system designed to run on resource-constrained servers (specifically tested and budgeted for a **1GB RAM Linux VPS**).
+
+### What it does:
+1. **Aggregates live information** from RSS feeds, Telegram channels, News APIs, Reddit, and Maritime AIS tracking without manual polling.
+2. **Processes each incoming event through a 4-stage AI pipeline** (powered by Google Gemini and Groq Cloud) to translate foreign languages (Arabic/Farsi), assess strategic importance (1–10 scale), generate concise Bottom-Line-Up-Front (BLUF) summaries, and extract visual trend tags.
+3. **Presents intelligence on a real-time dashboard** over WebSocket (`Socket.IO`), featuring a live chronological event feed, priority badges, detailed modal inspection, and volume/distribution analytics.
+4. **Sends instant Telegram alerts** to a configured channel or chat when events score at or above a user-defined threshold.
+5. **Enables zero-code topic switching**: change monitored keywords, entities, sources, and scoring criteria directly from the settings UI without touching any code or restarting the application.
 
 ---
 
 ## 🏛️ System Architecture
 
+The application is structured into four main layers:
+
 ```mermaid
 flowchart TD
-    subgraph Sources["📡 Ingestion Layer (Plugins)"]
-        RSS["RSS/Atom Feeds\n(Reuters, AP, Al Jazeera, IRNA)"]
-        TG["Telegram Channels\n(Telethon MTProto + Web Fallback)"]
-        News["News APIs\n(NewsAPI, Currents, GDELT 2.0)"]
-        Reddit["Reddit Communities\n(r/worldnews, r/geopolitics)"]
-        AIS["Maritime AIS\n(Strait of Hormuz Telemetry)"]
+    subgraph Sources["1. Ingestion Layer (Plugins)"]
+        RSS["RSS Feeds\n(feedparser)"]
+        TG["Telegram Channels\n(Telethon MTProto / Web)"]
+        News["News APIs\n(NewsAPI / GDELT 2.0)"]
+        Reddit["Reddit\n(AsyncPRAW / Public JSON)"]
+        AIS["Maritime AIS\n(Digitraffic GeoJSON)"]
     end
 
-    subgraph Backend["⚙️ Python FastAPI Backend (<380MB RAM)"]
-        Supervisor["Ingestion Supervisor\n(Isolated Fault Boundaries)"]
+    subgraph Backend["2. FastAPI Application (<380MB RAM)"]
+        Supervisor["Ingestion Supervisor\n(Isolated Exception Boundaries)"]
         DB[("PostgreSQL 16\n(Persistent Storage)")]
-        RedisBus["Redis Pub/Sub Bus\n(Event Streams & Reload Signals)"]
+        Bus["Redis Pub/Sub Bus\n(Events & Reload Signals)"]
         
-        subgraph AIPipeline["4-Stage AI Pipeline (Gemini & Groq)"]
-            S1["Stage 1: Extract & Translate\n(Arabic / Farsi to English)"]
-            S2["Stage 2: Dynamic Theme Scoring\n(1-10 Scale via Custom Prompt)"]
-            S3["Stage 3: BLUF Summarization\n(Event & Digest Summaries)"]
-            S4["Stage 4: Visuals & Trends\n(Cluster Tags & Timeline Coordinates)"]
+        subgraph Pipeline["4-Stage AI Pipeline"]
+            S1["Stage 1: Extract & Translate\n(Groq / Gemini)"]
+            S2["Stage 2: Importance Scoring\n(1-10 Scale via Custom Prompt)"]
+            S3["Stage 3: BLUF Summarization"]
+            S4["Stage 4: Visuals & Trends"]
         end
 
-        SocketGateway["ASGI Socket.IO Gateway\n(/socket.io, Bounded Ring Buffer)"]
-        TelegramBot["Telegram Alert Bot\n(Anti-Flood + Dedup + Score 10 Bypass)"]
+        Gateway["Socket.IO ASGI Gateway\n(/socket.io, Maxlen=100 Buffer)"]
+        Bot["Telegram Alert Dispatcher\n(Token Bucket + 24h Dedup)"]
     end
 
-    subgraph Frontend["💻 Next.js 14/15 Standalone Frontend (<220MB RAM)"]
-        LiveFeed["Live Timeline Feed\n(Real-Time WebSocket Push)"]
-        Trends["Analytics & Trends\n(Volume & Distribution Charts)"]
-        SettingsUI["Settings Control Center\n(Zero-Code Themes & Model Matrix)"]
+    subgraph Frontend["3. Next.js 14/15 Standalone UI (<220MB RAM)"]
+        Feed["Live Timeline Feed\n(/)"]
+        Trends["Analytics & Trends\n(/trends)"]
+        Settings["Settings Control Center\n(/settings)"]
     end
 
     Sources -->|NormalizedEvent| Supervisor
-    Supervisor --> AIPipeline
-    AIPipeline --> DB
-    AIPipeline -->|Enriched Event| RedisBus
-    RedisBus --> SocketGateway
-    RedisBus --> TelegramBot
-    SocketGateway -->|WebSocket Push| LiveFeed
-    SocketGateway -->|Stats Broadcast| Trends
-    SettingsUI -->|REST PUT/POST| DB
-    SettingsUI -->|Publish ConfigReload| RedisBus
-    RedisBus -.->|Hot-Reload Sources| Supervisor
-    RedisBus -.->|Hot-Reload Prompts| AIPipeline
+    Supervisor --> Pipeline
+    Pipeline --> DB
+    Pipeline -->|Enriched Event| Bus
+    Bus --> Gateway
+    Bus --> Bot
+    Gateway -->|WebSocket Push| Feed
+    Gateway -->|Stats Broadcast| Trends
+    Settings -->|REST PUT/POST| DB
+    Settings -->|Config Reload Signal| Bus
+    Bus -.->|Reconcile Sources| Supervisor
+    Bus -.->|Update Prompts| Pipeline
 ```
+
+---
+
+## 🖥️ Dashboard & User Interface
+
+The frontend is built with **Next.js 14/15 App Router** and styled with **Tailwind CSS** using a dark-mode palette designed for comfortable, low-glare operational monitoring (canvas `#08090A`, card containers `#141518`, subtle borders `#2A2C33`).
+
+### 1. Main Timeline View (`/`)
+- **Live Event Stream**: Real-time Socket.IO connection that pushes new events to the top of the feed without requiring manual page refreshes.
+- **Importance Badges**:
+  - 🔴 **Critical (9–10)**: Red indicator with ambient border highlight.
+  - 🟠 **High (7–8)**: Orange/amber indicator.
+  - 🟡 **Medium (5–6)**: Yellow indicator.
+  - 🔵 **Low (1–4)**: Blue/slate indicator.
+- **Source Attribution Chips**: Distinct badges identifying whether an event originated from RSS, Telegram, NewsAPI, Reddit, or Maritime AIS.
+- **Event Inspection Modal**: Clicking any event card opens an expanded modal displaying the full raw text, AI summary, detected entities, extracted coordinates, and original source URL.
+- **Summary Stat Cards**: Displays total events ingested, high-priority count ($\ge 7$), active source count, and timestamp of the last ingestion.
+- **Filtering & Search**: Filter by text search, source type, or min/max score sliders.
+
+### 2. Analytics & Trends (`/trends`)
+- **Hourly Volume Timeline**: Bar chart displaying event ingestion frequency over time.
+- **Score Distribution Histogram**: Breakdown of events across the 1–10 importance scale.
+- **Source Activity Breakdown**: Percentage distribution of data intake by source plugin.
+
+### 3. Settings Control Center (`/settings`)
+- **Theme Configuration**: Switch active themes, edit tracked keywords, named entities, alert threshold, and the natural-language scoring prompt.
+- **Source Manager**: Add new feed URLs/channels, enable/disable existing sources, adjust polling intervals (in seconds), or trigger immediate on-demand polling.
+- **AI Model Matrix**: Independently select the provider (**Gemini** vs. **Groq**) and model name for each of the 4 pipeline stages.
+- **API Key Manager**: Securely input and save keys for Gemini, Groq, Telegram Bot Token, Telegram Chat ID, and NewsAPI.
 
 ---
 
 ## 🧠 Multi-Stage AI Pipeline
 
-The pipeline decomposes intelligence processing into 4 isolated stages, with full flexibility to assign Google Gemini or Groq Cloud individually:
+The pipeline decomposes raw content processing into four independent stages. Each stage can be assigned to either **Google Gemini** or **Groq Cloud** depending on speed and reasoning requirements:
+
+| Stage | Default Model | Purpose & Contract | Fallback Behavior |
+|---|---|---|---|
+| **1. Extraction & Translation** | `groq: llama-3.3-70b-versatile` | Detects Arabic and Farsi Unicode script blocks and translates them into English. Preserves military acronyms (`CENTCOM`, `IRGC`, `IAEA`) and Persian zero-width non-joiners (`\u200c`). | Heuristic regex entity extractor with raw text passthrough |
+| **2. Importance Scoring** | `gemini: gemini-2.0-flash` | Evaluates the event on a strict 1–10 scale based on the user's custom scoring prompt for the active theme. | Keyword density scoring heuristic (default score 5) |
+| **3. BLUF Summarization** | `gemini: gemini-2.0-flash` | Generates a 2-3 sentence Bottom-Line-Up-Front summary highlighting actors, kinetic action, and strategic impact. | Extractive lead paragraph summary |
+| **4. Visual Analytics** | `groq: llama-3.3-70b-versatile` | Extracts thematic cluster tags, location names, and event categories for dashboard charts. | Rule-based tag and entity mapper |
 
 ```mermaid
 flowchart LR
-    Raw["Raw Normalized\nEvent"] --> S1["Stage 1\nExtraction & Translation"]
-    S1 --> Fork{"Sequential\nExtraction Pass"}
-    Fork --> S2["Stage 2\nImportance Scoring\n(1-10 Scale)"]
-    Fork --> S3["Stage 3\nBLUF Summarization\n(Event & Digest)"]
-    Fork --> S4["Stage 4\nVisual Analytics\n(Clusters & Trends)"]
-    S2 --> Join["Enriched Event Entity"]
+    Raw["Raw Normalized\nEvent"] --> S1["Stage 1: Extract & Translate\n(Preserves ZWNJ & Acronyms)"]
+    S1 --> Fork{"Sequential\nExtraction"}
+    Fork --> S2["Stage 2: Scoring\n(Guided by Theme Prompt)"]
+    Fork --> S3["Stage 3: Summary\n(BLUF Format)"]
+    Fork --> S4["Stage 4: Visuals\n(Tags & Charts)"]
+    S2 --> Join["Enriched Event\nSaved to PostgreSQL"]
     S3 --> Join
     S4 --> Join
+    Join --> Broadcast["Broadcast to Redis Bus\n(Socket.IO & Telegram)"]
 ```
 
-| Stage | Default Provider & Model | Responsibility | Resilient Fallback |
-|---|---|---|---|
-| **1. Extraction & Translation** | `groq: llama-3.3-70b-versatile` | Detects Arabic/Farsi Unicode script blocks, translates to fluent English, preserves defense acronyms (`CENTCOM`, `IRGC`, `IAEA`) and Persian ZWNJ (`\u200c`). | Heuristic extractor with raw text passthrough |
-| **2. Importance Scoring** | `gemini: gemini-2.0-flash` | Evaluates event significance on a 1–10 integer scale against the user's custom theme prompt. | Dynamic keyword density heuristic fallback |
-| **3. Summarization** | `groq: llama-3.3-70b-versatile` | Generates a 2-3 sentence **BLUF** (Bottom Line Up Front) summary highlighting kinetic action, parties involved, and impact. | First paragraph extractive summary |
-| **4. Visual Analytics** | `gemini: gemini-2.0-flash` | Extracts strategic cluster tags, geographic entities, and timeline volume markers for the frontend chart widgets. | Rule-based entity & tag extractor |
-
-> **5-Tier Resilient Parser**: All LLM outputs pass through an automated parse-repair engine that strips markdown code blocks, balances brackets, corrects truncated JSON arrays, and falls back to deterministic heuristic results under API rate limits (HTTP 429).
+### 5-Tier Resilient JSON Parser
+All model outputs pass through `backend/app/pipeline/parser.py`, which features a 5-tier parse-repair mechanism:
+1. Direct `json.loads` parsing.
+2. Markdown code block extraction (` ```json ... ``` `).
+3. Bracket and brace balancing for truncated outputs.
+4. Regex object matching.
+5. Heuristic fallback generation when the model response is completely unparseable or when rate limits (HTTP 429) are reached.
 
 ---
 
 ## 🎯 Zero-Code Dynamic Theme Engine
 
-Changing what the system monitors requires **zero code changes and zero server restarts**:
+A theme defines the entire scope of what the service monitors:
+- **Name & Description**: e.g., *"US-Iran conflict"* or *"Taiwan Strait Monitoring"*
+- **Tracked Keywords**: List of strings matched during ingestion.
+- **Named Entities**: Key organizations, leaders, and military branches to extract.
+- **Scoring Prompt**: A natural language instruction telling the AI how to evaluate importance for this specific topic.
+- **Alert Threshold**: Minimum integer score (default: 7) required to trigger Telegram notifications.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as Analyst / User
-    participant UI as Next.js Settings Page
-    participant API as FastAPI /api/themes
-    participant DB as PostgreSQL 16
-    participant Bus as Redis Pub/Sub (osint:config:reload)
-    participant Sup as Ingestion Supervisor
-    participant Pipe as AI Pipeline Orchestrator
-
-    User->>UI: Select Theme (or edit scoring prompt & keywords)
-    UI->>API: POST /api/themes/{id}/activate
-    API->>DB: Atomically activate theme & deactivate peers
-    API->>Bus: Publish ConfigReloadPayload(action="theme_update")
-    par Broadcast Invalidation
-        Bus->>Sup: Reconcile active sources & polling timers
-        Bus->>Pipe: Invalidate cached theme scoring prompts
-    end
-    Sup-->>API: Active sources swapped in memory (0 downtime)
-    API-->>UI: 200 OK (Theme Activated)
-    UI-->>User: Dashboard timeline updates immediately
-```
-
-### Pre-Configured "US-Iran Conflict" Theme
-The service ships ready-to-run with a seeded theme:
-- **Monitored Keywords**: `Strait of Hormuz`, `IRGC`, `CENTCOM`, `Shahed`, `Ballistic Missile`, `IAEA`, `Natanz`, `Persian Gulf`, `Bab el-Mandeb`, `Sanctions`, `Drone Strike`.
+### Out-of-the-Box Pre-Configured Theme
+The database is automatically seeded on startup with the **"US-Iran conflict"** theme:
+- **Keywords**: `Strait of Hormuz`, `IRGC`, `CENTCOM`, `uranium`, `sanctions`, `ballistic`, `proxy`, `Persian Gulf`, `Bab el-Mandeb`, `Shahed`, `Houthis`, `Hezbollah`, `enrichment`.
+- **Entities**: `United States`, `Iran`, `Israel`, `IRGC`, `US Navy`, `CENTCOM`, `Khamenei`, `Pezeshkian`.
 - **Scoring Prompt**:
-  > *"Score 9-10 for direct kinetic military engagements, missile/drone launches, attacks on commercial shipping in the Strait of Hormuz, or nuclear enrichment breakthroughs. Score 7-8 for high-level diplomatic ultimatums, troop deployments, or major naval movements. Score 4-6 for standard political statements. Score 1-3 for routine administrative news."*
-- **Pre-Configured Sources**: Curated RSS feeds (Reuters, BBC, Al Jazeera, IRNA), Telegram channels (`@OSINTdefender`, `@MiddleEastSpectator`), Reddit (`r/worldnews`, `r/geopolitics`), and Maritime AIS chokepoints.
+  > *"You are a senior geopolitical intelligence analyst. Score the following event on a 1-10 importance scale for the US-Iran conflict theme. Guidelines: Score 9-10 for direct kinetic military engagements, strikes on naval/nuclear assets, or declared nuclear breakout. Score 7-8 for proxy attacks, major sanctions, troop deployments, or heightened naval blockades. Score 4-6 for standard diplomatic rhetoric, non-escalatory drills, or minor statements. Score 1-3 for background political commentary or irrelevant noise. Provide an integer score and a 1-sentence rationale."*
+
+### Zero-Downtime Hot Reloading
+When you activate a different theme or edit the scoring prompt in `/settings`, the backend publishes a `ConfigReloadPayload` to the Redis channel `osint:config:reload`. The ingestion supervisor and pipeline orchestrator immediately update active sources and prompts in memory with **zero downtime and no service restart**.
 
 ---
 
-## 📡 Modular Ingestion Plugins
+## 📡 Data Ingestion Plugins
 
-All data sources implement the `BaseSourcePlugin` contract in `backend/app/plugins/`:
+Located in `backend/app/plugins/`, each plugin normalizes data into a unified `NormalizedEvent` schema:
 
-```
-backend/app/plugins/
-├── base.py              # NormalizedEvent schema & plugin interface
-├── supervisor.py        # Async scheduling & error boundary supervisor
-├── rss_plugin.py        # RSS/Atom polling with HTML sanitization & SHA-256 deduplication
-├── telegram_plugin.py   # Telethon MTProto client + public web scraper fallback
-├── newsapi_plugin.py    # NewsAPI & Currents + unmetered GDELT 2.0 Doc API
-├── reddit_plugin.py     # AsyncPRAW client + public subreddit JSON fallback
-└── ais_plugin.py        # Digitraffic Finland & AISStream vessel telemetry
-```
-
-### Zero-Configuration Out-of-the-Box Fallbacks
-Even before you input personal API keys, the system ingests live data out of the box:
-- **News**: Automatically routes to unmetered **GDELT 2.0 Doc API** when NewsAPI keys are unset.
-- **Telegram**: Automatically falls back to public web previews (`https://t.me/s/{channel}`) with HTML regex parsing when Telethon credentials are unset.
-- **Reddit**: Automatically falls back to public JSON endpoints (`https://www.reddit.com/r/{sub}/hot.json`) when Reddit API keys are unset.
-- **Maritime AIS**: Ingests open marine traffic telemetry from Digitraffic Finland.
-
----
-
-## 🖥️ Interactive Next.js Dashboard
-
-Designed following **Engineered Tactile Minimalism** principles:
-- **Surface Elevation**: Canvas at `#08090A`, sidebars at `#0F1012`, cards at `#141518`, with 1px top specular bevels (`inset 0 1px 0 rgba(255,255,255,0.12)`).
-- **Live Timeline**: Real-time event cards pushed over WebSocket (`Socket.IO`), featuring click-to-expand raw data modals, source badges, and color-coded importance badges:
-  - 🔴 **Critical (9–10)**: Red border & ambient glow
-  - 🟠 **High (7–8)**: Orange/Amber badge
-  - 🟡 **Medium (5–6)**: Yellow badge
-  - 🔵 **Low (1–4)**: Blue/Slate badge
-- **Analytics & Trends** (`/trends`): Volume timeline charts, score distribution histograms, and source activity breakdowns.
-- **Settings Control Center** (`/settings`):
-  - **Theme Form**: Edit keywords, entities, alert thresholds, and the natural-language scoring prompt.
-  - **Source Manager**: Add, toggle, delete, or trigger on-demand polling for feeds with custom polling intervals.
-  - **AI Model Matrix**: Independently select model providers (Gemini vs. Groq) and specific model names per pipeline stage.
-  - **API Key & Notification Manager**: Configure Telegram bot token, chat ID, and third-party API credentials.
+| Plugin | Module | Features & Fallback Mechanisms |
+|---|---|---|
+| **RSS / Atom** | `rss_plugin.py` | Polls configurable feed URLs (Reuters, BBC, Al Jazeera, IRNA). Strips HTML markup, removes tracking parameters, and computes SHA-256 deduplication hashes. |
+| **Telegram** | `telegram_plugin.py` | Connects via **Telethon** MTProto if credentials are provided. **Automatic fallback**: If uncredentialed, scrapes public channel web previews (`https://t.me/s/{channel}`) with HTML parsing. |
+| **News APIs** | `newsapi_plugin.py` | Integrates with NewsAPI.org and Currents API. **Automatic fallback**: If no API key is set, automatically routes queries through the unmetered, public **GDELT 2.0 Doc API**. |
+| **Reddit** | `reddit_plugin.py` | Connects via **AsyncPRAW** if credentials are set. **Automatic fallback**: If uncredentialed, polls public subreddit JSON feeds (`https://www.reddit.com/r/{subreddit}/hot.json`). |
+| **Maritime AIS** | `ais_plugin.py` | Fetches live vessel positions and navigational status from Digitraffic Finland open GeoJSON APIs within defined geographic bounding boxes (e.g. Strait of Hormuz chokepoints). |
+| **Supervisor** | `supervisor.py` | Orchestrates async worker tasks with complete fault isolation. An error or rate limit in one source never crashes other sources or the server. |
 
 ---
 
 ## 📲 Telegram Notification Bot
 
-The notification engine in `backend/app/services/telegram_bot.py` dispatches real-time alerts to your Telegram chat or channel:
+Implemented in `backend/app/services/telegram_bot.py`:
 
-```
-🚨 [CRITICAL ALERT] Score: 9/10
-IRGC fast-attack craft conduct live-fire exercises in the Strait of Hormuz
-
-📰 Summary: 
-Iranian naval forces initiated unannounced live-fire missile drills near 
-commercial shipping lanes in the Strait of Hormuz. US CENTCOM issued a 
-warning to commercial traffic transiting the Persian Gulf.
-
-📡 Source: Reuters (RSS)
-🕒 Time: 2026-10-08 02:45 UTC
-🔗 Link: https://www.reuters.com/...
-```
-
-### Safety & Delivery Features
-- **Token-Bucket Anti-Flood**: Enforces a strict 30-second cooldown between non-critical alerts to avoid Telegram flood limits.
-- **Emergency Score=10 Bypass**: Critical kinetic events (`importance_score == 10`) immediately bypass the cooldown timer.
-- **24-Hour SHA-256 Deduplication**: Hashes event URLs into Redis (`alert:dedup:{hash}`) to prevent duplicate notifications for wire updates.
-- **Safe Truncation**: Summaries are cleanly truncated to $\le$ 3,000 characters to stay within Telegram's 4,096-character limit.
+- **Threshold Filtering**: Only events with `importance_score >= alert_threshold` trigger a dispatch.
+- **Formatted Alerts**: Formatted HTML message including headline, score, source name, timestamp (UTC), and a direct link to the original article.
+- **Token-Bucket Anti-Flood**: Enforces a minimum 30-second cooldown between non-critical alerts to prevent flooding channels during major news spikes.
+- **Emergency Score=10 Bypass**: Critical kinetic military actions (`importance_score == 10`) immediately bypass the 30-second cooldown timer.
+- **24-Hour Deduplication**: Hashes URLs into Redis (`alert:dedup:{sha256}`) to suppress duplicate wire reports for the same incident.
+- **Message Length Guard**: Automatically truncates text to $\le 3,000$ characters to stay within Telegram's 4,096-character limit.
 
 ---
 
 ## 📦 Production Infrastructure & 1GB RAM Budget
 
-Designed to run reliably on an inexpensive **1GB RAM Linux VPS instance**:
+The system is configured in `docker-compose.yml` with strict resource bounds tailored for a **1GB RAM Linux VPS**:
 
-### Container Memory Allocation Matrix
-| Container | Hard Limit (`mem_limit`) | Soft Reservation (`mem_reservation`) | Optimization Strategies |
-|---|:---:|:---:|---|
-| **PostgreSQL 16** | **150 MB** | 64 MB | `shared_buffers=32MB`, `max_connections=20`, `work_mem=2MB` |
-| **Redis 7** | **80 MB** | 32 MB | `maxmemory 32mb`, `maxmemory-policy allkeys-lru` |
-| **FastAPI Backend** | **380 MB** | 150 MB | Single worker (`uvicorn --workers 1`), direct `httpx` clients (no heavy SDKs), bounded 100-event ring buffer |
-| **Next.js Frontend** | **220 MB** | 100 MB | Next.js standalone build (`server.js`), `NODE_OPTIONS="--max-old-space-size=180"` |
-| **Total Container Cap** | **830 MB** | **346 MB** | **Leaves >170MB RAM buffer for Linux kernel & host OS** |
+| Service | Container Image | Memory Limit (`mem_limit`) | Memory Reservation | Key Memory Optimizations |
+|---|---|:---:|:---:|---|
+| **PostgreSQL 16** | `postgres:16-alpine` | **150 MB** | 64 MB | `shared_buffers=32MB`, `max_connections=20`, `work_mem=2MB` |
+| **Redis 7** | `redis:7-alpine` | **80 MB** | 32 MB | `maxmemory 32mb`, eviction policy `allkeys-lru` |
+| **FastAPI Backend** | `python:3.11-slim` | **380 MB** | 150 MB | Single worker (`uvicorn --workers 1`), direct `httpx` clients, 100-event ring buffer |
+| **Next.js Frontend** | `node:20-alpine` | **220 MB** | 100 MB | Standalone server build (`server.js`), `NODE_OPTIONS="--max-old-space-size=180"` |
+| **Total Allocation** | — | **830 MB** | **346 MB** | **Leaves > 170MB RAM safety headroom for the host Linux OS** |
 
-### Hardened Container Security
-- **Rootless Execution**: Backend runs as `appuser:10001` (`python:3.11-slim`), Frontend runs as `nextjs:1001` (`node:20-alpine`).
-- **Signal Forwarding**: Backend uses `dumb-init` for proper PID 1 signal management and clean SIGTERM graceful shutdown.
-- **Structured JSON Observability**: Request-tracing middleware injects `X-Request-ID` correlation IDs across all logs.
-- **Health Probes**: Integrated Kubernetes/Docker probes on `/api/health`, `/live`, and `/ready` with live process RSS memory reporting.
+### Security & Lifecycle Features
+- **Rootless Containers**: Backend runs as `appuser` (UID 10001), frontend runs as `nextjs` (UID 1001).
+- **Signal Handling**: Backend uses `dumb-init` as PID 1 to ensure SIGTERM signals gracefully drain active requests and polling tasks.
+- **Observability**: Structured JSON logging (`LOG_FORMAT=json`) with automatic `X-Request-ID` correlation tracing.
+- **Health Probes**: Container healthchecks querying `/api/health`, `/live`, and `/ready`.
 
 ---
 
 ## 🚀 Quick Start Guide
 
-### 1. Docker Compose Deployment (Recommended)
+### 1. Production: Docker Compose (Recommended)
 
-To launch the complete platform on any Docker-enabled machine (Linux VPS, macOS, or Windows Docker Desktop):
+To deploy on any Docker-compatible server or local Docker Desktop:
 
 ```bash
 # 1. Clone the repository
@@ -274,22 +272,27 @@ cd realtime-osint
 # 2. Configure environment variables (optional for live AI keys)
 cp .env.example .env
 
-# 3. Build and launch all services in detached mode
+# 3. Launch all containers in detached mode
 docker compose up -d
 
-# 4. Verify memory consumption is under the 830MB limit
+# 4. Verify container status and resource consumption
+docker compose ps
 docker stats
 ```
 
-Access the services:
 - **Dashboard UI**: [http://localhost:3000](http://localhost:3000)
-- **FastAPI Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Health Endpoint**: [http://localhost:8000/api/health](http://localhost:8000/api/health)
-- **Default Dashboard API Key**: `dev-secret-key-12345` (configurable in `.env`)
+- **FastAPI OpenAPI Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Health Telemetry**: [http://localhost:8000/api/health](http://localhost:8000/api/health)
+- **Default API Key**: `dev-secret-key-12345` (set in `.env`)
 
 ---
 
 ### 2. Local Development Setup
+
+#### Prerequisites
+- Python 3.11+
+- Node.js 18+ & npm
+- PostgreSQL and Redis (or run them via Docker: `docker compose up postgres redis -d`)
 
 #### Backend Setup
 ```bash
@@ -298,7 +301,7 @@ python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Start backend server with auto-reload
+# Start FastAPI server with live reload
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -315,12 +318,12 @@ npm run dev
 
 ## ⚙️ Configuration Reference
 
-Edit `.env` (or pass environment variables to Docker Compose) to customize settings:
+Edit `.env` to configure credentials:
 
 ```ini
 # --- Core Security ---
 API_KEY=dev-secret-key-12345
-SECRET_KEY=change-this-in-production-to-a-random-32-byte-hex
+SECRET_KEY=replace-with-a-random-32-byte-hex-string
 ENVIRONMENT=production
 
 # --- Database & Cache ---
@@ -328,26 +331,26 @@ DATABASE_URL=postgresql+asyncpg://osint:osint_pass@localhost:5432/osint
 REDIS_URL=redis://localhost:6379/0
 
 # --- AI Providers ---
-# Google Gemini
-GEMINI_API_KEY=your_gemini_api_key_here
+# Google Gemini (https://aistudio.google.com/)
+GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-2.0-flash
 
-# Groq Cloud
-GROQ_API_KEY=your_groq_api_key_here
+# Groq Cloud (https://console.groq.com/)
+GROQ_API_KEY=your_groq_api_key
 GROQ_MODEL=llama-3.3-70b-versatile
 
-# Per-Stage Provider Defaults (gemini | groq | mock)
+# Default Providers per Stage (gemini | groq | mock)
 STAGE1_PROVIDER=groq
 STAGE2_PROVIDER=gemini
-STAGE3_PROVIDER=groq
-STAGE4_PROVIDER=gemini
+STAGE3_PROVIDER=gemini
+STAGE4_PROVIDER=groq
 
-# --- Telegram Alert Bot ---
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+# --- Telegram Notifications ---
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_telegram_chat_or_channel_id
 ALERT_THRESHOLD=7
 
-# --- Ingestion Credentials (Optional) ---
+# --- Ingestion Credentials (Optional - fallbacks will be used if omitted) ---
 TELEGRAM_API_ID=
 TELEGRAM_API_HASH=
 NEWSAPI_KEY=
@@ -357,9 +360,9 @@ REDDIT_CLIENT_SECRET=
 
 ---
 
-## 🧪 Testing & Quality Verification
+## 🧪 Verification & Automated Test Suite
 
-The platform maintains a comprehensive multi-tier test harness with **332 total tests** passing at 100%:
+The platform includes an extensive automated test matrix covering unit, integration, and adversarial stress scenarios:
 
 ```bash
 # 1. Run the Multi-Tier E2E Test Suite (96 Tests)
@@ -375,7 +378,7 @@ python -m pytest backend/tests/test_tier5_adversarial.py backend/tests/test_tier
 cd frontend && npm test
 ```
 
-### Verification Matrix Summary
+### Test Suite Execution Summary
 ```
 ================================================================================
                          E2E TEST EXECUTION SUMMARY
@@ -387,7 +390,7 @@ Tier 2   | Boundary Values & Edge Cases (Empty RS.. | 20     | 20    | 0     | P
 Tier 3   | Cross-Feature Interactions (Hot-Reload.. | 10     | 10    | 0     | PASS
 Tier 4   | Realistic Workloads (Live Stream, News.. | 8      | 8     | 0     | PASS
 --------------------------------------------------------------------------------
-TOTAL    | All 4 Tiers Verified                     | 96     | 96    | 0     | 100.0%
+TOTAL    | All 4 E2E Tiers Verified                 | 96     | 96    | 0     | 100.0%
 ================================================================================
   Backend Unit, Integration & Tier 5 Tests          | 229    | 229   | 0     | 100.0%
   Frontend Component & Resilience Tests             | 7      | 7     | 0     | 100.0%
@@ -398,13 +401,13 @@ TOTAL    | All 4 Tiers Verified                     | 96     | 96    | 0     | 1
 
 ---
 
-## 📁 Project Directory Layout
+## 📁 Repository Structure
 
 ```
 realtime-osint/
-├── docker-compose.yml              # 830MB memory-bounded 4-container production deployment
-├── .env.example                    # Sample environment variables configuration
-├── .gitignore                      # Python bytecode, Next.js, and DB ignore patterns
+├── docker-compose.yml              # 830MB memory-capped 4-container production deployment
+├── .env.example                    # Template environment variables
+├── .gitignore                      # Python, Node.js, SQLite, and agent cache exclusions
 ├── README.md                       # Master system documentation
 │
 ├── backend/                        # FastAPI Backend Application
@@ -414,9 +417,9 @@ realtime-osint/
 │   │   ├── main.py                 # FastAPI app, Socket.IO ASGI mount, JSON logging & tracing
 │   │   ├── config.py               # Pydantic settings & environment configuration
 │   │   ├── auth.py                 # Constant-time API key & password authentication
-│   │   ├── api/                    # REST API route endpoints
-│   │   │   ├── health.py           # Health checks (/api/health, /live, /ready) with memory metrics
-│   │   │   ├── themes.py           # Theme CRUD, activation & hot-reload broadcast
+│   │   ├── api/                    # REST API route routers
+│   │   │   ├── health.py           # Health checks (/api/health, /live, /ready) with RSS metrics
+│   │   │   ├── themes.py           # Theme CRUD, activation & hot-reload publishing
 │   │   │   ├── sources.py          # Source CRUD, intervals & manual polling triggers
 │   │   │   ├── events.py           # Event timeline queries, filtering & pagination
 │   │   │   ├── stats.py            # Event aggregation & score distribution metrics
@@ -424,7 +427,7 @@ realtime-osint/
 │   │   │   └── settings.py         # Dynamic AI provider & model settings
 │   │   ├── db/                     # SQLAlchemy async ORM models, session & theme seed
 │   │   ├── pipeline/               # 4-Stage AI Pipeline (Gemini & Groq)
-│   │   │   ├── orchestrator.py     # Concurrent DAG executor with fallback fallbacks
+│   │   │   ├── orchestrator.py     # Concurrent DAG executor with fallback logic
 │   │   │   ├── parser.py           # 5-tier resilient JSON parse-repair engine
 │   │   │   ├── stage1_extract.py   # Entity extraction & Arabic/Farsi translation
 │   │   │   ├── stage2_score.py     # Dynamic prompt-driven 1-10 importance scoring
@@ -454,7 +457,7 @@ realtime-osint/
 │   │   │   ├── page.tsx            # Live timeline feed with real-time Socket.IO stream
 │   │   │   ├── trends/page.tsx     # Visual analytics & trend charts
 │   │   │   ├── settings/page.tsx   # Zero-code theme, source & AI provider settings
-│   │   │   └── globals.css         # Obsidian dark-mode surface elevation tokens
+│   │   │   └── globals.css         # Dark-mode styling tokens
 │   │   └── components/
 │   │       ├── Navbar.tsx          # Navigation header with live status pill
 │   │       ├── AuthModal.tsx       # API key authentication dialog
@@ -464,12 +467,9 @@ realtime-osint/
 │   │       └── stats/              # StatCards summary metrics
 │   └── tests/                      # Frontend component and utility tests
 │
-├── tests/                          # 96 E2E Integration Tests (Tiers 1-4)
-│   ├── run_e2e_tests.py            # Automated runner script for all tiers
-│   └── e2e/                        # Tier 1 Features, Tier 2 Boundaries, Tier 3 Cross, Tier 4 Scenarios
-│
-└── docs/
-    └── assets/                     # Visual illustrations & dashboard banners
+└── tests/                          # 96 E2E Integration Tests (Tiers 1-4)
+    ├── run_e2e_tests.py            # Automated runner script for all tiers
+    └── e2e/                        # Tier 1 Features, Tier 2 Boundaries, Tier 3 Cross, Tier 4 Scenarios
 ```
 
 ---
@@ -477,7 +477,3 @@ realtime-osint/
 ## 📜 License
 
 This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
-
-<div align="center">
-<sub>Built with precision for real-time situational awareness. Verified and audited for production deployment.</sub>
-</div>
