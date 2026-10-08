@@ -6,10 +6,11 @@ and zero-code dynamic switching between intelligence monitoring topics.
 
 from datetime import datetime, timezone
 import logging
+import re
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth import require_api_key
 from backend.app.db.models import Theme
@@ -68,45 +69,85 @@ def serialize_theme(theme: Theme) -> Dict[str, Any]:
 
 async def find_theme(session: AsyncSession, id_or_slug: str) -> Optional[Theme]:
     """
-    Look up a Theme by slug, numeric ID, or name (case-insensitive).
+    Look up a Theme by slug, numeric ID, name, or 'active' keyword (case-insensitive & hyphen-tolerant).
+    Auto-populates slug if matched and slug was previously NULL.
     """
-    # 1. Direct slug match
-    stmt = select(Theme).where(Theme.slug == id_or_slug)
-    theme = (await session.execute(stmt)).scalars().first()
-    if theme:
-        return theme
+    if not id_or_slug:
+        return None
 
-    # 2. Match slug with spaces replaced by dashes
-    slug_from_spaces = id_or_slug.replace(" ", "-")
-    stmt = select(Theme).where(Theme.slug == slug_from_spaces)
-    theme = (await session.execute(stmt)).scalars().first()
-    if theme:
-        return theme
+    target = str(id_or_slug).strip()
 
-    # 3. Numeric ID match if digits
-    if id_or_slug.isdigit():
-        stmt = select(Theme).where(Theme.id == int(id_or_slug))
+    # 0. Keyword 'active' -> return currently active theme
+    if target.lower() == "active":
+        stmt = select(Theme).where(Theme.is_active == True).limit(1)
         theme = (await session.execute(stmt)).scalars().first()
         if theme:
             return theme
 
-    # 4. Exact name match or formatted slug match
-    clean_name = id_or_slug.replace("-", " ")
-    stmt = select(Theme).where(Theme.name.ilike(clean_name))
+    # 1. Numeric ID match if digits
+    if target.isdigit():
+        stmt = select(Theme).where(Theme.id == int(target))
+        theme = (await session.execute(stmt)).scalars().first()
+        if theme:
+            return theme
+
+    # 2. Direct slug match (case-insensitive)
+    stmt = select(Theme).where(func.lower(Theme.slug) == target.lower())
     theme = (await session.execute(stmt)).scalars().first()
     if theme:
         return theme
 
-    # 5. Direct exact name match
-    stmt = select(Theme).where(Theme.name.ilike(id_or_slug))
+    # 3. Direct exact name match (case-insensitive)
+    stmt = select(Theme).where(Theme.name.ilike(target))
     theme = (await session.execute(stmt)).scalars().first()
     if theme:
         return theme
 
-    # 6. Partial name match
-    stmt = select(Theme).where(Theme.name.ilike(f"%{id_or_slug}%"))
+    # 4. Slugified name match (spaces replaced by hyphens, e.g. 'US-Iran conflict' -> 'us-iran-conflict')
+    stmt = select(Theme).where(func.lower(func.replace(Theme.name, " ", "-")) == target.lower())
     theme = (await session.execute(stmt)).scalars().first()
-    return theme
+    if theme:
+        if not theme.slug:
+            theme.slug = target.lower()
+            session.add(theme)
+            await session.commit()
+            await session.refresh(theme)
+        return theme
+
+    # 5. Reverse: target hyphens converted to spaces
+    target_spaces = target.replace("-", " ")
+    stmt = select(Theme).where(Theme.name.ilike(target_spaces))
+    theme = (await session.execute(stmt)).scalars().first()
+    if theme:
+        if not theme.slug:
+            theme.slug = target.lower()
+            session.add(theme)
+            await session.commit()
+            await session.refresh(theme)
+        return theme
+
+    # 6. Fallback: normalize all non-alphanumeric characters across all stored themes
+    res = await session.execute(select(Theme))
+    all_themes = res.scalars().all()
+    clean_target = re.sub(r"[^a-z0-9]", "", target.lower())
+    if clean_target:
+        for t in all_themes:
+            clean_name = re.sub(r"[^a-z0-9]", "", t.name.lower()) if t.name else ""
+            clean_slug = re.sub(r"[^a-z0-9]", "", t.slug.lower()) if t.slug else ""
+            if clean_target == clean_slug or clean_target == clean_name:
+                if not t.slug:
+                    t.slug = target.lower()
+                    session.add(t)
+                    await session.commit()
+                    await session.refresh(t)
+                return t
+
+        for t in all_themes:
+            clean_name = re.sub(r"[^a-z0-9]", "", t.name.lower()) if t.name else ""
+            if clean_target in clean_name or clean_name in clean_target:
+                return t
+
+    return None
 
 
 

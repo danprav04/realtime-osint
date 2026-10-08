@@ -8,6 +8,7 @@ logger = logging.getLogger("osint.seed")
 
 DEFAULT_THEME_DATA: Dict[str, Any] = {
     "name": "US-Iran conflict",
+    "slug": "us-iran-conflict",
     "description": (
         "Real-time tactical intelligence tracking military friction, maritime security, "
         "diplomatic posturing, and proxy actions involving the United States, Iran, Israel, "
@@ -161,12 +162,15 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
     seeded_counts = {"themes": 0, "sources": 0, "settings": 0}
 
     # 1. Seed or retrieve "US-Iran conflict" theme
-    query = select(Theme).where(Theme.name == DEFAULT_THEME_DATA["name"])
+    query = select(Theme).where(
+        (Theme.name == DEFAULT_THEME_DATA["name"]) | (Theme.slug == "us-iran-conflict")
+    )
     result = await session.execute(query)
     theme = result.scalars().first()
 
     if not theme:
         theme = Theme(
+            slug=DEFAULT_THEME_DATA.get("slug", "us-iran-conflict"),
             name=DEFAULT_THEME_DATA["name"],
             description=DEFAULT_THEME_DATA["description"],
             keywords=DEFAULT_THEME_DATA["keywords"],
@@ -178,8 +182,13 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
         session.add(theme)
         await session.flush()
         seeded_counts["themes"] += 1
-        logger.info(f"Seeded theme: {theme.name} (id={theme.id})")
+        logger.info(f"Seeded theme: {theme.name} (id={theme.id}, slug={theme.slug})")
     else:
+        if not theme.slug:
+            theme.slug = "us-iran-conflict"
+            session.add(theme)
+            await session.flush()
+            logger.info(f"Auto-repaired missing slug for existing theme: {theme.name} -> {theme.slug}")
         logger.debug(f"Theme '{theme.name}' already exists (id={theme.id}), skipping creation.")
 
     # 2. Seed sources for the active theme

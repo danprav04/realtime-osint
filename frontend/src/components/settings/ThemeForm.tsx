@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Layers, Check, Plus, AlertCircle, Sparkles, Sliders } from 'lucide-react';
 import { Theme } from '@/lib/types';
 import { updateTheme, activateTheme, createTheme } from '@/lib/api';
@@ -12,14 +12,14 @@ interface ThemeFormProps {
 }
 
 export function ThemeForm({ themes, activeTheme, onRefresh }: ThemeFormProps) {
-  const [selectedThemeId, setSelectedThemeId] = useState<string>(activeTheme?.id || '');
+  const [selectedThemeId, setSelectedThemeId] = useState<string>(activeTheme?.slug || activeTheme?.id || '');
   const [isEditing, setIsEditing] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // Form states
-  const currentTheme = themes.find((t) => t.id === selectedThemeId) || activeTheme || themes[0];
+  const currentTheme = themes.find((t) => (t.slug || t.id) === selectedThemeId || t.id === selectedThemeId) || activeTheme || themes[0];
   const [name, setName] = useState(currentTheme?.name || '');
   const [description, setDescription] = useState(currentTheme?.description || '');
   const [keywordsText, setKeywordsText] = useState((currentTheme?.keywords || []).join(', '));
@@ -27,9 +27,26 @@ export function ThemeForm({ themes, activeTheme, onRefresh }: ThemeFormProps) {
   const [scoringPrompt, setScoringPrompt] = useState(currentTheme?.scoring_prompt || '');
   const [alertThreshold, setAlertThreshold] = useState(currentTheme?.alert_threshold ?? 7);
 
+  // Synchronize form values when theme is loaded or updated asynchronously
+  useEffect(() => {
+    if (currentTheme && !isEditing && !isCreating) {
+      const bestId = currentTheme.slug || currentTheme.id || String(currentTheme.db_id || '');
+      if (!selectedThemeId && bestId) {
+        setSelectedThemeId(bestId);
+      }
+      setName(currentTheme.name || '');
+      setDescription(currentTheme.description || '');
+      setKeywordsText((currentTheme.keywords || []).join(', '));
+      setEntitiesText((currentTheme.entities || []).join(', '));
+      setScoringPrompt(currentTheme.scoring_prompt || '');
+      setAlertThreshold(currentTheme.alert_threshold ?? 7);
+    }
+  }, [currentTheme?.id, currentTheme?.slug, currentTheme?.name, isEditing, isCreating]);
+
   // Update form fields when selected theme changes
   const handleSelectTheme = (theme: Theme) => {
-    setSelectedThemeId(theme.id);
+    const targetId = theme.slug || theme.id || String(theme.db_id || '');
+    setSelectedThemeId(targetId);
     setName(theme.name);
     setDescription(theme.description || '');
     setKeywordsText((theme.keywords || []).join(', '));
@@ -87,7 +104,8 @@ export function ThemeForm({ themes, activeTheme, onRefresh }: ThemeFormProps) {
         setFeedback({ type: 'success', message: 'New theme created successfully!' });
         setIsCreating(false);
       } else {
-        await updateTheme(currentTheme.id, {
+        const targetId = currentTheme.slug || currentTheme.id || String(currentTheme.db_id || '');
+        await updateTheme(targetId, {
           name,
           description,
           keywords,
