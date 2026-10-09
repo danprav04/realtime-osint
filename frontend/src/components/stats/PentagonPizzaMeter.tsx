@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import {
   Pizza,
   ChevronDown,
@@ -10,12 +11,17 @@ import {
   Minus,
   RefreshCw,
   Info,
+  Settings,
 } from 'lucide-react';
 import { PizzaMeterData } from '@/lib/types';
 import { getPizzaMeter } from '@/lib/api';
 import { formatRelativeTime, cn } from '@/lib/utils';
 
-export function PentagonPizzaMeter() {
+interface PentagonPizzaMeterProps {
+  onDisabled?: () => void;
+}
+
+export function PentagonPizzaMeter({ onDisabled }: PentagonPizzaMeterProps) {
   const [data, setData] = useState<PizzaMeterData | null>(null);
   const [loading, setLoading] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -25,6 +31,9 @@ export function PentagonPizzaMeter() {
     try {
       const res = await getPizzaMeter();
       setData(res);
+      if (res.enabled === false && onDisabled) {
+        onDisabled();
+      }
     } catch (err) {
       // In case backend is offline, maintain graceful fallback state
       console.warn('Pizza meter fetch failed, using fallback telemetry:', err);
@@ -32,7 +41,7 @@ export function PentagonPizzaMeter() {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [onDisabled]);
 
   useEffect(() => {
     fetchData();
@@ -40,6 +49,11 @@ export function PentagonPizzaMeter() {
     const interval = setInterval(fetchData, 90000);
     return () => clearInterval(interval);
   }, [fetchData]);
+
+  // If explicitly disabled in settings, do not render
+  if (data && data.enabled === false) {
+    return null;
+  }
 
   const handleManualRefresh = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -100,6 +114,12 @@ export function PentagonPizzaMeter() {
             <span className="hidden sm:inline-block text-[10px] font-mono text-zinc-400 bg-surface-raised px-1.5 py-0.5 rounded hairline-border">
               Arlington DoD
             </span>
+            <span
+              className="hidden md:inline-block text-[9px] font-mono text-zinc-400 bg-surface-raised px-1.5 py-0.5 rounded hairline-border"
+              title="Calibrated against historical normal business per hour"
+            >
+              Hourly Calibrated
+            </span>
           </div>
         </div>
 
@@ -128,17 +148,20 @@ export function PentagonPizzaMeter() {
             ))}
           </div>
 
-          {/* Activity Percentage & Trend */}
-          <div className="hidden md:flex items-center space-x-1.5 text-zinc-400 font-mono text-[11px] tabular">
+          {/* Activity Percentage & Trend (Calibrated against hourly normal) */}
+          <div
+            className="hidden md:flex items-center space-x-1.5 text-zinc-400 font-mono text-[11px] tabular"
+            title={`Current busyness: ${score}% (${multiplier.toFixed(1)}x normal business for this hour)`}
+          >
             <span>{score}%</span>
-            <span className="text-zinc-600">({multiplier.toFixed(1)}x)</span>
+            <span className="text-zinc-400">({multiplier.toFixed(1)}x)</span>
             {trend === 'increasing' && <TrendingUp className="w-3 h-3 text-amber-400" />}
             {trend === 'decreasing' && <TrendingDown className="w-3 h-3 text-emerald-400" />}
             {trend === 'stable' && <Minus className="w-3 h-3 text-zinc-400" />}
           </div>
         </div>
 
-        {/* Right: Last updated + Refresh + Details Toggle */}
+        {/* Right: Last updated + Refresh + Details Toggle + Settings */}
         <div className="flex items-center space-x-2">
           {data?.last_updated && (
             <span className="hidden lg:inline text-[10px] text-zinc-400 font-mono">
@@ -153,6 +176,15 @@ export function PentagonPizzaMeter() {
           >
             <RefreshCw className={cn('w-3 h-3', isRefreshing && 'animate-spin text-zinc-300')} />
           </button>
+
+          <Link
+            href="/settings"
+            onClick={(e) => e.stopPropagation()}
+            className="p-1 rounded text-zinc-400 hover:text-zinc-300 hover:bg-surface-raised transition-colors"
+            title="Configure Pentagon Pizza Meter in Settings"
+          >
+            <Settings className="w-3 h-3" />
+          </Link>
 
           <button
             className="flex items-center space-x-1 text-[11px] text-zinc-400 hover:text-zinc-300 transition-colors pl-1"
@@ -192,6 +224,7 @@ export function PentagonPizzaMeter() {
                         'text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border uppercase',
                         statusColor
                       )}
+                      title={`Alert status calibrated against normal business for current hour`}
                     >
                       {loc.status}
                     </span>
@@ -199,7 +232,17 @@ export function PentagonPizzaMeter() {
 
                   <div className="flex items-center justify-between pt-1 border-t border-white/5 text-[11px] font-mono">
                     <span className="text-zinc-400">{loc.distance}</span>
-                    <span className="text-zinc-300 tabular">{loc.busyness}% busy</span>
+                    <div className="flex items-center space-x-1 tabular">
+                      <span className="text-zinc-300 font-medium">{loc.busyness}% busy</span>
+                      {loc.normal_busyness !== undefined && (
+                        <span
+                          className="text-zinc-400 text-[10px]"
+                          title={`Expected normal business for this hour: ${loc.normal_busyness}%`}
+                        >
+                          (norm: {loc.normal_busyness}%)
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -212,7 +255,7 @@ export function PentagonPizzaMeter() {
               <Info className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
               <span>
                 {data?.description ||
-                  'Informal OSINT indicator: surges in late-night DoD-area orders historically correlate with crisis management.'}
+                  'Calibrated OSINT indicator: surges in late-night DoD-area orders historically correlate with crisis activations.'}
               </span>
             </div>
 
@@ -224,7 +267,7 @@ export function PentagonPizzaMeter() {
                   <div
                     key={i}
                     className="flex flex-col items-center"
-                    title={`Score: ${pt.score}%`}
+                    title={`Calibrated Score: ${pt.score}%`}
                   >
                     <div
                       className={cn(

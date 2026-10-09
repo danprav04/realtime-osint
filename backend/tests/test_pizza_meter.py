@@ -122,3 +122,104 @@ async def test_pizza_meter_simulate_and_reset():
         reset_data = reset_res.json()
         # Should return to calculated state
         assert reset_data["level"] in (1, 2)
+
+
+@pytest.mark.asyncio
+async def test_pizza_meter_hourly_calibration():
+    """Verify that location alerts and multiplier are calibrated for normal business per hour."""
+    from backend.app.api.pizza_meter import (
+        evaluate_location_status,
+        get_hourly_normal,
+        _get_base_locations,
+        calculate_pizza_meter_status,
+    )
+
+    # 1. Verification of unit calibration logic
+    # At 7:00 PM (hour 19 - Dinner Peak): Normal business is ~82%
+    norm_19 = get_hourly_normal("Domino's Pizza (Pentagon City)", 19)
+    assert norm_19 >= 75
+    # An 80% busyness at 7:00 PM is normal dinner rush, NOT a crisis spike!
+    status_dinner = evaluate_location_status(busyness=80, normal_busyness=norm_19)
+    assert status_dinner == "Normal", "80% busy during dinner rush should be classified as Normal"
+
+    # At 2:00 AM (hour 2 - Late Night): Normal business is ~5%
+    norm_2 = get_hourly_normal("Domino's Pizza (Pentagon City)", 2)
+    assert norm_2 <= 10
+    # A 45% busyness at 2:00 AM is an abnormal 5x+ delivery surge -> Spike!
+    status_late_night = evaluate_location_status(busyness=45, normal_busyness=norm_2)
+    assert status_late_night == "Spike", "45% busy at 2:00 AM should be classified as Spike"
+
+    # 2. Verification of location generation with hourly baseline
+    locs_dinner = _get_base_locations(score=75, hour=19)
+    dominos_dinner = next(l for l in locs_dinner if "Domino" in l["name"])
+    assert dominos_dinner["normal_busyness"] >= 75
+    assert dominos_dinner["status"] == "Normal"
+
+    locs_late = _get_base_locations(score=85, hour=2)
+    dominos_late = next(l for l in locs_late if "Domino" in l["name"])
+    assert dominos_late["normal_busyness"] <= 10
+    assert dominos_late["status"] == "Spike"
+
+    # 3. Full API response assertions for hourly calibration metadata
+    settings = get_settings()
+    api_key = settings.API_KEY
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/api/pizza-meter", headers={"X-API-Key": api_key})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["hourly_calibrated"] is True
+        assert 0 <= data["arlington_hour"] <= 23
+        for loc in data["locations"]:
+            assert "normal_busyness" in loc
+            assert 0 <= loc["normal_busyness"] <= 100
+
+
+@pytest.mark.asyncio
+async def test_pizza_meter_settings_toggle():
+    """Verify that Pentagon Pizza Meter is toggleable in system settings and via dedicated endpoint."""
+    settings = get_settings()
+    api_key = settings.API_KEY
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Initially enabled
+        init_res = await client.get("/api/settings", headers={"X-API-Key": api_key})
+        assert init_res.status_code == 200
+        assert init_res.json()["pizza_meter_enabled"] is True
+
+        init_pm = await client.get("/api/pizza-meter", headers={"X-API-Key": api_key})
+        assert init_pm.status_code == 200
+        assert init_pm.json()["enabled"] is True
+
+        # 2. Toggle OFF via PUT /api/settings
+        update_res = await client.put(
+            "/api/settings",
+            headers={"X-API-Key": api_key},
+            json={"pizza_meter_enabled": False},
+        )
+        assert update_res.status_code == 200
+
+        # Check settings reflects disabled
+        settings_res = await client.get("/api/settings", headers={"X-API-Key": api_key})
+        assert settings_res.json()["pizza_meter_enabled"] is False
+
+        # Check pizza meter reflects disabled
+        pm_res = await client.get("/api/pizza-meter", headers={"X-API-Key": api_key})
+        assert pm_res.status_code == 200
+        assert pm_res.json()["enabled"] is False
+
+        # 3. Toggle back ON via PUT /api/pizza-meter/toggle
+        toggle_res = await client.put(
+            "/api/pizza-meter/toggle",
+            headers={"X-API-Key": api_key},
+            json={"enabled": True},
+        )
+        assert toggle_res.status_code == 200
+        assert toggle_res.json()["enabled"] is True
+
+        # Verify restored to enabled in both settings and meter
+        settings_res2 = await client.get("/api/settings", headers={"X-API-Key": api_key})
+        assert settings_res2.json()["pizza_meter_enabled"] is True
+
+        pm_res2 = await client.get("/api/pizza-meter", headers={"X-API-Key": api_key})
+        assert pm_res2.json()["enabled"] is True
