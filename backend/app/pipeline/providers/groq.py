@@ -17,7 +17,7 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 class GroqProvider(BaseAIProvider):
     """
     Groq Cloud async REST provider via httpx.
-    Supports qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b, llama-3.3-70b-versatile.
+    Supports qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b.
     """
 
     def __init__(

@@ -547,10 +547,10 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'llama-3.3-70b-versatile')}
+                                      onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'openai/gpt-oss-120b')}
                                       className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
                                     >
-                                      llama-3.3-70b
+                                      gpt-oss-120b
                                     </button>
                                   </>
                                 )}

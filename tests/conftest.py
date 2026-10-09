@@ -237,7 +237,7 @@ class MockGeminiService:
 
 
 class MockGroqService:
-    """Simulates Groq Cloud API (llama-3.3-70b-versatile, mixtral-8x7b-32768)."""
+    """Simulates Groq Cloud API (qwen/qwen3.8-27b, openai/gpt-oss-120b)."""
 
     def __init__(self, api_key: str = "mock-groq-key"):
         self.api_key = api_key
@@ -490,7 +490,7 @@ def create_contract_test_app() -> FastAPI:
             "fallbacks": [
                 {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
-                {"provider": "groq", "model_name": "llama-3.3-70b-versatile", "temperature": 0.2},
+                {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
             ],
         },
         "scoring": {
@@ -500,7 +500,7 @@ def create_contract_test_app() -> FastAPI:
             "temperature": 0.1,
             "fallbacks": [
                 {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.1},
-                {"provider": "groq", "model_name": "llama-3.3-70b-versatile", "temperature": 0.1},
+                {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.1},
                 {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.1},
             ],
         },
@@ -510,10 +510,10 @@ def create_contract_test_app() -> FastAPI:
             "model_name": "gemini-2.0-flash",
             "temperature": 0.3,
             "fallbacks": [
-                {"provider": "groq", "model_name": "llama-3.3-70b-versatile", "temperature": 0.2},
                 {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
                 {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.2},
             ],
         },
         "visuals": {

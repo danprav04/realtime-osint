@@ -513,7 +513,7 @@ async def test_ai_pipeline_settings_crud_with_fallbacks(api_headers):
                 "temperature": 0.1,
                 "fallbacks": [
                     {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.1},
-                    {"provider": "groq", "model_name": "llama-3.3-70b-versatile", "temperature": 0.2},
+                    {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
                 ],
             },
             "extraction": {
@@ -537,7 +537,7 @@ async def test_ai_pipeline_settings_crud_with_fallbacks(api_headers):
         assert len(saved["scoring"]["fallbacks"]) == 2
         assert saved["scoring"]["fallbacks"][0]["model_name"] == "gemini-3.1-flash-lite"
         assert saved["scoring"]["fallbacks"][1]["provider"] == "groq"
-        assert saved["scoring"]["fallbacks"][1]["model_name"] == "llama-3.3-70b-versatile"
+        assert saved["scoring"]["fallbacks"][1]["model_name"] == "openai/gpt-oss-120b"
 
         # 4. Verify persistence via subsequent GET
         verify_res = await client.get("/api/settings/ai-pipeline", headers=api_headers)
@@ -545,7 +545,7 @@ async def test_ai_pipeline_settings_crud_with_fallbacks(api_headers):
         verified = verify_res.json()
         assert len(verified["scoring"]["fallbacks"]) == 2
         assert verified["scoring"]["fallbacks"][0]["model_name"] == "gemini-3.1-flash-lite"
-        assert verified["scoring"]["fallbacks"][1]["model_name"] == "llama-3.3-70b-versatile"
+        assert verified["scoring"]["fallbacks"][1]["model_name"] == "openai/gpt-oss-120b"
 
         # 5. Verify orchestrator received hot-reload configuration in-memory
         orchestrator = get_pipeline_orchestrator()
@@ -553,7 +553,7 @@ async def test_ai_pipeline_settings_crud_with_fallbacks(api_headers):
         assert scoring_stage.model_name == "gemini-3.5-flash-lite"
         assert len(scoring_stage.fallbacks) == 2
         assert scoring_stage.fallbacks[0].model_name == "gemini-3.1-flash-lite"
-        assert scoring_stage.fallbacks[1].model_name == "llama-3.3-70b-versatile"
+        assert scoring_stage.fallbacks[1].model_name == "openai/gpt-oss-120b"
         assert scoring_stage.fallbacks[1].provider == "groq"
 
 

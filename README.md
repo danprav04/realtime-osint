@@ -153,10 +153,10 @@ The pipeline decomposes raw content processing into four independent stages. Eac
 
 | Stage | Default Model | Purpose & Contract | Fallback Behavior |
 |---|---|---|---|
-| **1. Extraction & Translation** | `groq: llama-3.3-70b-versatile` | Detects Arabic and Farsi Unicode script blocks and translates them into English. Preserves military acronyms (`CENTCOM`, `IRGC`, `IAEA`) and Persian zero-width non-joiners (`\u200c`). | Heuristic regex entity extractor with raw text passthrough |
-| **2. Importance Scoring** | `gemini: gemini-2.0-flash` | Evaluates the event on a strict 1–10 scale based on the user's custom scoring prompt for the active theme. | Keyword density scoring heuristic (default score 5) |
-| **3. BLUF Summarization** | `gemini: gemini-2.0-flash` | Generates a 2-3 sentence Bottom-Line-Up-Front summary highlighting actors, kinetic action, and strategic impact. | Extractive lead paragraph summary |
-| **4. Visual Analytics** | `groq: llama-3.3-70b-versatile` | Extracts thematic cluster tags, location names, and event categories for dashboard charts. | Rule-based tag and entity mapper |
+| **1. Extraction & Translation** | `groq: qwen/qwen3.8-27b` | Detects Arabic and Farsi Unicode script blocks and translates them into English. Preserves military acronyms (`CENTCOM`, `IRGC`, `IAEA`) and Persian zero-width non-joiners (`\u200c`). | `gemini-3.5-flash-lite` -> `gemini-3.1-flash-lite` -> `openai/gpt-oss-120b` -> Regex fallback |
+| **2. Importance Scoring** | `gemini: gemini-3.5-flash-lite` | Evaluates the event on a strict 1–10 scale based on the user's custom scoring prompt for the active theme. | `gemini-3.1-flash-lite` -> `openai/gpt-oss-120b` -> `qwen/qwen3.8-27b` -> Keyword density heuristic |
+| **3. BLUF Summarization** | `groq: openai/gpt-oss-120b` | Generates a 2-3 sentence Bottom-Line-Up-Front summary highlighting actors, kinetic action, and strategic impact. | `qwen/qwen3.8-27b` -> `gemini-3.5-flash-lite` -> `gemini-3.1-flash-lite` -> Extractive lead summary |
+| **4. Visual Analytics** | `groq: openai/gpt-oss-20b` | Extracts thematic cluster tags, location names, and event categories for dashboard charts. | `qwen/qwen3.8-27b` -> `gemini-3.5-flash-lite` -> `gemini-3.1-flash-lite` -> Rule-based tag mapper |
 
 ```mermaid
 flowchart LR
@@ -329,7 +329,7 @@ GEMINI_MODEL=gemini-2.0-flash
 
 # Groq Cloud (https://console.groq.com/)
 GROQ_API_KEY=your_groq_api_key
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=qwen/qwen3.8-27b
 
 # Default Providers per Stage (gemini | groq | mock)
 STAGE1_PROVIDER=groq

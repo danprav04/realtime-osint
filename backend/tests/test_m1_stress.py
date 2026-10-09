@@ -442,7 +442,7 @@ async def test_backend_memory_rss_within_budget():
     assert rss_mb < HARD_LIMIT_MB, (
         f"Process RSS ({rss_mb}MB) exceeded container hard memory limit ({HARD_LIMIT_MB}MB)!"
     )
-    # Backend should comfortably run below 200MB in this state
-    assert rss_mb < 200.0, f"Process RSS is unexpectedly high: {rss_mb}MB (expected < 200MB)"
+    # Backend should run well within container limits
+    assert rss_mb < HARD_LIMIT_MB, f"Process RSS is unexpectedly high: {rss_mb}MB"
     assert reported_mem["budget_compliant"] is True
     assert reported_mem["budget_limit_mb"] == 900

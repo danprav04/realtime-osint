@@ -48,6 +48,7 @@ export function RelevanceMap({
 }: RelevanceMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const galaxiesBarRef = useRef<HTMLDivElement>(null);
 
   // High-performance animation / interaction refs (prevents DOM thrashing & React re-render lag)
   const offsetRef = useRef({ x: 0, y: 0 });
@@ -515,27 +516,84 @@ export function RelevanceMap({
     }
   };
 
-  // Wheel zoom centered at mouse position
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.15 : 0.88;
-    const newScale = Math.min(Math.max(scaleRef.current * zoomFactor, 0.45), 5.0);
+  // Release dragging even if mouse is released outside canvas boundary
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      if (isDraggingRef.current) {
+        isDraggingRef.current = false;
+        if (canvasRef.current) {
+          canvasRef.current.style.cursor = hoveredNode ? 'pointer' : 'grab';
+        }
+      }
+    };
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    return () => {
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [hoveredNode]);
 
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (rect) {
-      const mouseX = e.clientX - rect.left - dimensions.width / 2;
-      const mouseY = e.clientY - rect.top - dimensions.height / 2;
+  // Wheel zoom centered at mouse position
+  // Uses a native, non-passive event listener so e.preventDefault() reliably prevents the browser from scrolling the page
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleNativeWheel = (e: WheelEvent) => {
+      // Stop the browser window / page from scrolling
+      e.preventDefault();
+      e.stopPropagation();
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      if (!rect || rect.width === 0 || rect.height === 0) return;
+
+      // Smooth zoom factor: handles both discrete mouse wheel ticks and smooth trackpad gestures
+      let zoomFactor = 1;
+      if (Math.abs(e.deltaY) >= 50) {
+        zoomFactor = e.deltaY < 0 ? 1.15 : 0.88;
+      } else {
+        zoomFactor = Math.exp(-e.deltaY * 0.0035);
+      }
+
+      const newScale = Math.min(Math.max(scaleRef.current * zoomFactor, 0.45), 5.0);
+      const mouseX = e.clientX - rect.left - rect.width / 2;
+      const mouseY = e.clientY - rect.top - rect.height / 2;
       const scaleRatio = newScale / scaleRef.current;
+
       offsetRef.current = {
         x: mouseX - (mouseX - offsetRef.current.x) * scaleRatio,
         y: mouseY - (mouseY - offsetRef.current.y) * scaleRatio,
       };
-    }
 
-    scaleRef.current = newScale;
-    if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
-    animFrameIdRef.current = requestAnimationFrame(renderCanvas);
-  };
+      scaleRef.current = newScale;
+      if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+      animFrameIdRef.current = requestAnimationFrame(renderCanvas);
+    };
+
+    container.addEventListener('wheel', handleNativeWheel, { passive: false });
+    return () => {
+      container.removeEventListener('wheel', handleNativeWheel);
+    };
+  }, [renderCanvas]);
+
+  // Horizontal wheel scroll for galaxy constellation pills bar to avoid scrolling the page vertically
+  useEffect(() => {
+    const bar = galaxiesBarRef.current;
+    if (!bar) return;
+
+    const handleBarWheel = (e: WheelEvent) => {
+      if (bar.scrollWidth > bar.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        bar.scrollLeft += e.deltaY;
+      }
+    };
+
+    bar.addEventListener('wheel', handleBarWheel, { passive: false });
+    return () => {
+      bar.removeEventListener('wheel', handleBarWheel);
+    };
+  }, [data.clusters]);
 
   // Zoom button handlers
   const handleZoomIn = () => {
@@ -717,7 +775,10 @@ export function RelevanceMap({
 
       {/* Cluster Navigation Quick Pills Bar */}
       {data.clusters.length > 0 && (
-        <div className="z-10 flex items-center space-x-1.5 px-3 py-1.5 hairline-b bg-canvas-subtle/50 overflow-x-auto scrollbar-none text-xs">
+        <div
+          ref={galaxiesBarRef}
+          className="z-10 flex items-center space-x-1.5 px-3 py-1.5 hairline-b bg-canvas-subtle/50 overflow-x-auto scrollbar-none text-xs touch-none overscroll-contain"
+        >
           <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 mr-1 flex items-center gap-1">
             <Layers className="w-3 h-3" />
             Galaxies:
@@ -753,7 +814,7 @@ export function RelevanceMap({
       {/* Hardware-Accelerated 60 FPS HTML5 Canvas Map Area */}
       <div
         ref={containerRef}
-        className="relative flex-1 w-full h-full overflow-hidden bg-canvas-base"
+        className="relative flex-1 w-full h-full overflow-hidden bg-canvas-base touch-none overscroll-none"
       >
         <canvas
           ref={canvasRef}
@@ -763,12 +824,12 @@ export function RelevanceMap({
             width: `${dimensions.width}px`,
             height: `${dimensions.height}px`,
             display: 'block',
+            touchAction: 'none',
           }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onWheel={handleWheel}
-          className="w-full h-full cursor-grab active:cursor-grabbing"
+          className="w-full h-full cursor-grab active:cursor-grabbing touch-none overscroll-none"
         />
 
         {/* Hover Tooltip Overlay Card with Trust Rationale & Corroborating Outlets */}

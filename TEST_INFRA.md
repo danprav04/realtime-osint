@@ -45,7 +45,7 @@ Probes critical edge boundaries:
 ### 2.3 Pairwise Combinatorial Testing (Tier 3: Cross-Feature Interactions)
 Validates interactions across decoupled components:
 - **Hot-Reload Pipeline:** Theme keyword modification -> Source poller reconfiguration -> Ingestion -> AI scoring with new prompt -> Telegram alert dispatch.
-- **Heterogeneous AI Multi-Provider:** Stage 1 executed via Groq (`llama-3.3-70b-versatile`) while Stage 2 is executed via Gemini (`gemini-2.0-flash`) within the exact same event run.
+- **Heterogeneous AI Multi-Provider:** Stage 1 executed via Groq (`qwen/qwen3.8-27b`) while Stage 2 is executed via Gemini (`gemini-2.0-flash`) within the exact same event run.
 - **Source Toggling & Stats:** Disabling a source shuts down polling tasks, updates active sources stat counter, and rejects subsequent manual triggers.
 - **Cross-Source Deduplication:** Identical breaking news reported by both an RSS feed and a News API within a short window is deduplicated via SHA-256 fingerprinting before incurring duplicate LLM pipeline costs.
 

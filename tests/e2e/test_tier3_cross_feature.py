@@ -86,7 +86,7 @@ def test_cross_feature_concurrent_multi_provider_pipeline(test_client, mock_gemi
     """
     # Configure per-stage providers
     update_cfg = {
-        "extraction": {"provider": "groq", "model_name": "llama-3.3-70b-versatile"},
+        "extraction": {"provider": "groq", "model_name": "qwen/qwen3.8-27b"},
         "scoring": {"provider": "gemini", "model_name": "gemini-2.0-flash"}
     }
     res_cfg = test_client.put("/api/settings/ai-pipeline", json=update_cfg)

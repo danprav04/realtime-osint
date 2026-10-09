@@ -77,10 +77,10 @@ async def test_db_session():
         ai_settings = SystemSettings(
             key="ai_pipeline_stages",
             value_json={
-                "extraction": {"provider": "groq", "model_name": "llama-3.3-70b-versatile"},
-                "scoring": {"provider": "gemini", "model_name": "gemini-2.0-flash"},
-                "summarization": {"provider": "gemini", "model_name": "gemini-2.0-flash"},
-                "visuals": {"provider": "groq", "model_name": "llama-3.3-70b-versatile"},
+                "extraction": {"provider": "groq", "model_name": "qwen/qwen3.8-27b"},
+                "scoring": {"provider": "gemini", "model_name": "gemini-3.5-flash-lite"},
+                "summarization": {"provider": "groq", "model_name": "openai/gpt-oss-120b"},
+                "visuals": {"provider": "groq", "model_name": "openai/gpt-oss-20b"},
             },
         )
         session.add_all([default_theme, ai_settings])
@@ -117,7 +117,7 @@ def test_stage_config_schema_validation():
     cfg2 = AIStageConfig(
         stage_id="importance_scoring",  # type: ignore
         provider="groq",
-        model_name="llama-3.3-70b-versatile",
+        model_name="openai/gpt-oss-120b",
         temperature=0.7,
     )
     assert cfg2.stage_id == "scoring"
@@ -386,7 +386,7 @@ async def test_orchestrator_concurrent_multi_provider_run(test_db_session, mock_
         use_mock=True,
     )
     # Configure Stage 1 on Groq and Stage 2 on Gemini
-    orchestrator.set_stage_config("extraction", AIStageConfig(stage_id="extraction", provider="groq", model_name="llama-3.3-70b-versatile"))
+    orchestrator.set_stage_config("extraction", AIStageConfig(stage_id="extraction", provider="groq", model_name="qwen/qwen3.8-27b"))
     orchestrator.set_stage_config("scoring", AIStageConfig(stage_id="scoring", provider="gemini", model_name="gemini-2.0-flash"))
 
     event = NormalizedEvent(
@@ -403,7 +403,7 @@ async def test_orchestrator_concurrent_multi_provider_run(test_db_session, mock_
     assert analyzed.importance_score is not None
 
     # Verify both Groq and Gemini were utilized in the same run
-    groq_provider = registry.get_provider("groq", "llama-3.3-70b-versatile")
+    groq_provider = registry.get_provider("groq", "qwen/qwen3.8-27b")
     gemini_provider = registry.get_provider("gemini", "gemini-2.0-flash")
     assert len(groq_provider.call_history) > 0
     assert len(gemini_provider.call_history) > 0
@@ -540,7 +540,7 @@ def test_stage_config_fallback_schema_parsing():
         "fallbacks": [
             {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.1},
             {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
-            {"provider": "groq", "model": "llama-3.3-70b-versatile"},
+            {"provider": "groq", "model": "openai/gpt-oss-120b"},
         ],
     }
 
@@ -559,7 +559,7 @@ def test_stage_config_fallback_schema_parsing():
     assert cfg.fallbacks[1].temperature == 0.2
 
     assert cfg.fallbacks[2].provider == "groq"
-    assert cfg.fallbacks[2].model_name == "llama-3.3-70b-versatile"
+    assert cfg.fallbacks[2].model_name == "openai/gpt-oss-120b"
 
 
 @pytest.mark.asyncio

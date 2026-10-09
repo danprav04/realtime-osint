@@ -342,7 +342,7 @@ async def test_json_roundtrip_complex_nested_structures(session_factory):
         # Complex System Settings
         settings_data = {
             "pipeline": {
-                "stage1": {"provider": "groq", "model": "llama-3.3-70b-versatile", "temp": 0.1},
+                "stage1": {"provider": "groq", "model": "openai/gpt-oss-120b", "temp": 0.1},
                 "stage2": {"provider": "gemini", "model": "gemini-2.0-flash", "temp": 0.2},
             },
             "geo_fences": [

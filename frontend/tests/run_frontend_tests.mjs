@@ -301,7 +301,7 @@ test('Types - AIStageConfig supports multi-tier fallback configuration', async (
       },
       {
         provider: 'groq',
-        model_name: 'llama-3.3-70b-versatile',
+        model_name: 'openai/gpt-oss-120b',
         temperature: 0.2,
       },
     ],
@@ -311,7 +311,7 @@ test('Types - AIStageConfig supports multi-tier fallback configuration', async (
   assert.equal(stageConfig.fallbacks?.length, 2);
   assert.equal(stageConfig.fallbacks?.[0].model_name, 'gemini-3.1-flash-lite');
   assert.equal(stageConfig.fallbacks?.[1].provider, 'groq');
-  assert.equal(stageConfig.fallbacks?.[1].model_name, 'llama-3.3-70b-versatile');
+  assert.equal(stageConfig.fallbacks?.[1].model_name, 'openai/gpt-oss-120b');
 });
 
 // Test 15: AIStageConfig fallback immutability and empty fallback support
