@@ -20,6 +20,8 @@ import { Theme } from '@/lib/types';
 import { AuthModal } from './AuthModal';
 import { cn } from '@/lib/utils';
 
+import { AppIcon } from '@/components/AppIcon';
+
 export function Navbar() {
   const pathname = usePathname();
   const { isConnected } = useSocketConnection();
@@ -54,12 +56,8 @@ export function Navbar() {
           {/* Logo & Brand */}
           <div className="flex items-center space-x-6">
             <Link href="/" className="flex items-center space-x-2.5 group">
-              <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-surface-card hairline-border group-hover:border-accent-cyan/50 transition-colors">
-                <Activity className="h-4 w-4 text-accent-cyan" />
-                <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-cyan opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-cyan"></span>
-                </span>
+              <div className="relative flex items-center justify-center rounded-lg bg-surface-card hairline-border group-hover:border-accent-cyan/50 transition-colors p-0.5">
+                <AppIcon size={30} withBeacon />
               </div>
               <div className="flex flex-col">
                 <span className="text-xs font-bold tracking-tight text-zinc-100 uppercase">

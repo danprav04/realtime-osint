@@ -12,12 +12,14 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import httpx
 import numpy as np
+from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -570,10 +572,10 @@ class EmbeddingService:
         if k_clusters == 1:
             cluster_centers[main_clusters[0]["id"]] = np.array([0.0, 0.0], dtype=np.float32)
         elif k_clusters == 2:
-            cluster_centers[main_clusters[0]["id"]] = np.array([-36.0, 0.0], dtype=np.float32)
-            cluster_centers[main_clusters[1]["id"]] = np.array([36.0, 0.0], dtype=np.float32)
+            cluster_centers[main_clusters[0]["id"]] = np.array([-44.0, 0.0], dtype=np.float32)
+            cluster_centers[main_clusters[1]["id"]] = np.array([44.0, 0.0], dtype=np.float32)
         elif k_clusters > 2:
-            radius = min(46.0, 32.0 + k_clusters * 2.5)
+            radius = min(58.0, 38.0 + k_clusters * 2.5)
             for idx, c in enumerate(main_clusters):
                 angle = (2.0 * np.pi * idx / k_clusters) - (np.pi / 2.0)
                 cluster_centers[c["id"]] = np.array([
@@ -591,7 +593,7 @@ class EmbeddingService:
                 c_center = cluster_centers[cid]
                 rank = cluster_item_count.get(cid, 0)
                 cluster_item_count[cid] = rank + 1
-                r_offset = np.sqrt(rank) * 6.5
+                r_offset = np.sqrt(rank) * 4.2
                 angle = rank * 2.39996323  # golden angle
                 coords[i] = c_center + np.array([
                     r_offset * np.cos(angle),
@@ -602,7 +604,7 @@ class EmbeddingService:
 
         n_outliers = len(outlier_indices)
         if n_outliers > 0:
-            orbit_r = 74.0
+            orbit_r = 78.0
             for out_rank, i in enumerate(outlier_indices):
                 angle = (2.0 * np.pi * out_rank / n_outliers) - (np.pi / 4.0)
                 coords[i] = np.array([
@@ -611,7 +613,7 @@ class EmbeddingService:
                 ], dtype=np.float32)
 
         # Apply strict collision avoidance relaxation
-        resolved = resolve_node_collisions(coords, min_dist=min_distance, max_iter=40, bounds=85.0)
+        resolved = resolve_node_collisions(coords, min_dist=min_distance, max_iter=45, bounds=86.0)
 
         # Update cluster centroids and radii in the cluster objects
         for c in clusters:
@@ -635,13 +637,14 @@ class EmbeddingService:
         self,
         events: List[Event],
         embeddings: List[List[float]],
-        similarity_threshold: float = 0.38,
+        similarity_threshold: Optional[float] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Compute pairwise cosine similarity, clustering, and intelligence trustworthiness metrics.
+        Dynamically calibrates thresholds based on embedding distribution (dense neural vs sparse mock).
         Returns:
             - node_trust_metrics: List of dicts with trust scores, labels, nearest neighbors, etc.
-            - edges: List of high-similarity link edges between reports
+            - edges: List of high-similarity link edges between reports within same story clusters
             - clusters: List of topical clusters with labels and centroids
         """
         n = len(events)
@@ -657,16 +660,45 @@ class EmbeddingService:
         # Cosine similarity matrix: N x N
         sim_matrix = np.dot(norm_arr, norm_arr.T)
 
+        # 1. Determine baseline similarity distribution to auto-calibrate thresholds
+        off_diag_sims = sim_matrix[~np.eye(n, dtype=bool)] if n > 1 else np.array([0.0])
+        p50 = float(np.percentile(off_diag_sims, 50)) if len(off_diag_sims) > 0 else 0.0
+
+        if similarity_threshold is not None:
+            corrob_threshold = similarity_threshold
+            verified_threshold = max(0.25, similarity_threshold - 0.04)
+            outlier_threshold = max(0.15, similarity_threshold - 0.16)
+        elif p50 > 0.50:
+            # Dense neural embeddings (Gemini 3072d / HF TEI) where background similarity is ~0.60-0.68
+            corrob_threshold = 0.76
+            verified_threshold = 0.73
+            outlier_threshold = 0.58
+        else:
+            # Sparse / bag-of-words / mock embeddings where background similarity is ~0.0-0.25
+            corrob_threshold = 0.38
+            verified_threshold = 0.34
+            outlier_threshold = 0.20
+
+        # 2. Semantic Clustering via KMeans
+        if n <= 2:
+            cluster_assign = np.zeros(n, dtype=int)
+            K = 1
+        else:
+            # Scale K clusters based on dataset size (between 2 and 8)
+            K = min(8, max(2, int(np.sqrt(n * 0.55))))
+            try:
+                km = KMeans(n_clusters=K, random_state=42, n_init='auto')
+                cluster_assign = km.fit_predict(norm_arr)
+            except Exception:
+                cluster_assign = np.zeros(n, dtype=int)
+                K = 1
+
         node_metrics: List[Dict[str, Any]] = []
         edges: List[Dict[str, Any]] = []
         edge_set: Set[Tuple[int, int]] = set()
 
-        # Adjacency for cluster grouping
-        adj: Dict[int, List[int]] = {i: [] for i in range(n)}
-
         for i in range(n):
             ev_i = events[i]
-            neighbors_idx: List[int] = []
             similarities_list: List[Tuple[int, float]] = []
 
             for j in range(n):
@@ -674,61 +706,49 @@ class EmbeddingService:
                     continue
                 score = float(sim_matrix[i, j])
                 similarities_list.append((j, score))
-                if score >= similarity_threshold:
-                    neighbors_idx.append(j)
-                    adj[i].append(j)
 
             similarities_list.sort(key=lambda x: x[1], reverse=True)
             top_neighbors = similarities_list[:4]
+            max_similarity = top_neighbors[0][1] if top_neighbors else 0.0
 
-            # Only add edges for top neighbors to prevent screen clutter
-            for j, score in top_neighbors:
-                if score >= similarity_threshold:
-                    edge_pair = (min(i, j), max(i, j))
-                    if edge_pair not in edge_set:
-                        edge_set.add(edge_pair)
-                        edges.append({
-                            "source": ev_i.id,
-                            "target": events[j].id,
-                            "similarity": round(score, 3),
-                        })
+            # Corroborating events: must exceed corrob_threshold
+            corrob_idx = [j for j, s in similarities_list if s >= corrob_threshold]
+            corrob_events = [events[j] for j in corrob_idx]
 
-            # Analyze corroborating sources
-            corrob_events = [events[j] for j in neighbors_idx]
             unique_sources: Set[str] = set()
             unique_source_types: Set[str] = set()
-
             for c_ev in corrob_events:
                 unique_sources.add(c_ev.source_name)
                 unique_source_types.add(c_ev.source_type)
 
-            max_similarity = top_neighbors[0][1] if top_neighbors else 0.0
-            corrob_count = len(corrob_events)
-            num_independent_sources = len(unique_sources - {ev_i.source_name})
+            independent_sources = unique_sources - {ev_i.source_name}
+            same_source_updates = sum(1 for c_ev in corrob_events if c_ev.source_name == ev_i.source_name)
+            num_independent_sources = len(independent_sources)
             num_source_types = len(unique_source_types)
 
-            # --- Trustworthiness Algorithm ---
-            # 1. Isolated Outlier: No other report shares >= 0.30 similarity
-            if max_similarity < 0.30:
+            # --- Calibrated Trustworthiness Algorithm ---
+            if max_similarity < outlier_threshold:
                 trust_score = 25
                 trust_label = "Isolated Outlier"
-                verdict = "Single unverified singleton report. No matching intelligence found."
-            # 2. Single-source Unverified: Only 0 corroborating reports
-            elif corrob_count == 0 or num_independent_sources == 0:
+                verdict = "Lone uncorroborated report. No matching intelligence found across any monitored source."
+            elif num_independent_sources == 0 or max_similarity < verified_threshold:
                 trust_score = 45
                 trust_label = "Single-Source Unverified"
-                verdict = "Reported by a single outlet with no corroboration yet."
-            # 3. Developing / Cross-Checked: 1 or 2 corroborating independent sources
-            elif num_independent_sources == 1 or corrob_count <= 2:
-                trust_score = 70 + min(10, int(max_similarity * 10))
+                if same_source_updates > 1:
+                    verdict = f"Reported only by {ev_i.source_name} ({same_source_updates} posts on same feed). 0 independent outlets confirming this claim."
+                else:
+                    verdict = f"Reported only by {ev_i.source_name}. 0 independent cross-sources confirming this claim yet."
+            elif num_independent_sources == 1:
+                trust_score = 70 + min(9, int(max_similarity * 10))
                 trust_label = "Developing / Verified"
-                verdict = f"Corroborated by {len(unique_sources)} sources ({', '.join(list(unique_sources)[:2])})."
-            # 4. High Multi-Source Consensus: 3+ independent sources or multiple platforms
+                other_src = list(independent_sources)[0]
+                verdict = f"Developing story confirmed across 2 independent outlets ({ev_i.source_name} and {other_src})."
             else:
-                diversity_bonus = 10 if num_source_types >= 2 else 5
-                trust_score = min(98, 80 + (num_independent_sources * 4) + diversity_bonus)
+                diversity_bonus = 8 if num_source_types >= 2 else 4
+                trust_score = min(98, 82 + (num_independent_sources * 3) + diversity_bonus)
                 trust_label = "Highly Corroborated"
-                verdict = f"Strong multi-source consensus confirmed by {len(unique_sources)} sources across {num_source_types} platforms."
+                top_sources = [ev_i.source_name] + list(independent_sources)[:2]
+                verdict = f"Multi-source consensus verified across {len(unique_sources)} independent outlets ({', '.join(top_sources)})."
 
             nearest_items = [
                 {
@@ -745,64 +765,68 @@ class EmbeddingService:
                 "trustworthiness_score": trust_score,
                 "trustworthiness_label": trust_label,
                 "verdict": verdict,
-                "corroboration_count": corrob_count,
+                "corroboration_count": num_independent_sources,
+                "same_source_updates": same_source_updates,
                 "corroborating_sources": list(unique_sources),
+                "independent_sources": list(independent_sources),
                 "source_diversity_count": len(unique_sources),
                 "nearest_neighbors": nearest_items,
                 "max_similarity": round(max_similarity, 3),
             })
 
-        # --- Connected Component Clustering ---
-        visited = set()
+        # --- Assign Clusters Metadata ---
         clusters: List[Dict[str, Any]] = []
         cluster_id_counter = 1
         outlier_events = []
 
-        for i in range(n):
-            if i in visited:
-                continue
-            component = []
-            queue = [i]
-            visited.add(i)
+        for k in range(K):
+            comp_indices = [i for i in range(n) if cluster_assign[i] == k]
+            valid_comp_indices = []
+            for idx in comp_indices:
+                if node_metrics[idx]["trustworthiness_label"] == "Isolated Outlier":
+                    node_metrics[idx]["cluster_id"] = 0
+                    node_metrics[idx]["cluster_label"] = "Isolated Outliers"
+                    outlier_events.append(events[idx])
+                else:
+                    valid_comp_indices.append(idx)
 
-            while queue:
-                curr = queue.pop(0)
-                component.append(curr)
-                for neighbor in adj[curr]:
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append(neighbor)
-
-            comp_events = [events[idx] for idx in component]
-            if len(component) >= 2:
+            if valid_comp_indices:
+                comp_events = [events[idx] for idx in valid_comp_indices]
                 sorted_comp = sorted(
                     comp_events,
                     key=lambda x: getattr(x, "importance_score", 5) or 5,
                     reverse=True,
                 )
-                top_title = sorted_comp[0].headline or sorted_comp[0].title
-                cluster_label = top_title[:60] if len(top_title) > 60 else top_title
+                raw_title = sorted_comp[0].headline or sorted_comp[0].title
+                # Clean telegram urgent prefixes and emojis
+                clean_title = re.sub(
+                    r"^[\s🔴⭕️🚨⚡️⚠️\*\-\#]+",
+                    "",
+                    raw_title,
+                ).strip()
+                clean_title = re.sub(
+                    r"^(urgent|breaking|عاجل|مهم|update)\s*:\s*",
+                    "",
+                    clean_title,
+                    flags=re.IGNORECASE,
+                ).strip()
+                lead_title = clean_title if len(clean_title) >= 5 else raw_title
+                cluster_label = lead_title[:50] if len(lead_title) > 50 else lead_title
 
-                for idx in component:
+                for idx in valid_comp_indices:
                     node_metrics[idx]["cluster_id"] = cluster_id_counter
                     node_metrics[idx]["cluster_label"] = cluster_label
 
                 clusters.append({
                     "id": cluster_id_counter,
                     "label": cluster_label,
-                    "size": len(component),
+                    "size": len(valid_comp_indices),
                     "center_x": 0.0,
                     "center_y": 0.0,
                     "radius": 15.0,
                     "event_ids": [e.id for e in comp_events],
                 })
                 cluster_id_counter += 1
-            else:
-                # Single-node component: assign to outlier group
-                for idx in component:
-                    node_metrics[idx]["cluster_id"] = 0
-                    node_metrics[idx]["cluster_label"] = "Isolated Outliers"
-                outlier_events.extend(comp_events)
 
         if outlier_events:
             clusters.append({
@@ -814,6 +838,35 @@ class EmbeddingService:
                 "radius": 22.0,
                 "event_ids": [e.id for e in outlier_events],
             })
+
+        # --- Curated Intra-Cluster Edges: STRICTLY Cross-Source Corroboration ---
+        for i in range(n):
+            ev_i = events[i]
+            c_i = node_metrics[i].get("cluster_id")
+            if c_i == 0:
+                continue
+            sims_in_cluster = []
+            for j in range(n):
+                if i == j:
+                    continue
+                # Strictly cross-source! Do not connect a source to itself as corroboration
+                if events[i].source_name == events[j].source_name:
+                    continue
+                score = float(sim_matrix[i, j])
+                c_j = node_metrics[j].get("cluster_id")
+                if score >= corrob_threshold and (c_i == c_j or score >= 0.82):
+                    sims_in_cluster.append((j, score))
+
+            sims_in_cluster.sort(key=lambda x: x[1], reverse=True)
+            for j, score in sims_in_cluster[:2]:
+                edge_pair = (min(i, j), max(i, j))
+                if edge_pair not in edge_set:
+                    edge_set.add(edge_pair)
+                    edges.append({
+                        "source": ev_i.id,
+                        "target": events[j].id,
+                        "similarity": round(score, 3),
+                    })
 
         return node_metrics, edges, clusters
 

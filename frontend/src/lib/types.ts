@@ -170,6 +170,8 @@ export interface MapTrustworthiness {
   verdict: string;
   corroboration_count: number;
   corroborating_sources: string[];
+  independent_sources?: string[];
+  same_source_updates?: number;
   source_diversity: number;
 }
 

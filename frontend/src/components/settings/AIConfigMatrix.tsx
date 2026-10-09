@@ -38,14 +38,18 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
       extraction: defaultStage('groq', 'qwen/qwen3.8-27b', [
         { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
         { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
+        { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
       ]),
       scoring: defaultStage('gemini', 'gemini-3.5-flash-lite', [
         { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.1 },
+        { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.1 },
+        { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.1 },
       ]),
       summarization: defaultStage('groq', 'openai/gpt-oss-120b', [
         { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.2 },
         { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
         { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
+        { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.2 },
       ]),
       visuals: defaultStage('groq', 'openai/gpt-oss-20b', [
         { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.2 },
@@ -363,7 +367,6 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
                             <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Fastest Multilingual | 1K RPD)</option>
                             <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Deep Reasoning | 1K RPD)</option>
                             <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (Lightweight | 1K RPD)</option>
-                            <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (High Quality)</option>
                           </>
                         )}
                       </datalist>

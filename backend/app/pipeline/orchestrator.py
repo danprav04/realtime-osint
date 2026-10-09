@@ -100,6 +100,7 @@ class PipelineOrchestrator:
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
                 ],
             ),
             "scoring": AIStageConfig(
@@ -109,6 +110,8 @@ class PipelineOrchestrator:
                 temperature=0.1,
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
+                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.1),
+                    AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.1),
                 ],
             ),
             "summarization": AIStageConfig(
@@ -120,6 +123,7 @@ class PipelineOrchestrator:
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.2),
                 ],
             ),
             "visuals": AIStageConfig(
@@ -363,18 +367,21 @@ class PipelineOrchestrator:
                     if setting.key == "ai_pipeline_stages" and setting.value_json:
                         for stage_id, cfg_data in setting.value_json.items():
                             norm_id = self._normalize_stage_id(stage_id)
-                            raw_fallbacks = cfg_data.get("fallbacks", [])
-                            parsed_fallbacks = []
-                            for fb in raw_fallbacks:
-                                if isinstance(fb, dict):
-                                    parsed_fallbacks.append(AIFallbackConfig(
-                                        provider=fb.get("provider", "gemini"),
-                                        model_name=fb.get("model_name") or fb.get("model", "gemini-3.1-flash-lite"),
-                                        temperature=fb.get("temperature"),
-                                        api_key_override=fb.get("api_key_override"),
-                                    ))
-                                elif isinstance(fb, AIFallbackConfig):
-                                    parsed_fallbacks.append(fb)
+                            raw_fallbacks = cfg_data.get("fallbacks")
+                            if raw_fallbacks is None and norm_id in self._stage_configs:
+                                parsed_fallbacks = list(self._stage_configs[norm_id].fallbacks)
+                            else:
+                                parsed_fallbacks = []
+                                for fb in (raw_fallbacks or []):
+                                    if isinstance(fb, dict):
+                                        parsed_fallbacks.append(AIFallbackConfig(
+                                            provider=fb.get("provider", "gemini"),
+                                            model_name=fb.get("model_name") or fb.get("model", "gemini-3.1-flash-lite"),
+                                            temperature=fb.get("temperature"),
+                                            api_key_override=fb.get("api_key_override"),
+                                        ))
+                                    elif isinstance(fb, AIFallbackConfig):
+                                        parsed_fallbacks.append(fb)
                             self._stage_configs[norm_id] = AIStageConfig(
                                 stage_id=norm_id,  # type: ignore
                                 provider=cfg_data.get("provider", "gemini"),

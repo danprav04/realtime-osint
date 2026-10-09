@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Key, X, Check, Shield } from 'lucide-react';
 import { getStoredApiKey, setStoredApiKey } from '@/lib/api';
+import { AppIcon } from '@/components/AppIcon';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -37,10 +38,8 @@ export function AuthModal({ isOpen, onClose, onSaved }: AuthModalProps) {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
       <div className="relative w-full max-w-md rounded-xl bg-surface-overlay p-6 hairline-border shadow-2xl">
         <div className="flex items-center justify-between pb-4 hairline-b mb-5">
-          <div className="flex items-center space-x-2">
-            <div className="p-2 rounded-lg bg-accent-indigo/15 text-accent-indigo">
-              <Shield className="w-5 h-5" />
-            </div>
+          <div className="flex items-center space-x-3">
+            <AppIcon size={36} />
             <div>
               <h3 className="text-base font-semibold text-zinc-100 tracking-tight">API Key Authentication</h3>
               <p className="text-xs text-zinc-400">Configure your authorization header</p>

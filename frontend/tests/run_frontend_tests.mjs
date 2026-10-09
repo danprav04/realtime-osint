@@ -378,6 +378,54 @@ test('API Client - exports getEmbeddingsMap, triggerEmbeddingBackfill, and getEm
   assert.equal(typeof api.getEmbeddingStatus, 'function');
 });
 
+// Test 19: App Icon Assets - validates icon files and web manifest in public directory
+test('App Icon Assets - verifies favicon, svg, touch icon, and webmanifest exist with non-zero size', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const requiredAssets = [
+    'public/favicon.ico',
+    'public/icon.svg',
+    'public/icon-192.png',
+    'public/icon-512.png',
+    'public/apple-touch-icon.png',
+    'public/site.webmanifest',
+    'src/app/favicon.ico',
+    'src/app/icon.svg',
+    'src/app/apple-icon.png',
+  ];
+
+  for (const relPath of requiredAssets) {
+    const fullPath = path.resolve(relPath);
+    assert.ok(fs.existsSync(fullPath), `Asset must exist: ${relPath}`);
+    const stat = fs.statSync(fullPath);
+    assert.ok(stat.size > 0, `Asset must not be empty: ${relPath}`);
+  }
+
+  // Validate webmanifest json format
+  const manifestRaw = fs.readFileSync(path.resolve('public/site.webmanifest'), 'utf-8');
+  const manifest = JSON.parse(manifestRaw);
+  assert.equal(manifest.short_name, 'OSINT Realtime');
+  assert.ok(Array.isArray(manifest.icons) && manifest.icons.length >= 4);
+});
+
+// Test 20: AppIcon & AppLogo Component - validates component file existence and exports
+test('AppIcon & AppLogo - exports valid React components with props support', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const componentPath = path.resolve('src/components/common/AppIcon.tsx');
+  const reexportPath = path.resolve('src/components/AppIcon.tsx');
+
+  assert.ok(fs.existsSync(componentPath), 'AppIcon.tsx must exist');
+  assert.ok(fs.existsSync(reexportPath), 'components/AppIcon.tsx must exist');
+
+  const content = fs.readFileSync(componentPath, 'utf-8');
+  assert.ok(content.includes('export function AppIcon'), 'AppIcon component must be exported');
+  assert.ok(content.includes('export function AppLogo'), 'AppLogo component must be exported');
+  assert.ok(content.includes('viewBox="0 0 512 512"'), 'AppIcon must render SVG with 512 viewBox');
+});
+
 console.log('Running frontend automated tests...');
 
 

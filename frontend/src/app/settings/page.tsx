@@ -26,6 +26,7 @@ import { ThemeForm } from '@/components/settings/ThemeForm';
 import { SourceManager } from '@/components/settings/SourceManager';
 import { AIConfigMatrix } from '@/components/settings/AIConfigMatrix';
 import { ApiKeyManager } from '@/components/settings/ApiKeyManager';
+import { AppIcon } from '@/components/AppIcon';
 import { cn } from '@/lib/utils';
 
 export default function SettingsPage() {
@@ -98,9 +99,7 @@ export default function SettingsPage() {
       {/* Page Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 hairline-b">
         <div className="flex items-center space-x-3">
-          <div className="p-2.5 rounded-lg bg-accent-indigo/15 text-accent-indigo border border-accent-indigo/30">
-            <Sliders className="w-5 h-5" />
-          </div>
+          <AppIcon size={38} />
           <div>
             <h2 className="text-lg font-semibold text-zinc-100 tracking-tight">
               System Settings & Zero-Code Hot Reload

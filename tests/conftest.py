@@ -482,10 +482,51 @@ def create_contract_test_app() -> FastAPI:
     db_sources: Dict[str, Dict[str, Any]] = {}
     db_events: Dict[str, Dict[str, Any]] = {}
     db_ai_configs: Dict[str, Any] = {
-        "extraction": {"stage_id": "extraction", "provider": "gemini", "model_name": "gemini-2.0-flash", "temperature": 0.2},
-        "scoring": {"stage_id": "scoring", "provider": "gemini", "model_name": "gemini-2.0-flash", "temperature": 0.1},
-        "summarization": {"stage_id": "summarization", "provider": "gemini", "model_name": "gemini-2.0-flash", "temperature": 0.3},
-        "visuals": {"stage_id": "visuals", "provider": "gemini", "model_name": "gemini-2.0-flash", "temperature": 0.3},
+        "extraction": {
+            "stage_id": "extraction",
+            "provider": "gemini",
+            "model_name": "gemini-2.0-flash",
+            "temperature": 0.2,
+            "fallbacks": [
+                {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+                {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "groq", "model_name": "llama-3.3-70b-versatile", "temperature": 0.2},
+            ],
+        },
+        "scoring": {
+            "stage_id": "scoring",
+            "provider": "gemini",
+            "model_name": "gemini-2.0-flash",
+            "temperature": 0.1,
+            "fallbacks": [
+                {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.1},
+                {"provider": "groq", "model_name": "llama-3.3-70b-versatile", "temperature": 0.1},
+                {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.1},
+            ],
+        },
+        "summarization": {
+            "stage_id": "summarization",
+            "provider": "gemini",
+            "model_name": "gemini-2.0-flash",
+            "temperature": 0.3,
+            "fallbacks": [
+                {"provider": "groq", "model_name": "llama-3.3-70b-versatile", "temperature": 0.2},
+                {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
+                {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+                {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+            ],
+        },
+        "visuals": {
+            "stage_id": "visuals",
+            "provider": "gemini",
+            "model_name": "gemini-2.0-flash",
+            "temperature": 0.3,
+            "fallbacks": [
+                {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
+                {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+                {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+            ],
+        },
     }
     db_settings: Dict[str, Any] = {
         "api_keys": {

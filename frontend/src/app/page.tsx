@@ -23,6 +23,7 @@ import { EventCard } from '@/components/timeline/EventCard';
 import { EventDetailsModal } from '@/components/timeline/EventDetailsModal';
 import { AlertWheel } from '@/components/timeline/AlertWheel';
 import { SourceBadge } from '@/components/timeline/SourceBadge';
+import { AppIcon } from '@/components/AppIcon';
 import { cn, sortEvents, SortOption } from '@/lib/utils';
 
 export default function DashboardPage() {
@@ -455,8 +456,8 @@ export default function DashboardPage() {
         ) : filteredEvents.length === 0 ? (
           // Empty State
           <div className="card-slick rounded-xl p-12 text-center space-y-3">
-            <div className="p-3 mx-auto w-12 h-12 rounded-xl bg-surface-raised hairline-border flex items-center justify-center text-zinc-500">
-              <Radio className="w-6 h-6" />
+            <div className="p-2 mx-auto w-16 h-16 rounded-2xl bg-surface-raised hairline-border flex items-center justify-center">
+              <AppIcon size={52} animated />
             </div>
             <h3 className="text-base font-semibold text-zinc-200">No Intelligence Events Match Filters</h3>
             <p className="text-xs text-zinc-500 max-w-sm mx-auto">

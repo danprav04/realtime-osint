@@ -14,6 +14,11 @@ import {
   Cpu,
   Layers,
   Compass,
+  HelpCircle,
+  X,
+  Info,
+  CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   EmbeddingsMapData,
@@ -59,6 +64,7 @@ export function RelevanceMap({
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [selectedClusterFilter, setSelectedClusterFilter] = useState<number | 'all'>('all');
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+  const [showGuide, setShowGuide] = useState(false);
 
   // Selected node object
   const selectedNode = useMemo(() => {
@@ -225,29 +231,52 @@ export function RelevanceMap({
       ctx.setLineDash([4, 4]);
       ctx.stroke();
 
-      // Cluster label pill
+      // Cluster label pill - positioned radially outward so it never occludes nodes
+      const maxChars = 32;
+      const cleanLabel = cluster.label.length > maxChars ? `${cluster.label.slice(0, maxChars)}…` : cluster.label;
       const labelText =
         cluster.id === 0
-          ? `Outliers • ${cluster.size}`
-          : `Cluster #${cluster.id}: ${cluster.label.slice(0, 24)}${cluster.label.length > 24 ? '…' : ''} (${cluster.size})`;
+          ? `Outliers (${cluster.size})`
+          : `C#${cluster.id}: ${cleanLabel} (${cluster.size})`;
 
-      ctx.font = '10px sans-serif';
+      ctx.font = '600 11px system-ui, -apple-system, sans-serif';
       ctx.textAlign = 'center';
       const textWidth = ctx.measureText(labelText).width;
-      const pillY = scY - scRadius - 12;
+
+      // Radially project outward from canvas center to prevent overlapping nodes
+      const dx = scX - centerX;
+      const dy = scY - centerY;
+      const distFromCenter = Math.hypot(dx, dy);
+      let pillX = scX;
+      let pillY = scY - scRadius - 14;
+
+      if (distFromCenter > 1.0) {
+        const uX = dx / distFromCenter;
+        const uY = dy / distFromCenter;
+        pillX = scX + uX * (scRadius + 18);
+        pillY = scY + uY * (scRadius + 18);
+      }
 
       // Pill background
-      ctx.fillStyle = 'rgba(24, 24, 27, 0.75)';
+      ctx.fillStyle = 'rgba(9, 9, 11, 0.92)';
       ctx.beginPath();
-      ctx.roundRect(scX - textWidth / 2 - 8, pillY - 10, textWidth + 16, 16, 4);
+      ctx.roundRect(pillX - textWidth / 2 - 12, pillY - 11, textWidth + 24, 22, 6);
       ctx.fill();
-      ctx.strokeStyle = cluster.id === 0 ? 'rgba(244, 63, 94, 0.35)' : 'rgba(6, 182, 212, 0.35)';
+
+      ctx.strokeStyle = cluster.id === 0 ? 'rgba(244, 63, 94, 0.55)' : 'rgba(6, 182, 212, 0.55)';
+      ctx.lineWidth = 1.2;
       ctx.setLineDash([]);
       ctx.stroke();
 
+      // Small glowing pip
+      ctx.beginPath();
+      ctx.arc(pillX - textWidth / 2 - 4, pillY, 3, 0, Math.PI * 2);
+      ctx.fillStyle = cluster.id === 0 ? '#f43f5e' : '#06b6d4';
+      ctx.fill();
+
       // Pill text
-      ctx.fillStyle = cluster.id === 0 ? '#fda4af' : '#67e8f9';
-      ctx.fillText(labelText, scX, pillY + 2);
+      ctx.fillStyle = cluster.id === 0 ? '#fda4af' : '#e0f2fe';
+      ctx.fillText(labelText, pillX + 4, pillY + 3.5);
       ctx.restore();
     });
 
@@ -350,8 +379,28 @@ export function RelevanceMap({
       ctx.fillStyle = fillColor;
       ctx.fill();
       ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(0, 0, 0, 0.6)';
-      ctx.lineWidth = isSelected ? 1.5 : 0.8;
       ctx.stroke();
+
+      // Node title label when hovered, selected, or when zoomed into galaxy
+      if (!isDimmed && (isHovered || isSelected || (currentScale >= 1.35 && (node.importance_score || 5) >= 7))) {
+        const rawTitle = node.headline || node.title;
+        const shortTitle = rawTitle.length > 26 ? `${rawTitle.slice(0, 26)}…` : rawTitle;
+        ctx.font = '500 9.5px system-ui, sans-serif';
+        const tWidth = ctx.measureText(shortTitle).width;
+        const lx = scX + radius + 5;
+        const ly = scY + 3;
+
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
+        ctx.beginPath();
+        ctx.roundRect(lx - 4, ly - 10, tWidth + 8, 14, 3);
+        ctx.fill();
+        ctx.strokeStyle = isHovered || isSelected ? 'rgba(6, 182, 212, 0.7)' : 'rgba(255, 255, 255, 0.15)';
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+
+        ctx.fillStyle = isHovered || isSelected ? '#ffffff' : '#cbd5e1';
+        ctx.fillText(shortTitle, lx, ly);
+      }
 
       ctx.restore();
     });
@@ -644,6 +693,16 @@ export function RelevanceMap({
             <span>{isBackfilling ? 'Embedding Batch...' : 'Sync Embeddings'}</span>
           </button>
 
+          {/* Map Guide / Explainer */}
+          <button
+            onClick={() => setShowGuide(true)}
+            className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised border border-white/5 text-zinc-300 hover:text-accent-cyan transition-colors text-xs font-medium"
+            title="How to read the Relevance Map & Trustworthiness scores"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-accent-cyan" />
+            <span className="hidden sm:inline">Map Guide</span>
+          </button>
+
           {/* Refresh Map */}
           <button
             onClick={onRefresh}
@@ -712,30 +771,67 @@ export function RelevanceMap({
           className="w-full h-full cursor-grab active:cursor-grabbing"
         />
 
-        {/* Hover Tooltip Overlay Card */}
+        {/* Hover Tooltip Overlay Card with Trust Rationale & Corroborating Outlets */}
         {hoveredNode && !selectedNode && (
           <div
-            className="absolute pointer-events-none z-30 max-w-xs p-3 rounded-lg bg-surface-card/95 backdrop-blur border border-white/10 shadow-xl space-y-1.5 transition-all"
+            className="absolute pointer-events-none z-30 max-w-sm p-3.5 rounded-xl bg-surface-card/95 backdrop-blur-md border border-white/10 shadow-2xl space-y-2 transition-all"
             style={{
-              left: `${Math.min(tooltipPos.x + 15, dimensions.width - 290)}px`,
-              top: `${Math.min(tooltipPos.y + 15, dimensions.height - 130)}px`,
+              left: `${Math.min(tooltipPos.x + 15, dimensions.width - 340)}px`,
+              top: `${Math.min(tooltipPos.y + 15, dimensions.height - 190)}px`,
             }}
           >
+            {/* Source & Trust Badge */}
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] font-mono text-zinc-400">
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-surface-raised border border-white/5 text-zinc-300 truncate max-w-[180px]">
                 {hoveredNode.source_name}
               </span>
               <span
-                className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
-                style={{ color: getNodeFill(hoveredNode) }}
+                className="text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap"
+                style={{
+                  color: getNodeFill(hoveredNode),
+                  borderColor: `${getNodeFill(hoveredNode)}40`,
+                  backgroundColor: `${getNodeFill(hoveredNode)}15`,
+                }}
               >
                 {hoveredNode.trustworthiness.score}% • {hoveredNode.trustworthiness.label}
               </span>
             </div>
-            <p className="text-xs font-semibold text-zinc-100 line-clamp-2">
+
+            {/* Headline */}
+            <p className="text-xs font-bold text-zinc-100 leading-snug">
               {hoveredNode.headline || hoveredNode.title}
             </p>
-            <p className="text-[11px] text-zinc-400 line-clamp-2">
+
+            {/* Verification Verdict & Rationale Box */}
+            <div className="p-2 rounded-lg bg-surface-raised/80 border border-white/5 space-y-1 text-[11px]">
+              <div className="flex items-center justify-between text-zinc-400 font-semibold text-[10px]">
+                <span>Trust Rationale:</span>
+                {hoveredNode.cluster_label && (
+                  <span className="text-accent-cyan truncate max-w-[140px]">
+                    {hoveredNode.cluster_label}
+                  </span>
+                )}
+              </div>
+              <p className="text-zinc-300 leading-relaxed text-[10.5px]">
+                {hoveredNode.trustworthiness.verdict}
+              </p>
+              {hoveredNode.trustworthiness.independent_sources &&
+                hoveredNode.trustworthiness.independent_sources.length > 0 && (
+                  <div className="pt-1 flex flex-wrap gap-1">
+                    {hoveredNode.trustworthiness.independent_sources.slice(0, 3).map((src, i) => (
+                      <span
+                        key={i}
+                        className="text-[9.5px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 font-mono"
+                      >
+                        ✓ {src}
+                      </span>
+                    ))}
+                  </div>
+                )}
+            </div>
+
+            {/* Summary */}
+            <p className="text-[10.5px] text-zinc-400 line-clamp-2 leading-relaxed">
               {hoveredNode.summary}
             </p>
           </div>
@@ -835,6 +931,177 @@ export function RelevanceMap({
         onClose={() => setSelectedNodeId(null)}
         onSelectNeighbor={handleSelectNeighbor}
       />
+
+      {/* Map Intel & Trustworthiness Guide Modal */}
+      {showGuide && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="relative w-full max-w-2xl max-h-[88vh] flex flex-col rounded-2xl bg-canvas-subtle border border-white/10 shadow-2xl overflow-hidden text-zinc-200">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-5 hairline-b bg-canvas-base/60 backdrop-blur-md">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 rounded-xl bg-accent-cyan/10 border border-accent-cyan/20 text-accent-cyan">
+                  <Compass className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-100">Relevance Map & Trustworthiness Guide</h3>
+                  <p className="text-xs text-zinc-400">How to interpret semantic clusters, corroboration links, and trust ratings</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowGuide(false)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-surface-raised transition-colors"
+                title="Close Guide"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Scrollable Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 text-xs text-zinc-300 scrollbar-thin">
+              {/* 1. The Core Concept */}
+              <div className="space-y-2">
+                <h4 className="flex items-center space-x-2 text-sm font-semibold text-zinc-100">
+                  <span className="w-2 h-2 rounded-full bg-accent-cyan" />
+                  <span>1. What is this Map Showing?</span>
+                </h4>
+                <p className="leading-relaxed text-zinc-300">
+                  This map is a <strong>topological projection of incoming intelligence dispatches</strong>. Each report is embedded into a high-dimensional vector capturing its content, named entities, timestamp, and geopolitical context.
+                </p>
+                <div className="p-3 rounded-lg bg-surface-card border border-white/5 space-y-1.5">
+                  <div className="flex items-start space-x-2">
+                    <CheckCircle2 className="w-4 h-4 text-accent-cyan mt-0.5 shrink-0" />
+                    <span><strong>Proximity = Semantic Affinity:</strong> Reports discussing the exact same incident, battlefield action, or diplomatic resolution naturally gravitate close together.</span>
+                  </div>
+                  <div className="flex items-start space-x-2">
+                    <CheckCircle2 className="w-4 h-4 text-accent-cyan mt-0.5 shrink-0" />
+                    <span><strong>Distance = Topical Disconnect:</strong> A statement from Geneva and a drone strike in the Red Sea land far apart in distinct regions.</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. Story Galaxies */}
+              <div className="space-y-2">
+                <h4 className="flex items-center space-x-2 text-sm font-semibold text-zinc-100">
+                  <span className="w-2 h-2 rounded-full bg-purple-400" />
+                  <span>2. Topic Galaxies (Constellations)</span>
+                </h4>
+                <p className="leading-relaxed text-zinc-300">
+                  Reports are grouped into <strong>thematic story clusters</strong> (e.g., flight cancellations, border shelling, international sanctions).
+                </p>
+                <div className="p-3 rounded-lg bg-surface-card border border-white/5 space-y-2">
+                  <p>
+                    Use the <strong>Galaxies bar</strong> at the top to navigate between breaking events. Clicking any pill (e.g. <span className="font-mono text-accent-cyan bg-accent-cyan/10 px-1 py-0.5 rounded">C#1: Riyadh Flights</span>) instantly flies the camera directly into that story cluster.
+                  </p>
+                  <p className="text-zinc-400">
+                    The <strong>Perimeter Ring (Outliers)</strong> on the outer boundary holds single-source or isolated reports that do not yet belong to any verified multi-source story thread.
+                  </p>
+                </div>
+              </div>
+
+              {/* 3. Corroboration Edges */}
+              <div className="space-y-2">
+                <h4 className="flex items-center space-x-2 text-sm font-semibold text-zinc-100">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                  <span>3. Corroboration Edges (Connecting Lines)</span>
+                </h4>
+                <p className="leading-relaxed text-zinc-300">
+                  Subtle glowing lines only connect reports that <strong>directly corroborate each other</strong> (cosine similarity &ge; 0.76).
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="p-2.5 rounded-lg bg-surface-card border border-white/5 space-y-1">
+                    <span className="font-semibold text-emerald-400">Densely Interconnected</span>
+                    <p className="text-[11px] text-zinc-400">A tightly linked nexus signifies a major breaking story confirmed by multiple independent outlets (Telegram, NewsAPI, RSS).</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-surface-card border border-white/5 space-y-1">
+                    <span className="font-semibold text-amber-400">Isolated / Unlinked</span>
+                    <p className="text-[11px] text-zinc-400">A lone report with zero edges has not yet been echoed by any other source. Treat with caution pending secondary confirmation.</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4. Trustworthiness Scoring */}
+              <div className="space-y-2">
+                <h4 className="flex items-center space-x-2 text-sm font-semibold text-zinc-100">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                  <span>4. Trustworthiness Calibration</span>
+                </h4>
+                <p className="leading-relaxed text-zinc-300">
+                  Trust is dynamically calibrated based on multi-source cross-verification and domain reputation:
+                </p>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="flex items-start space-x-2 p-2 rounded-lg bg-surface-card border border-emerald-500/20">
+                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 mt-1 shrink-0" />
+                    <div>
+                      <strong className="text-emerald-400">High Trust (&ge; 80%)</strong>
+                      <p className="text-zinc-400">Corroborated by 3+ independent sources or verified tier-1 agencies.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start space-x-2 p-2 rounded-lg bg-surface-card border border-cyan-500/20">
+                    <div className="w-2.5 h-2.5 rounded-full bg-cyan-500 mt-1 shrink-0" />
+                    <div>
+                      <strong className="text-cyan-400">Verified (60-79%)</strong>
+                      <p className="text-zinc-400">Confirmed by 2 separate dispatches. Developing consensus.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start space-x-2 p-2 rounded-lg bg-surface-card border border-amber-500/20">
+                    <div className="w-2.5 h-2.5 rounded-full bg-amber-500 mt-1 shrink-0" />
+                    <div>
+                      <strong className="text-amber-400">Single-Source (40-59%)</strong>
+                      <p className="text-zinc-400">Only 1 source reporting. High potential for rumor or unverified claim.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start space-x-2 p-2 rounded-lg bg-surface-card border border-rose-500/20">
+                    <div className="w-2.5 h-2.5 rounded-full bg-rose-500 mt-1 shrink-0" />
+                    <div>
+                      <strong className="text-rose-400">Outlier (&lt; 40%)</strong>
+                      <p className="text-zinc-400">Isolated fringe claim with no semantic matches across any feed.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5. Navigation & Shortcuts */}
+              <div className="space-y-2">
+                <h4 className="flex items-center space-x-2 text-sm font-semibold text-zinc-100">
+                  <span className="w-2 h-2 rounded-full bg-sky-400" />
+                  <span>5. Navigation & Shortcuts</span>
+                </h4>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+                  <div className="p-2 rounded-lg bg-surface-card border border-white/5">
+                    <span className="font-mono font-bold text-accent-cyan">Click Node</span>
+                    <p className="text-[10px] text-zinc-400 mt-0.5">Open Event Inspector Drawer</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-surface-card border border-white/5">
+                    <span className="font-mono font-bold text-accent-cyan">Drag</span>
+                    <p className="text-[10px] text-zinc-400 mt-0.5">Smooth Pan Map (60 FPS)</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-surface-card border border-white/5">
+                    <span className="font-mono font-bold text-accent-cyan">Scroll</span>
+                    <p className="text-[10px] text-zinc-400 mt-0.5">Zoom in / out at cursor</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-surface-card border border-white/5">
+                    <span className="font-mono font-bold text-accent-cyan">Search Box</span>
+                    <p className="text-[10px] text-zinc-400 mt-0.5">Instant keyword illumination</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 hairline-t bg-canvas-base/80 flex items-center justify-between">
+              <span className="text-[11px] text-zinc-500">
+                Powered by Gemini 3072d Embedding Vectors &amp; Adaptive KMeans Clustering
+              </span>
+              <button
+                onClick={() => setShowGuide(false)}
+                className="px-4 py-1.5 rounded-lg bg-accent-cyan text-zinc-950 font-semibold hover:bg-accent-cyan/90 transition-colors text-xs"
+              >
+                Got It
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

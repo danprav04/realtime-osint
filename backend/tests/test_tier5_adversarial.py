@@ -691,8 +691,8 @@ class TestAdversarialAIPipeline:
         orchestrator = PipelineOrchestrator(use_mock=True)
 
         def custom_get_provider(provider, model_name, api_key=None, temperature=0.2):
-            if provider.lower() == "gemini":
-                return MockAIProvider(provider="gemini", simulate_429=True)
+            if provider.lower() in ("gemini", "groq"):
+                return MockAIProvider(provider=provider, simulate_429=True, default_model=model_name)
             return MockAIProvider(provider=provider, api_key=api_key or "mock-key", default_model=model_name)
 
         orchestrator._registry.get_provider = custom_get_provider

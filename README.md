@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="frontend/public/icon.svg" alt="OSINT Realtime Logo" width="80" height="80" />
+
 # 🛰️ Real-Time OSINT Gathering Service
 
 ### *Autonomous Multi-Source Geopolitical Intelligence Aggregator, AI Analysis Pipeline & Live Dashboard*

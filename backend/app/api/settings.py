@@ -25,6 +25,7 @@ DEFAULT_AI_STAGES = {
         "fallbacks": [
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+            {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
         ],
     },
     "scoring": {
@@ -33,6 +34,8 @@ DEFAULT_AI_STAGES = {
         "temperature": 0.1,
         "fallbacks": [
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.1},
+            {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.1},
+            {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.1},
         ],
     },
     "summarization": {
@@ -43,6 +46,7 @@ DEFAULT_AI_STAGES = {
             {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+            {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.2},
         ],
     },
     "visuals": {
@@ -61,7 +65,12 @@ DEFAULT_AI_STAGES = {
 def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
     import copy
     out = copy.deepcopy(DEFAULT_AI_STAGES)
-    for k, v in raw.items():
+    # Sort so exact canonical keys in DEFAULT_AI_STAGES take precedence over aliased keys
+    sorted_items = sorted(
+        raw.items(),
+        key=lambda item: 1 if item[0].lower().strip() in DEFAULT_AI_STAGES else 0,
+    )
+    for k, v in sorted_items:
         norm_k = k.lower().strip()
         if "extract" in norm_k:
             norm_k = "extraction"
@@ -86,6 +95,8 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     norm_fb.append(fb)
             cfg["fallbacks"] = norm_fb
+        elif "fallbacks" not in cfg and norm_k in DEFAULT_AI_STAGES:
+            cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[norm_k].get("fallbacks", []))
         out[norm_k] = cfg
     return out
 
@@ -243,7 +254,10 @@ async def update_ai_pipeline_stages(
         select(SystemSettings).where(SystemSettings.key == "ai_pipeline_stages")
     )
     setting = res.scalars().first()
-    current = setting.value_json if setting else dict(DEFAULT_AI_STAGES)
+    import copy
+    from sqlalchemy.orm.attributes import flag_modified
+
+    current = copy.deepcopy(setting.value_json) if setting and setting.value_json else copy.deepcopy(DEFAULT_AI_STAGES)
 
     for stage_id, cfg in payload.items():
         norm_id = stage_id.lower().strip()
@@ -265,9 +279,10 @@ async def update_ai_pipeline_stages(
     normalized = _normalize_stage_dict(current)
 
     if setting:
-        setting.value_json = normalized
+        setting.value_json = copy.deepcopy(normalized)
+        flag_modified(setting, "value_json")
     else:
-        session.add(SystemSettings(key="ai_pipeline_stages", value_json=normalized))
+        session.add(SystemSettings(key="ai_pipeline_stages", value_json=copy.deepcopy(normalized)))
 
     await session.commit()
 

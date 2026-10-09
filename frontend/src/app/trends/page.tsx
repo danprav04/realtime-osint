@@ -19,6 +19,7 @@ import { SourceActivityChart } from '@/components/charts/SourceActivityChart';
 import { EventDetailsModal } from '@/components/timeline/EventDetailsModal';
 import { ImportanceBadge } from '@/components/timeline/ImportanceBadge';
 import { SourceBadge } from '@/components/timeline/SourceBadge';
+import { AppIcon } from '@/components/AppIcon';
 import { formatRelativeTime } from '@/lib/utils';
 
 export default function TrendsPage() {
@@ -63,9 +64,7 @@ export default function TrendsPage() {
       {/* Page Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 hairline-b">
         <div className="flex items-center space-x-3">
-          <div className="p-2.5 rounded-lg bg-accent-cyan/15 text-accent-cyan border border-accent-cyan/30">
-            <TrendingUp className="w-5 h-5" />
-          </div>
+          <AppIcon size={38} />
           <div>
             <h2 className="text-lg font-semibold text-zinc-100 tracking-tight">
               Intelligence Trends & Threat Analytics

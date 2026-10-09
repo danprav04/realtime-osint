@@ -1,6 +1,8 @@
+import copy
 import logging
 from typing import Dict, Any, List
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.models import Theme, Source, SystemSettings
 
@@ -385,6 +387,7 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
             "fallbacks": [
                 {"provider": "gemini", "model": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "groq", "model": "openai/gpt-oss-120b", "temperature": 0.2},
             ],
         },
         "importance_scoring": {
@@ -395,6 +398,8 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
             "enabled": True,
             "fallbacks": [
                 {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.1},
+                {"provider": "groq", "model": "openai/gpt-oss-120b", "temperature": 0.1},
+                {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.1},
             ],
         },
         "summarization": {
@@ -407,6 +412,7 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
                 {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.2},
                 {"provider": "gemini", "model": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "groq", "model": "openai/gpt-oss-20b", "temperature": 0.2},
             ],
         },
         "visual_generation": {
@@ -522,6 +528,48 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
             session.add(new_setting)
             seeded_counts["settings"] += 1
             logger.info(f"Seeded system setting: {key}")
+        elif key == "ai_pipeline_stages" and existing_setting and isinstance(existing_setting.value_json, dict):
+            # Auto-repair existing setting if fallback chains are missing, empty, or use deprecated models
+            cur_stages = copy.deepcopy(existing_setting.value_json)
+            repaired = False
+            for s_key, s_def in val.items():
+                matched_cur = None
+                for cur_k in cur_stages:
+                    if (
+                        s_key in cur_k
+                        or cur_k in s_key
+                        or ("score" in s_key and "score" in cur_k)
+                        or ("extract" in s_key and "extract" in cur_k)
+                        or ("summar" in s_key and "summar" in cur_k)
+                        or ("vis" in s_key and "vis" in cur_k)
+                    ):
+                        matched_cur = cur_k
+                        break
+                if matched_cur:
+                    target_stage = cur_stages[matched_cur]
+                    # Check and migrate primary model if deprecated
+                    for m_field in ("model", "model_name"):
+                        if target_stage.get(m_field) == "llama-3.3-70b-versatile":
+                            target_stage[m_field] = "openai/gpt-oss-120b"
+                            repaired = True
+                    # Check fallbacks
+                    if not target_stage.get("fallbacks"):
+                        target_stage["fallbacks"] = list(s_def.get("fallbacks", []))
+                        repaired = True
+                    else:
+                        for fb in target_stage["fallbacks"]:
+                            for m_field in ("model", "model_name"):
+                                if fb.get(m_field) == "llama-3.3-70b-versatile":
+                                    fb[m_field] = "openai/gpt-oss-120b"
+                                    repaired = True
+                else:
+                    cur_stages[s_key] = s_def
+                    repaired = True
+            if repaired:
+                existing_setting.value_json = cur_stages
+                flag_modified(existing_setting, "value_json")
+                session.add(existing_setting)
+                logger.info("Auto-repaired AI pipeline fallback chains and replaced deprecated models in existing database settings.")
 
     await session.commit()
     logger.info(f"Database seed complete: {seeded_counts}")

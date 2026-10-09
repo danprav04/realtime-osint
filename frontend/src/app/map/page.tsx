@@ -27,6 +27,7 @@ import {
 } from '@/lib/api';
 import { getSocket, useSocketConnection } from '@/lib/socket';
 import { RelevanceMap } from '@/components/map/RelevanceMap';
+import { AppIcon } from '@/components/AppIcon';
 
 export default function RelevanceMapPage() {
   const [mapData, setMapData] = useState<EmbeddingsMapData>({
@@ -126,9 +127,7 @@ export default function RelevanceMapPage() {
       {/* Page Header & Quick Metric Badges */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-2 hairline-b">
         <div className="flex items-center space-x-3">
-          <div className="p-2.5 rounded-lg bg-accent-cyan/15 text-accent-cyan border border-accent-cyan/30">
-            <Compass className="w-5 h-5" />
-          </div>
+          <AppIcon size={38} />
           <div>
             <div className="flex items-center space-x-2">
               <h2 className="text-lg font-semibold text-zinc-100 tracking-tight">
