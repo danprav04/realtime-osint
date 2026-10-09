@@ -671,6 +671,7 @@ def create_contract_test_app() -> FastAPI:
         theme_id: Optional[str] = None,
         source_type: Optional[str] = None,
         min_score: Optional[int] = None,
+        sort_by: Optional[str] = "published_desc",
         limit: int = 50,
         offset: int = 0
     ):
@@ -681,8 +682,15 @@ def create_contract_test_app() -> FastAPI:
             results = [e for e in results if e.get("source_type") == source_type]
         if min_score is not None:
             results = [e for e in results if e.get("importance_score", 0) >= min_score]
-        # Sort newest first
-        results.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+        if sort_by == "score_desc":
+            results.sort(key=lambda x: (x.get("importance_score") or -1, x.get("published_at") or ""), reverse=True)
+        elif sort_by == "score_asc":
+            results.sort(key=lambda x: (x.get("importance_score") if x.get("importance_score") is not None else 99, x.get("published_at") or ""))
+        elif sort_by == "published_asc":
+            results.sort(key=lambda x: x.get("published_at", ""))
+        else:
+            # Sort newest first
+            results.sort(key=lambda x: x.get("published_at", ""), reverse=True)
         return results[offset:offset + limit]
 
     @app.post("/api/events", dependencies=[Depends(verify_auth)])

@@ -47,12 +47,40 @@ async def list_events(
     start_date: Optional[datetime] = Query(None, description="Filter events published after this timestamp"),
     end_date: Optional[datetime] = Query(None, description="Filter events published before this timestamp"),
     search: Optional[str] = Query(None, description="Case-insensitive text search in title, summary, or text"),
+    sort_by: Optional[str] = Query("published_desc", description="Sort order: published_desc, published_asc, score_desc, score_asc, ingested_desc"),
     limit: int = Query(50, ge=1, le=500, description="Page size limit"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     session: AsyncSession = Depends(get_db_session),
 ) -> List[Dict[str, Any]]:
     """Retrieve intelligence events with timeline filtering, text search, and pagination."""
-    query = select(Event).order_by(Event.published_at.desc())
+    query = select(Event)
+
+    if sort_by == "score_desc":
+        query = query.order_by(
+            Event.importance_score.desc().nullslast(),
+            Event.published_at.desc().nullslast(),
+        )
+    elif sort_by == "score_asc":
+        query = query.order_by(
+            Event.importance_score.asc().nullslast(),
+            Event.published_at.desc().nullslast(),
+        )
+    elif sort_by == "published_asc":
+        query = query.order_by(
+            Event.published_at.asc().nullslast(),
+            Event.ingested_at.asc().nullslast(),
+        )
+    elif sort_by == "ingested_desc":
+        query = query.order_by(
+            Event.ingested_at.desc().nullslast(),
+            Event.published_at.desc().nullslast(),
+        )
+    else:
+        # Default: published_desc
+        query = query.order_by(
+            Event.published_at.desc().nullslast(),
+            Event.ingested_at.desc().nullslast(),
+        )
 
     if theme_id:
         if theme_id.isdigit():

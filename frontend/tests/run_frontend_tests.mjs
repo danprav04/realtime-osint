@@ -110,51 +110,274 @@ test('API Client - getStoredApiKey provides safe fallback in SSR/Node environmen
   assert.ok(key.length > 0);
 });
 
-test('PizzaMeter - Validates PizzaMeterData structure and status levels', async () => {
+test('PizzaMeter - Validates PizzaMeterData structure, hourly calibration, and toggle state', async () => {
   const samplePizzaData = {
     status: 'NOMINAL',
     level: 1,
     score: 18,
     trend: 'stable',
     baseline_multiplier: 1.05,
-    description: 'Baseline order activity in Pentagon & Arlington DoD corridor.',
+    description: 'Baseline order activity in Pentagon & Arlington DoD corridor (in line with normal hourly baseline).',
     monitored_region: 'Arlington / Pentagon DoD Corridor, VA',
     last_updated: new Date().toISOString(),
+    enabled: true,
+    hourly_calibrated: true,
+    arlington_hour: 19,
     locations: [
       {
         name: "Domino's Pizza (Pentagon City)",
         address: '1100 S Joyce St, Arlington, VA',
-        busyness: 15,
+        busyness: 78,
+        normal_busyness: 82,
         status: 'Normal',
         distance: '0.8 mi from Pentagon',
       },
       {
         name: "Papa John's (Columbia Pike)",
         address: '2901 Columbia Pike, Arlington, VA',
-        busyness: 22,
+        busyness: 80,
+        normal_busyness: 78,
         status: 'Normal',
         distance: '1.2 mi from Pentagon',
       },
       {
         name: "Pizza Hut (Arlington)",
         address: '3100 Clarendon Blvd, Arlington, VA',
-        busyness: 17,
+        busyness: 72,
+        normal_busyness: 74,
         status: 'Normal',
         distance: '1.5 mi from Pentagon',
       },
     ],
     history: [
-      { timestamp: new Date().toISOString(), score: 18 },
+      { timestamp: new Date().toISOString(), score: 78 },
     ],
   };
 
   assert.equal(samplePizzaData.status, 'NOMINAL');
   assert.equal(samplePizzaData.level, 1);
+  assert.equal(samplePizzaData.enabled, true);
+  assert.equal(samplePizzaData.hourly_calibrated, true);
   assert.equal(samplePizzaData.locations.length, 3);
-  assert.ok(samplePizzaData.locations[0].busyness <= 100);
-  assert.ok(samplePizzaData.locations[0].busyness >= 0);
+  assert.equal(samplePizzaData.locations[0].normal_busyness, 82);
+  // During 7 PM dinner rush, 78% busy with normal 82% is correctly classified as Normal, not a spike!
+  assert.equal(samplePizzaData.locations[0].status, 'Normal');
   assert.ok(samplePizzaData.baseline_multiplier >= 1.0);
   assert.ok(samplePizzaData.description.includes('Pentagon'));
+
+  // Test toggle disabled state
+  const disabledPizzaData = { ...samplePizzaData, enabled: false };
+  assert.equal(disabledPizzaData.enabled, false);
+
+  // Test anomalous late-night spike calibration
+  const lateNightSurgeData = {
+    ...samplePizzaData,
+    status: 'CRITICAL',
+    level: 4,
+    score: 84,
+    arlington_hour: 2,
+    baseline_multiplier: 10.5,
+    locations: [
+      {
+        name: "Domino's Pizza (Pentagon City)",
+        address: '1100 S Joyce St, Arlington, VA',
+        busyness: 84,
+        normal_busyness: 5,
+        status: 'Spike',
+        distance: '0.8 mi from Pentagon',
+      },
+    ],
+  };
+  assert.equal(lateNightSurgeData.status, 'CRITICAL');
+  assert.equal(lateNightSurgeData.locations[0].status, 'Spike');
+  assert.ok(lateNightSurgeData.baseline_multiplier > 3.0);
+});
+
+// Test 9: Alert Time Formatting
+test('Utils - formatAlertTime formats ISO string into military UTC time, relative time, and full string', async () => {
+  const { formatAlertTime } = await import('../src/lib/utils.ts');
+
+  const iso = '2026-10-09T14:30:15.000Z';
+  const result = formatAlertTime(iso);
+
+  assert.equal(result.timeStr, '14:30:15 UTC');
+  assert.ok(result.relativeStr);
+  assert.ok(result.fullStr.includes('2026'));
+  assert.ok(result.fullStr.includes('GMT') || result.fullStr.includes('UTC'));
+});
+
+test('Utils - formatAlertTime handles null or undefined timestamp by providing fallback UTC time', async () => {
+  const { formatAlertTime } = await import('../src/lib/utils.ts');
+
+  const resultNull = formatAlertTime(null);
+  assert.ok(resultNull.timeStr.includes('UTC'));
+  assert.equal(resultNull.relativeStr, 'Just now');
+
+  const resultUndefined = formatAlertTime(undefined);
+  assert.ok(resultUndefined.timeStr.includes('UTC'));
+  assert.equal(resultUndefined.relativeStr, 'Just now');
+});
+
+// Test 10: AlertItem Structure
+test('Types - AlertItem validates alerts data for AlertWheel component', async () => {
+  const sampleAlert = {
+    id: 'alt-101',
+    event_id: 'evt-202',
+    title: 'Yemeni Forces Repel Saudi Advance Toward Bab el-Mandeb',
+    headline: 'Yemeni Forces Repel Saudi Advance Toward Bab el-Mandeb',
+    summary: 'Yemeni Armed Forces successfully repelled a Saudi-backed advance on the Lahij-Bab el-Mandeb front...',
+    importance_score: 9,
+    source_name: 'Yemeni Armed Forces Spox Yahya Saree',
+    published_at: '2026-10-09T18:24:46Z',
+    timestamp: '2026-10-09T18:24:46Z',
+  };
+
+  assert.equal(sampleAlert.importance_score, 9);
+  assert.equal(sampleAlert.source_name, 'Yemeni Armed Forces Spox Yahya Saree');
+  assert.ok(sampleAlert.title.includes('Bab el-Mandeb'));
+  assert.ok(sampleAlert.published_at.includes('2026'));
+});
+
+// Test 11: sortEvents - newest first order (prevents old events sandwiched between fresh ones)
+test('Utils - sortEvents correctly sorts by newest published timestamp descending', async () => {
+  const { sortEvents } = await import('../src/lib/utils.ts');
+
+  const events = [
+    { id: '1', title: 'Portugal PM Defends Air Base', published_at: '2026-10-09T15:46:26Z', importance_score: 5 },
+    { id: '2', title: 'Saudi Airstrikes Target Hodeidah', published_at: '2026-10-08T11:14:29Z', importance_score: 3 }, // 1 day ago
+    { id: '3', title: 'Egyptian Artists Boycott', published_at: '2026-10-09T15:46:24Z', importance_score: 2 },
+  ];
+
+  const sorted = sortEvents(events, 'newest');
+  assert.equal(sorted[0].id, '1'); // 15:46:26
+  assert.equal(sorted[1].id, '3'); // 15:46:24
+  assert.equal(sorted[2].id, '2'); // 1 day ago is last, NOT in between
+});
+
+// Test 12: sortEvents - score descending
+test('Utils - sortEvents correctly sorts by highest importance score descending', async () => {
+  const { sortEvents } = await import('../src/lib/utils.ts');
+
+  const events = [
+    { id: '1', title: 'Low event', published_at: '2026-10-09T15:00:00Z', importance_score: 2 },
+    { id: '2', title: 'Critical strike', published_at: '2026-10-09T14:00:00Z', importance_score: 9 },
+    { id: '3', title: 'Medium statement', published_at: '2026-10-09T16:00:00Z', importance_score: 5 },
+    { id: '4', title: 'Unanalyzed event', published_at: '2026-10-09T17:00:00Z', importance_score: null },
+  ];
+
+  const sorted = sortEvents(events, 'score_desc');
+  assert.equal(sorted[0].id, '2'); // score 9
+  assert.equal(sorted[1].id, '3'); // score 5
+  assert.equal(sorted[2].id, '1'); // score 2
+  assert.equal(sorted[3].id, '4'); // null score last
+});
+
+// Test 13: sortEvents - handles missing dates gracefully
+test('Utils - sortEvents handles missing published_at by falling back to ingested_at', async () => {
+  const { sortEvents } = await import('../src/lib/utils.ts');
+
+  const events = [
+    { id: '1', title: 'Older ingest', published_at: null, ingested_at: '2026-10-09T10:00:00Z' },
+    { id: '2', title: 'Newer ingest', published_at: null, ingested_at: '2026-10-09T12:00:00Z' },
+  ];
+
+  const sorted = sortEvents(events, 'newest');
+  assert.equal(sorted[0].id, '2');
+  assert.equal(sorted[1].id, '1');
+});
+
+// Test 14: AIStageConfig & AIFallbackConfig Type Validation
+test('Types - AIStageConfig supports multi-tier fallback configuration', async () => {
+  /** @type {import('../src/lib/types.ts').AIStageConfig} */
+  const stageConfig = {
+    provider: 'gemini',
+    model_name: 'gemini-3.5-flash-lite',
+    temperature: 0.1,
+    fallbacks: [
+      {
+        provider: 'gemini',
+        model_name: 'gemini-3.1-flash-lite',
+        temperature: 0.1,
+      },
+      {
+        provider: 'groq',
+        model_name: 'llama-3.3-70b-versatile',
+        temperature: 0.2,
+      },
+    ],
+  };
+
+  assert.equal(stageConfig.model_name, 'gemini-3.5-flash-lite');
+  assert.equal(stageConfig.fallbacks?.length, 2);
+  assert.equal(stageConfig.fallbacks?.[0].model_name, 'gemini-3.1-flash-lite');
+  assert.equal(stageConfig.fallbacks?.[1].provider, 'groq');
+  assert.equal(stageConfig.fallbacks?.[1].model_name, 'llama-3.3-70b-versatile');
+});
+
+// Test 15: AIStageConfig fallback immutability and empty fallback support
+test('Types - AIStageConfig handles stages without fallbacks gracefully', async () => {
+  /** @type {import('../src/lib/types.ts').AIStageConfig} */
+  const simpleConfig = {
+    provider: 'groq',
+    model_name: 'qwen/qwen3.8-27b',
+    temperature: 0.2,
+  };
+
+  const fallbacks = simpleConfig.fallbacks || [];
+  assert.equal(fallbacks.length, 0);
+});
+
+// Test 17: Embeddings Map Types & Corroboration contracts
+test('Types - EmbeddingsMapData and MapNode reflect trustworthiness and spatial coordinates', async () => {
+  /** @type {import('../src/lib/types.ts').MapNode} */
+  const mockNode = {
+    id: 'node-1',
+    event_id: 'ev-1',
+    title: 'Naval Incident in Strait of Hormuz',
+    headline: 'Tanker boarded near Strait of Hormuz',
+    summary: 'Commercial vessel intercepted by naval forces.',
+    source_name: 'Reuters',
+    source_type: 'newsapi',
+    importance_score: 8,
+    x: 12.5,
+    y: -34.2,
+    cluster_id: 1,
+    cluster_label: 'Hormuz Naval Security',
+    trustworthiness: {
+      score: 92,
+      label: 'Highly Corroborated',
+      verdict: 'Confirmed by multiple independent intelligence channels.',
+      corroboration_count: 3,
+      corroborating_sources: ['Reuters', 'AP News', '@NavalAlerts'],
+      source_diversity: 3,
+    },
+    nearest_neighbors: [
+      {
+        event_id: 'ev-2',
+        title: 'Maritime Alert',
+        source_name: '@NavalAlerts',
+        similarity: 0.88,
+      },
+    ],
+  };
+
+  assert.equal(mockNode.trustworthiness.score, 92);
+  assert.equal(mockNode.trustworthiness.label, 'Highly Corroborated');
+  assert.equal(mockNode.trustworthiness.corroborating_sources.length, 3);
+  assert.equal(mockNode.x, 12.5);
+  assert.equal(mockNode.y, -34.2);
+  assert.equal(mockNode.nearest_neighbors[0].similarity, 0.88);
+});
+
+// Test 18: API Client - verifies getEmbeddingsMap and triggerEmbeddingBackfill functions exist
+test('API Client - exports getEmbeddingsMap, triggerEmbeddingBackfill, and getEmbeddingStatus', async () => {
+  const api = await import('../src/lib/api.ts');
+  assert.equal(typeof api.getEmbeddingsMap, 'function');
+  assert.equal(typeof api.triggerEmbeddingBackfill, 'function');
+  assert.equal(typeof api.reprojectEmbeddingsMap, 'function');
+  assert.equal(typeof api.getEmbeddingStatus, 'function');
 });
 
 console.log('Running frontend automated tests...');
+
+

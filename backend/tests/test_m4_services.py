@@ -19,6 +19,7 @@ from backend.app.config import get_settings
 from backend.app.db.models import Event, Source, Theme, utc_now
 from backend.app.db.session import close_db, get_session_factory, init_db
 from backend.app.main import app
+from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
 from backend.app.services.redis_bus import (
     CHANNEL_CONFIG_RELOAD,
     CHANNEL_EVENTS_ALERT,
@@ -436,6 +437,20 @@ async def test_events_ingest_and_timeline_filtering(api_headers):
         assert page_res.status_code == 200
         assert len(page_res.json()) <= 1
 
+        # Sort order tests: score_desc vs score_asc
+        sort_score_desc = await client.get("/api/events?sort_by=score_desc", headers=api_headers)
+        assert sort_score_desc.status_code == 200
+        score_events = sort_score_desc.json()
+        assert len(score_events) >= 2
+        # Check non-null scores are descending
+        scores = [e["importance_score"] for e in score_events if e.get("importance_score") is not None]
+        assert scores == sorted(scores, reverse=True)
+
+        sort_score_asc = await client.get("/api/events?sort_by=score_asc", headers=api_headers)
+        assert sort_score_asc.status_code == 200
+        scores_asc = [e["importance_score"] for e in sort_score_asc.json() if e.get("importance_score") is not None]
+        assert scores_asc == sorted(scores_asc)
+
 
 # ==============================================================================
 # 5. STATS REST API TESTS
@@ -466,6 +481,80 @@ async def test_stats_endpoint(api_headers):
 
         # Assert source breakdown keys
         assert "rss" in stats["source_breakdown"]
+
+
+# ==============================================================================
+# 5b. AI PIPELINE CONFIG REST API TESTS (WITH FALLBACK CHAINS)
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_ai_pipeline_settings_crud_with_fallbacks(api_headers):
+    """Test AI pipeline settings GET and PUT with multi-level fallback chains."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Unauthenticated request should fail with 401
+        unauth_res = await client.get("/api/settings/ai-pipeline")
+        assert unauth_res.status_code == 401
+
+        # 2. Get initial AI pipeline settings
+        get_res = await client.get("/api/settings/ai-pipeline", headers=api_headers)
+        assert get_res.status_code == 200
+        current_cfg = get_res.json()
+        assert "scoring" in current_cfg
+        assert "extraction" in current_cfg
+        assert "fallbacks" in current_cfg["scoring"]
+        assert isinstance(current_cfg["scoring"]["fallbacks"], list)
+
+        # 3. Update scoring stage with multi-tier fallback: gemini-3.5 -> gemini-3.1 -> groq
+        update_payload = {
+            "scoring": {
+                "provider": "gemini",
+                "model_name": "gemini-3.5-flash-lite",
+                "temperature": 0.1,
+                "fallbacks": [
+                    {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.1},
+                    {"provider": "groq", "model_name": "llama-3.3-70b-versatile", "temperature": 0.2},
+                ],
+            },
+            "extraction": {
+                "provider": "groq",
+                "model_name": "qwen/qwen3.8-27b",
+                "temperature": 0.2,
+                "fallbacks": [
+                    {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+                    {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+                ],
+            },
+        }
+
+        put_res = await client.put(
+            "/api/settings/ai-pipeline",
+            json=update_payload,
+            headers=api_headers,
+        )
+        assert put_res.status_code == 200
+        saved = put_res.json()
+        assert len(saved["scoring"]["fallbacks"]) == 2
+        assert saved["scoring"]["fallbacks"][0]["model_name"] == "gemini-3.1-flash-lite"
+        assert saved["scoring"]["fallbacks"][1]["provider"] == "groq"
+        assert saved["scoring"]["fallbacks"][1]["model_name"] == "llama-3.3-70b-versatile"
+
+        # 4. Verify persistence via subsequent GET
+        verify_res = await client.get("/api/settings/ai-pipeline", headers=api_headers)
+        assert verify_res.status_code == 200
+        verified = verify_res.json()
+        assert len(verified["scoring"]["fallbacks"]) == 2
+        assert verified["scoring"]["fallbacks"][0]["model_name"] == "gemini-3.1-flash-lite"
+        assert verified["scoring"]["fallbacks"][1]["model_name"] == "llama-3.3-70b-versatile"
+
+        # 5. Verify orchestrator received hot-reload configuration in-memory
+        orchestrator = get_pipeline_orchestrator()
+        scoring_stage = orchestrator.get_stage_config("scoring")
+        assert scoring_stage.model_name == "gemini-3.5-flash-lite"
+        assert len(scoring_stage.fallbacks) == 2
+        assert scoring_stage.fallbacks[0].model_name == "gemini-3.1-flash-lite"
+        assert scoring_stage.fallbacks[1].model_name == "llama-3.3-70b-versatile"
+        assert scoring_stage.fallbacks[1].provider == "groq"
 
 
 # ==============================================================================
