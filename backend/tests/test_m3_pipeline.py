@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from backend.app.db.models import Alert, Base, Event, SystemSettings, Theme
 from backend.app.pipeline.models import (
+    AIFallbackConfig,
     AIStageConfig,
     AnalyzedEvent,
     DigestEventItem,
@@ -527,3 +528,257 @@ async def test_orchestrator_zero_code_hot_reload(test_db_session, mock_redis_bus
     assert scoring_cfg.temperature == 0.4
 
     await orchestrator.stop()
+
+
+def test_stage_config_fallback_schema_parsing():
+    """Test 16: Verifies AIStageConfig parses and normalizes nested AIFallbackConfig chains."""
+    raw_config = {
+        "stage_id": "scoring",
+        "provider": "gemini",
+        "model_name": "gemini-3.5-flash-lite",
+        "temperature": 0.1,
+        "fallbacks": [
+            {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.1},
+            {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
+            {"provider": "groq", "model": "llama-3.3-70b-versatile"},
+        ],
+    }
+
+    cfg = AIStageConfig.model_validate(raw_config)
+    assert cfg.stage_id == "scoring"
+    assert cfg.provider == "gemini"
+    assert cfg.model_name == "gemini-3.5-flash-lite"
+    assert len(cfg.fallbacks) == 3
+
+    assert cfg.fallbacks[0].provider == "gemini"
+    assert cfg.fallbacks[0].model_name == "gemini-3.1-flash-lite"
+    assert cfg.fallbacks[0].temperature == 0.1
+
+    assert cfg.fallbacks[1].provider == "groq"
+    assert cfg.fallbacks[1].model_name == "qwen/qwen3.8-27b"
+    assert cfg.fallbacks[1].temperature == 0.2
+
+    assert cfg.fallbacks[2].provider == "groq"
+    assert cfg.fallbacks[2].model_name == "llama-3.3-70b-versatile"
+
+
+@pytest.mark.asyncio
+async def test_stage2_fallback_from_3_5_flash_lite_to_3_1_flash_lite():
+    """
+    Test 17: User scenario - When gemini-3.5-flash-lite reaches rate limits (429),
+    the pipeline automatically and seamlessly falls back to gemini-3.1-flash-lite.
+    """
+    orchestrator = PipelineOrchestrator(use_mock=True)
+
+    # Configure stage 2: Primary is gemini-3.5-flash-lite, Fallback 1 is gemini-3.1-flash-lite
+    orchestrator.set_stage_config(
+        "scoring",
+        AIStageConfig(
+            stage_id="scoring",
+            provider="gemini",
+            model_name="gemini-3.5-flash-lite",
+            temperature=0.1,
+            fallbacks=[
+                AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
+            ],
+        ),
+    )
+
+    # Mock provider: simulate 429 quota exhaustion ONLY on gemini-3.5-flash-lite
+    call_log = []
+
+    def mock_get_provider(provider, model_name, api_key=None, temperature=0.2):
+        call_log.append(f"{provider}:{model_name}")
+        if model_name == "gemini-3.5-flash-lite":
+            return MockAIProvider(provider="gemini", simulate_429=True, default_model=model_name)
+        return MockAIProvider(provider=provider, api_key="mock-key", default_model=model_name)
+
+    orchestrator._registry.get_provider = mock_get_provider
+
+    event = NormalizedEvent(
+        id="fb-evt-001",
+        theme_id="1",
+        source_type="rss",
+        source_name="Al Jazeera",
+        external_id="ext-fb-001",
+        title="Missile interception reported near Gulf of Oman",
+        raw_text="Air defense units intercepted a ballistic projectile over the Gulf of Oman.",
+    )
+
+    analyzed = await orchestrator.process_event(event, parallel_stages=False)
+
+    assert analyzed.is_analyzed is True
+    # Verify that gemini-3.5-flash-lite was attempted first, followed by gemini-3.1-flash-lite
+    assert "gemini:gemini-3.5-flash-lite" in call_log
+    assert "gemini:gemini-3.1-flash-lite" in call_log
+    # Scoring should succeed using gemini-3.1-flash-lite (missile interception -> critical score 9)
+    assert analyzed.importance_score == 9
+    assert analyzed.notification_dispatched is True
+
+
+@pytest.mark.asyncio
+async def test_multi_provider_fallback_chain():
+    """
+    Test 18: Multi-provider failover:
+    Primary: gemini-3.5-flash-lite (429) ->
+    Fallback 1: gemini-3.1-flash-lite (429) ->
+    Fallback 2: groq qwen/qwen3.8-27b (200 OK).
+    """
+    orchestrator = PipelineOrchestrator(use_mock=True)
+
+    orchestrator.set_stage_config(
+        "scoring",
+        AIStageConfig(
+            stage_id="scoring",
+            provider="gemini",
+            model_name="gemini-3.5-flash-lite",
+            temperature=0.1,
+            fallbacks=[
+                AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
+                AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
+            ],
+        ),
+    )
+
+    attempted_models = []
+
+    def mock_get_provider(provider, model_name, api_key=None, temperature=0.2):
+        attempted_models.append(f"{provider}:{model_name}")
+        # Both Gemini models hit 429 quota exhaustion
+        if provider == "gemini":
+            return MockAIProvider(provider="gemini", simulate_429=True, default_model=model_name)
+        # Groq succeeds!
+        return MockAIProvider(provider="groq", api_key="mock-key", default_model=model_name)
+
+    orchestrator._registry.get_provider = mock_get_provider
+
+    event = NormalizedEvent(
+        id="fb-evt-002",
+        theme_id="1",
+        source_type="telegram",
+        source_name="MiddleEastWire",
+        external_id="ext-fb-002",
+        title="Sanctions imposed on shipping networks",
+        raw_text="New sanctions package targeting regional petroleum shipping networks announced.",
+    )
+
+    analyzed = await orchestrator.process_event(event, parallel_stages=False)
+
+    assert analyzed.is_analyzed is True
+    # Verify all 3 models were engaged in cascade
+    assert "gemini:gemini-3.5-flash-lite" in attempted_models
+    assert "gemini:gemini-3.1-flash-lite" in attempted_models
+    assert "groq:qwen/qwen3.8-27b" in attempted_models
+    # Groq successfully scored the event
+    assert analyzed.importance_score >= 7
+
+
+@pytest.mark.asyncio
+async def test_cooldown_bypasses_exhausted_model_on_subsequent_events():
+    """
+    Test 19: Once a model hits 429 and enters cooldown, subsequent events
+    skip the exhausted model directly to the healthy fallback without delay.
+    """
+    orchestrator = PipelineOrchestrator(use_mock=True)
+
+    orchestrator.set_stage_config(
+        "scoring",
+        AIStageConfig(
+            stage_id="scoring",
+            provider="gemini",
+            model_name="gemini-3.5-flash-lite",
+            temperature=0.1,
+            fallbacks=[
+                AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
+            ],
+        ),
+    )
+
+    model_calls = []
+
+    def mock_get_provider(provider, model_name, api_key=None, temperature=0.2):
+        model_calls.append(model_name)
+        if model_name == "gemini-3.5-flash-lite":
+            return MockAIProvider(provider="gemini", simulate_429=True, default_model=model_name)
+        return MockAIProvider(provider=provider, api_key="mock-key", default_model=model_name)
+
+    orchestrator._registry.get_provider = mock_get_provider
+
+    event1 = NormalizedEvent(
+        id="cd-evt-001",
+        theme_id="1",
+        source_type="rss",
+        source_name="Reuters",
+        external_id="ext-cd-001",
+        title="First event",
+        raw_text="Naval drill in Strait of Hormuz.",
+    )
+
+    # Event 1: gemini-3.5-flash-lite is attempted, hits 429, falls back to 3.1
+    await orchestrator.process_event(event1, parallel_stages=False)
+    assert "gemini-3.5-flash-lite" in model_calls
+    assert "gemini-3.1-flash-lite" in model_calls
+    assert orchestrator.is_model_in_cooldown("gemini", "gemini-3.5-flash-lite") is True
+
+    # Event 2: gemini-3.5-flash-lite is in active cooldown, should be SKIPPED directly!
+    model_calls.clear()
+    event2 = NormalizedEvent(
+        id="cd-evt-002",
+        theme_id="1",
+        source_type="rss",
+        source_name="Reuters",
+        external_id="ext-cd-002",
+        title="Second event",
+        raw_text="Diplomatic consultations in Geneva.",
+    )
+    await orchestrator.process_event(event2, parallel_stages=False)
+
+    # gemini-3.5-flash-lite was skipped; only gemini-3.1-flash-lite was called
+    assert "gemini-3.5-flash-lite" not in model_calls
+    assert "gemini-3.1-flash-lite" in model_calls
+
+
+@pytest.mark.asyncio
+async def test_all_fallbacks_exhausted_falls_back_to_heuristics():
+    """
+    Test 20: When all models in primary and fallback chain fail,
+    the pipeline gracefully completes using deterministic offline heuristics.
+    """
+    orchestrator = PipelineOrchestrator(use_mock=True)
+
+    orchestrator.set_stage_config(
+        "scoring",
+        AIStageConfig(
+            stage_id="scoring",
+            provider="gemini",
+            model_name="gemini-3.5-flash-lite",
+            temperature=0.1,
+            fallbacks=[
+                AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
+            ],
+        ),
+    )
+
+    # Everything fails
+    def mock_get_provider(provider, model_name, api_key=None, temperature=0.2):
+        return MockAIProvider(provider=provider, simulate_429=True, default_model=model_name)
+
+    orchestrator._registry.get_provider = mock_get_provider
+
+    event = NormalizedEvent(
+        id="fail-evt-001",
+        theme_id="1",
+        source_type="rss",
+        source_name="Reuters",
+        external_id="ext-fail-001",
+        title="Naval Drill near Hormuz",
+        raw_text="Patrol exercises conducted in Strait of Hormuz.",
+    )
+
+    analyzed = await orchestrator.process_event(event, parallel_stages=False)
+
+    assert analyzed.is_analyzed is True
+    # Heuristic fallback handled the event safely
+    assert analyzed.importance_score == 5
+    assert "Fallback assessment" in analyzed.score_rationale
+

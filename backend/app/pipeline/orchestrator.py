@@ -16,6 +16,7 @@ from backend.app.db.models import Alert, Event, SystemSettings, Theme
 from backend.app.db.session import get_session_factory
 from backend.app.pipeline.models import (
     AIStageConfig,
+    AIFallbackConfig,
     AnalyzedEvent,
     Stage1Result,
     Stage2Result,
@@ -29,9 +30,9 @@ from backend.app.pipeline.providers.factory import (
 )
 from backend.app.pipeline.providers.base import BaseAIProvider
 from backend.app.pipeline.stage1_extract import _heuristic_stage1_fallback, run_stage1_extract
-from backend.app.pipeline.stage2_score import run_stage2_score
-from backend.app.pipeline.stage3_summary import run_stage3_summary
-from backend.app.pipeline.stage4_visuals import run_stage4_visuals
+from backend.app.pipeline.stage2_score import _heuristic_stage2_fallback, run_stage2_score
+from backend.app.pipeline.stage3_summary import _heuristic_stage3_fallback, run_stage3_summary
+from backend.app.pipeline.stage4_visuals import _heuristic_stage4_fallback, run_stage4_visuals
 from backend.app.plugins.base import NormalizedEvent
 from backend.app.services.redis_bus import (
     CHANNEL_CONFIG_RELOAD,
@@ -80,6 +81,7 @@ class PipelineOrchestrator:
         self._running: bool = False
         self._lock = asyncio.Lock()
         self._reload_subscribed: bool = False
+        self._model_cooldowns: Dict[str, float] = {}
 
         # Seed initial default stage configs
         self._init_default_configs()
@@ -92,29 +94,77 @@ class PipelineOrchestrator:
         self._stage_configs = {
             "extraction": AIStageConfig(
                 stage_id="extraction",
-                provider="gemini",
-                model_name="gemini-3.5-flash-lite",
+                provider="groq",
+                model_name="qwen/qwen3.8-27b",
                 temperature=0.2,
+                fallbacks=[
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
+                ],
             ),
             "scoring": AIStageConfig(
                 stage_id="scoring",
                 provider="gemini",
                 model_name="gemini-3.5-flash-lite",
                 temperature=0.1,
+                fallbacks=[
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
+                ],
             ),
             "summarization": AIStageConfig(
                 stage_id="summarization",
-                provider="gemini",
-                model_name="gemini-3.5-flash-lite",
+                provider="groq",
+                model_name="openai/gpt-oss-120b",
                 temperature=0.2,
+                fallbacks=[
+                    AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
+                ],
             ),
             "visuals": AIStageConfig(
                 stage_id="visuals",
                 provider="groq",
-                model_name="qwen/qwen3.8-27b",
+                model_name="openai/gpt-oss-20b",
                 temperature=0.2,
+                fallbacks=[
+                    AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
+                ],
             ),
         }
+
+    def is_model_in_cooldown(self, provider: str, model_name: str) -> bool:
+        """Check if a provider's model is currently in a 429 rate-limit lockout cooldown."""
+        key = f"{provider.lower().strip()}:{model_name.strip()}"
+        exp = self._model_cooldowns.get(key)
+        if exp is None:
+            return False
+        try:
+            now = asyncio.get_event_loop().time()
+        except RuntimeError:
+            import time
+            now = time.time()
+        if now < exp:
+            return True
+        self._model_cooldowns.pop(key, None)
+        return False
+
+    def mark_model_cooldown(self, provider: str, model_name: str, duration_sec: float = 60.0) -> None:
+        """Place a model into temporary cooldown lockout after hitting quota/rate limit."""
+        key = f"{provider.lower().strip()}:{model_name.strip()}"
+        try:
+            now = asyncio.get_event_loop().time()
+        except RuntimeError:
+            import time
+            now = time.time()
+        self._model_cooldowns[key] = now + duration_sec
+        logger.warning(f"[Pipeline Cooldown] Model '{key}' entered rate-limit cooldown for {duration_sec:.1f}s")
+
+    def clear_cooldowns(self) -> None:
+        """Clear all active model cooldowns."""
+        self._model_cooldowns.clear()
 
     def _get_session_factory(self) -> async_sessionmaker[AsyncSession]:
         if self._session_factory is None:
@@ -313,12 +363,25 @@ class PipelineOrchestrator:
                     if setting.key == "ai_pipeline_stages" and setting.value_json:
                         for stage_id, cfg_data in setting.value_json.items():
                             norm_id = self._normalize_stage_id(stage_id)
+                            raw_fallbacks = cfg_data.get("fallbacks", [])
+                            parsed_fallbacks = []
+                            for fb in raw_fallbacks:
+                                if isinstance(fb, dict):
+                                    parsed_fallbacks.append(AIFallbackConfig(
+                                        provider=fb.get("provider", "gemini"),
+                                        model_name=fb.get("model_name") or fb.get("model", "gemini-3.1-flash-lite"),
+                                        temperature=fb.get("temperature"),
+                                        api_key_override=fb.get("api_key_override"),
+                                    ))
+                                elif isinstance(fb, AIFallbackConfig):
+                                    parsed_fallbacks.append(fb)
                             self._stage_configs[norm_id] = AIStageConfig(
                                 stage_id=norm_id,  # type: ignore
                                 provider=cfg_data.get("provider", "gemini"),
                                 model_name=cfg_data.get("model_name") or cfg_data.get("model", "gemini-3.5-flash-lite"),
                                 temperature=cfg_data.get("temperature", 0.2),
                                 api_key_override=cfg_data.get("api_key_override"),
+                                fallbacks=parsed_fallbacks,
                             )
                     elif setting.key == "api_keys" and setting.value_json:
                         self._db_api_keys = dict(setting.value_json)
@@ -387,6 +450,101 @@ class PipelineOrchestrator:
             "importance_threshold": 7,
         }
 
+    async def _execute_stage_with_fallbacks(
+        self,
+        stage_id: str,
+        runner_fn: Any,
+        fallback_heuristic_fn: Any,
+    ) -> Any:
+        """
+        Executes a pipeline stage across its primary model and configured fallback chain.
+        Automatically catches 429 quota exhaustion, timeouts, and errors, and fails over sequentially.
+        """
+        stage_cfg = self.get_stage_config(stage_id)
+        candidates = [
+            {
+                "provider": stage_cfg.provider,
+                "model_name": stage_cfg.model_name,
+                "temperature": stage_cfg.temperature,
+                "api_key_override": stage_cfg.api_key_override,
+            }
+        ]
+        for fb in stage_cfg.fallbacks:
+            candidates.append({
+                "provider": fb.provider,
+                "model_name": fb.model_name,
+                "temperature": fb.temperature if fb.temperature is not None else stage_cfg.temperature,
+                "api_key_override": fb.api_key_override or stage_cfg.api_key_override,
+            })
+
+        for idx, cand in enumerate(candidates):
+            p_name = cand["provider"]
+            m_name = cand["model_name"]
+            t_val = cand["temperature"]
+            k_override = cand["api_key_override"]
+
+            # If in active cooldown and we have a next candidate, skip directly to save latency
+            if self.is_model_in_cooldown(p_name, m_name) and idx < len(candidates) - 1:
+                next_cand = candidates[idx + 1]
+                logger.warning(
+                    f"[Pipeline Fallback] Stage '{stage_id}': Model '{p_name}:{m_name}' is in active rate-limit cooldown. "
+                    f"Skipping directly to #{idx + 1} ('{next_cand['provider']}:{next_cand['model_name']}')."
+                )
+                continue
+
+            api_key = resolve_api_key(p_name, k_override, self._db_api_keys)
+            try:
+                provider_inst = self._registry.get_provider(
+                    provider=p_name,
+                    model_name=m_name,
+                    api_key=api_key,
+                    temperature=t_val,
+                )
+            except Exception as inst_err:
+                logger.warning(f"Could not instantiate provider for '{p_name}:{m_name}': {inst_err}")
+                continue
+
+            try:
+                result = await runner_fn(
+                    provider=provider_inst,
+                    model=m_name,
+                    temperature=t_val,
+                    raise_on_error=True,
+                )
+                if idx > 0:
+                    logger.info(
+                        f"[Pipeline Fallback] Stage '{stage_id}': Succeeded using fallback #{idx} "
+                        f"('{p_name}:{m_name}')."
+                    )
+                return result
+            except PermissionError:
+                raise
+            except Exception as exc:
+                err_str = str(exc).lower()
+                is_rate_limit = (
+                    "429" in str(exc)
+                    or "quota" in err_str
+                    or "resourceexhausted" in err_str
+                    or "ratelimit" in err_str
+                    or "too many requests" in err_str
+                )
+                if is_rate_limit:
+                    self.mark_model_cooldown(p_name, m_name, duration_sec=60.0)
+
+                if idx < len(candidates) - 1:
+                    next_cand = candidates[idx + 1]
+                    logger.warning(
+                        f"[Pipeline Fallback] Stage '{stage_id}': Model '{p_name}:{m_name}' reached limit or failed "
+                        f"({exc}). Failing over to #{idx + 1} ('{next_cand['provider']}:{next_cand['model_name']}')..."
+                    )
+                else:
+                    logger.warning(
+                        f"[Pipeline Fallback] Stage '{stage_id}': All {len(candidates)} candidate models exhausted. "
+                        f"Last error: {exc}. Invoking deterministic offline heuristics."
+                    )
+
+        return fallback_heuristic_fn()
+
     async def process_event(
         self,
         event: Union[NormalizedEvent, Dict[str, Any]],
@@ -395,115 +553,80 @@ class PipelineOrchestrator:
     ) -> AnalyzedEvent:
         """
         Executes the multi-stage AI reasoning pipeline for an event:
-        1. Stage 1 (Sequential): Extraction & Translation.
-        2. Stages 2, 3, 4 (Concurrent): Scoring, Summarization, Visual Trends.
+        1. Stage 1 (Sequential): Extraction & Translation (with multi-model fallback).
+        2. Stages 2, 3, 4 (Concurrent): Scoring, Summarization, Visual Trends (with multi-model fallbacks).
         3. Persists enriched fields to database and publishes alerts.
         """
         theme_id = getattr(event, "theme_id", None) or (event.get("theme_id") if isinstance(event, dict) else "1")
         theme_ctx = await self._resolve_theme_context(theme_id)
 
+        raw_text_val = getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else "")
+        title_val = getattr(event, "title", "") or (event.get("title", "") if isinstance(event, dict) else "")
+
         # Stage 1: Extraction & Translation (Must complete first)
-        stage1_cfg = self.get_stage_config("extraction")
-        provider_s1 = self._registry.get_provider(
-            provider=stage1_cfg.provider,
-            model_name=stage1_cfg.model_name,
-            api_key=resolve_api_key(stage1_cfg.provider, stage1_cfg.api_key_override, self._db_api_keys),
-            temperature=stage1_cfg.temperature,
-        )
-        try:
-            res_s1: Stage1Result = await run_stage1_extract(
-                event=event,
-                provider=provider_s1,
-                model=stage1_cfg.model_name,
-                temperature=stage1_cfg.temperature,
-            )
-        except Exception as exc:
-            logger.warning(f"Stage 1 primary provider '{stage1_cfg.provider}' failed ({exc}), attempting failover...")
-            fallback_s1 = self._get_fallback_provider(stage1_cfg.provider, "extraction")
-            if fallback_s1:
-                try:
-                    res_s1 = await run_stage1_extract(
-                        event=event,
-                        provider=fallback_s1,
-                        model=fallback_s1.default_model,
-                        temperature=stage1_cfg.temperature,
-                    )
-                except Exception as fb_exc:
-                    logger.warning(f"Stage 1 fallback provider also failed ({fb_exc}). Using heuristics.")
-                    res_s1 = _heuristic_stage1_fallback(
-                        raw_text=getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else ""),
-                        title=getattr(event, "title", "") or (event.get("title", "") if isinstance(event, dict) else ""),
-                    )
-            else:
-                res_s1 = _heuristic_stage1_fallback(
-                    raw_text=getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else ""),
-                    title=getattr(event, "title", "") or (event.get("title", "") if isinstance(event, dict) else ""),
-                )
-
-        intelligence_text = res_s1.translated_text or (
-            getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else "")
+        res_s1: Stage1Result = await self._execute_stage_with_fallbacks(
+            stage_id="extraction",
+            runner_fn=lambda **kw: run_stage1_extract(event=event, **kw),
+            fallback_heuristic_fn=lambda: _heuristic_stage1_fallback(raw_text=raw_text_val, title=title_val),
         )
 
-        # Stage 2, 3, 4 Providers
-        stage2_cfg = self.get_stage_config("scoring")
-        stage3_cfg = self.get_stage_config("summarization")
-        stage4_cfg = self.get_stage_config("visuals")
+        intelligence_text = res_s1.translated_text or raw_text_val
 
-        provider_s2 = self._registry.get_provider(
-            provider=stage2_cfg.provider,
-            model_name=stage2_cfg.model_name,
-            api_key=resolve_api_key(stage2_cfg.provider, stage2_cfg.api_key_override, self._db_api_keys),
-            temperature=stage2_cfg.temperature,
-        )
-        provider_s3 = self._registry.get_provider(
-            provider=stage3_cfg.provider,
-            model_name=stage3_cfg.model_name,
-            api_key=resolve_api_key(stage3_cfg.provider, stage3_cfg.api_key_override, self._db_api_keys),
-            temperature=stage3_cfg.temperature,
-        )
-        provider_s4 = self._registry.get_provider(
-            provider=stage4_cfg.provider,
-            model_name=stage4_cfg.model_name,
-            api_key=resolve_api_key(stage4_cfg.provider, stage4_cfg.api_key_override, self._db_api_keys),
-            temperature=stage4_cfg.temperature,
-        )
-
-        task_s2 = run_stage2_score(
-            event=event,
-            intelligence_text=intelligence_text,
-            extracted_entities=res_s1.extracted_entities,
-            theme_context=theme_ctx,
-            provider=provider_s2,
-            model=stage2_cfg.model_name,
-            temperature=stage2_cfg.temperature,
-        )
-        task_s3 = run_stage3_summary(
-            event=event,
-            intelligence_text=intelligence_text,
-            provider=provider_s3,
-            model=stage3_cfg.model_name,
-            temperature=stage3_cfg.temperature,
-        )
-        task_s4 = run_stage4_visuals(
-            event=event,
-            intelligence_text=intelligence_text,
-            extracted_entities=res_s1.extracted_entities,
-            provider=provider_s4,
-            model=stage4_cfg.model_name,
-            temperature=stage4_cfg.temperature,
-        )
-
-        if parallel_stages:
-            results = await asyncio.gather(task_s2, task_s3, task_s4, return_exceptions=True)
-            res_s2: Stage2Result = results[0] if not isinstance(results[0], Exception) else Stage2Result(
+        # Stage 2, 3, 4 with fallback chains
+        def stage2_fallback():
+            return Stage2Result(
                 importance_score=5,
                 score_rationale="Fallback assessment due to stage exception",
                 priority_level="medium",
                 should_alert=False,
             )
+
+        task_s2 = self._execute_stage_with_fallbacks(
+            stage_id="scoring",
+            runner_fn=lambda **kw: run_stage2_score(
+                event=event,
+                intelligence_text=intelligence_text,
+                extracted_entities=res_s1.extracted_entities,
+                theme_context=theme_ctx,
+                **kw,
+            ),
+            fallback_heuristic_fn=stage2_fallback,
+        )
+
+        task_s3 = self._execute_stage_with_fallbacks(
+            stage_id="summarization",
+            runner_fn=lambda **kw: run_stage3_summary(
+                event=event,
+                intelligence_text=intelligence_text,
+                **kw,
+            ),
+            fallback_heuristic_fn=lambda: Stage3Result(
+                summary="Intelligence update logged and monitored.",
+                headline=title_val[:75] or "Event Update",
+            ),
+        )
+
+        task_s4 = self._execute_stage_with_fallbacks(
+            stage_id="visuals",
+            runner_fn=lambda **kw: run_stage4_visuals(
+                event=event,
+                intelligence_text=intelligence_text,
+                extracted_entities=res_s1.extracted_entities,
+                **kw,
+            ),
+            fallback_heuristic_fn=lambda: Stage4Result(
+                trend_category="Geopolitical Development",
+                cluster_tags=["Intelligence"],
+                narrative_insight="Event logged.",
+            ),
+        )
+
+        if parallel_stages:
+            results = await asyncio.gather(task_s2, task_s3, task_s4, return_exceptions=True)
+            res_s2: Stage2Result = results[0] if not isinstance(results[0], Exception) else stage2_fallback()
             res_s3: Stage3Result = results[1] if not isinstance(results[1], Exception) else Stage3Result(
                 summary="Intelligence update logged and monitored.",
-                headline=getattr(event, "title", "Event Update")[:75],
+                headline=title_val[:75] or "Event Update",
             )
             res_s4: Stage4Result = results[2] if not isinstance(results[2], Exception) else Stage4Result(
                 trend_category="Geopolitical Development",
@@ -657,6 +780,29 @@ class PipelineOrchestrator:
                 "source_url": analyzed.source_url,
             }
             await bus.publish(CHANNEL_EVENTS_ALERT, alert_payload)
+
+        # Non-blocking background embedding generation
+        try:
+            asyncio.create_task(self._trigger_embedding(analyzed))
+        except Exception as e:
+            logger.debug(f"Could not spawn background embedding task: {e}")
+
+    async def _trigger_embedding(self, analyzed: AnalyzedEvent) -> None:
+        """Asynchronously embed newly analyzed event in the background."""
+        try:
+            from backend.app.services.embedding_service import get_embedding_service
+            from backend.app.services.redis_bus import CHANNEL_MAP_UPDATE
+            factory = self._get_session_factory()
+            async with factory() as session:
+                res = await session.execute(select(Event).where(Event.id == analyzed.id))
+                ev = res.scalars().first()
+                if ev:
+                    service = get_embedding_service()
+                    await service.embed_events([ev], session, use_mock=self.use_mock)
+                    bus = self._get_redis_bus()
+                    await bus.publish(CHANNEL_MAP_UPDATE, {"event_id": ev.id, "theme_id": str(ev.theme_id)})
+        except Exception as exc:
+            logger.debug(f"Background embedding skipped or deferred: {exc}")
 
 
 _orchestrator_instance: Optional[PipelineOrchestrator] = None

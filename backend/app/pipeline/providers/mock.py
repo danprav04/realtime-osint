@@ -24,6 +24,7 @@ class MockAIProvider(BaseAIProvider):
         simulate_429: bool = False,
         simulate_auth_error: bool = False,
         simulate_timeout: bool = False,
+        simulate_429_models: Optional[Any] = None,
     ):
         super().__init__(api_key=api_key, default_model=default_model)
         self.min_interval_sec = 0.0
@@ -31,17 +32,19 @@ class MockAIProvider(BaseAIProvider):
         self.simulate_429 = simulate_429
         self.simulate_auth_error = simulate_auth_error
         self.simulate_timeout = simulate_timeout
+        self.simulate_429_models = set(simulate_429_models) if simulate_429_models else set()
 
     @property
     def provider_name(self) -> str:
         return self._provider_name
 
-    def _check_simulation_errors(self) -> None:
+    def _check_simulation_errors(self, model: Optional[str] = None) -> None:
         if self.simulate_auth_error or not self.api_key:
             raise PermissionError(
                 f"{self.provider_name.capitalize()} API key is invalid or unauthorized (HTTP 401)"
             )
-        if self.simulate_429:
+        is_429 = self.simulate_429 or (bool(model) and model in self.simulate_429_models)
+        if is_429:
             if self.provider_name == "gemini":
                 raise RuntimeError("Gemini ResourceExhausted: 429 Quota Exceeded")
             else:
@@ -58,8 +61,8 @@ class MockAIProvider(BaseAIProvider):
         max_tokens: int = 1024,
         json_mode: bool = False,
     ) -> str:
-        self._check_simulation_errors()
         model_name = model or self.default_model
+        self._check_simulation_errors(model_name)
 
         self.call_history.append({
             "provider": self.provider_name,
@@ -95,8 +98,8 @@ class MockAIProvider(BaseAIProvider):
         model: Optional[str] = None,
         temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
-        self._check_simulation_errors()
         model_name = model or self.default_model
+        self._check_simulation_errors(model_name)
         ctx = context or {}
 
         self.call_history.append({

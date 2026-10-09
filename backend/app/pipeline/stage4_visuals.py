@@ -136,6 +136,7 @@ async def run_stage4_visuals(
     provider: BaseAIProvider,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
+    raise_on_error: bool = False,
 ) -> Stage4Result:
     """
     Executes Stage 4 visual & trend categorization using the configured AI provider.
@@ -168,9 +169,13 @@ async def run_stage4_visuals(
     except PermissionError:
         raise
     except RuntimeError as r_err:
+        if raise_on_error:
+            raise
         logger.warning(f"RuntimeError in Stage 4 ({r_err}), gracefully falling back to heuristics.")
         return fallback()
     except Exception as exc:
+        if raise_on_error:
+            raise
         logger.warning(f"Stage 4 execution exception ({exc}), using fallback.")
         return fallback()
 

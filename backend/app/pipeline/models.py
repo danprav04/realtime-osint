@@ -7,11 +7,36 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+class AIFallbackConfig(BaseModel):
+    """
+    Configuration model for a fallback AI model and provider in a stage's fallback chain.
+    """
+    provider: Literal["gemini", "groq"] = "gemini"
+    model_name: str = "gemini-3.1-flash-lite"
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    api_key_override: Optional[str] = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, v: Any) -> str:
+        s = str(v).lower().strip()
+        if s in ("gemini", "google"):
+            return "gemini"
+        if s in ("groq",):
+            return "groq"
+        return s
+
+    @field_validator("model_name", mode="before")
+    @classmethod
+    def normalize_model_name(cls, v: Any) -> str:
+        return str(v).strip() if v else "gemini-3.1-flash-lite"
+
+
 class AIStageConfig(BaseModel):
     """
     Configuration model for an individual pipeline stage.
     Supports per-stage model provider (Gemini / Groq), model selection,
-    temperature, and API key override.
+    temperature, API key override, and an ordered chain of fallbacks.
     """
     stage_id: Literal["extraction", "scoring", "summarization", "visuals"]
     provider: Literal["gemini", "groq"] = "gemini"
@@ -19,6 +44,7 @@ class AIStageConfig(BaseModel):
     api_key_override: Optional[str] = None
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     enabled: bool = True
+    fallbacks: List[AIFallbackConfig] = Field(default_factory=list)
 
     @field_validator("stage_id", mode="before")
     @classmethod
@@ -46,6 +72,24 @@ class AIStageConfig(BaseModel):
     @classmethod
     def normalize_model_name(cls, v: Any) -> str:
         return str(v).strip() if v else "gemini-3.5-flash-lite"
+
+    @field_validator("fallbacks", mode="before")
+    @classmethod
+    def normalize_fallbacks(cls, v: Any) -> List[Any]:
+        if not v:
+            return []
+        if isinstance(v, list):
+            norm = []
+            for item in v:
+                if isinstance(item, dict):
+                    c = dict(item)
+                    if "model" in c and "model_name" not in c:
+                        c["model_name"] = c["model"]
+                    norm.append(c)
+                else:
+                    norm.append(item)
+            return norm
+        return []
 
 
 class Stage1Result(BaseModel):

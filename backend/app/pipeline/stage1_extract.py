@@ -195,6 +195,7 @@ async def run_stage1_extract(
     provider: BaseAIProvider,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
+    raise_on_error: bool = False,
 ) -> Stage1Result:
     """
     Executes Stage 1 extraction & translation using the configured AI provider.
@@ -234,8 +235,12 @@ async def run_stage1_extract(
     except PermissionError:
         raise
     except RuntimeError as r_err:
+        if raise_on_error:
+            raise
         logger.warning(f"RuntimeError in Stage 1 ({r_err}), gracefully falling back to heuristics.")
         return fallback()
     except Exception as exc:
+        if raise_on_error:
+            raise
         logger.warning(f"Stage 1 execution exception ({exc}), using fallback.")
         return fallback()

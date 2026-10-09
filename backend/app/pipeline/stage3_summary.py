@@ -128,6 +128,7 @@ async def run_stage3_summary(
     provider: BaseAIProvider,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
+    raise_on_error: bool = False,
 ) -> Stage3Result:
     """
     Executes Stage 3 event summarization using the configured AI provider.
@@ -159,9 +160,13 @@ async def run_stage3_summary(
     except PermissionError:
         raise
     except RuntimeError as r_err:
+        if raise_on_error:
+            raise
         logger.warning(f"RuntimeError in Stage 3 ({r_err}), gracefully falling back to heuristics.")
         return fallback()
     except Exception as exc:
+        if raise_on_error:
+            raise
         logger.warning(f"Stage 3 execution exception ({exc}), using fallback.")
         return fallback()
 

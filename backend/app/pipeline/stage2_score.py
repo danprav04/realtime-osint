@@ -134,6 +134,7 @@ async def run_stage2_score(
     provider: BaseAIProvider,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
+    raise_on_error: bool = False,
 ) -> Stage2Result:
     """
     Executes Stage 2 importance scoring using the configured AI provider.
@@ -171,10 +172,12 @@ async def run_stage2_score(
     except PermissionError:
         raise
     except RuntimeError as r_err:
-        if "429" in str(r_err):
+        if raise_on_error or "429" in str(r_err):
             raise
         logger.warning(f"RuntimeError in Stage 2 ({r_err}), gracefully falling back to heuristics.")
         return fallback()
     except Exception as exc:
+        if raise_on_error:
+            raise
         logger.warning(f"Stage 2 execution exception ({exc}), using fallback.")
         return fallback()

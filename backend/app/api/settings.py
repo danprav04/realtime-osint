@@ -22,27 +22,45 @@ DEFAULT_AI_STAGES = {
         "provider": "groq",
         "model_name": "qwen/qwen3.8-27b",
         "temperature": 0.2,
+        "fallbacks": [
+            {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+        ],
     },
     "scoring": {
         "provider": "gemini",
         "model_name": "gemini-3.5-flash-lite",
         "temperature": 0.1,
+        "fallbacks": [
+            {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.1},
+        ],
     },
     "summarization": {
         "provider": "groq",
         "model_name": "openai/gpt-oss-120b",
         "temperature": 0.2,
+        "fallbacks": [
+            {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+        ],
     },
     "visuals": {
         "provider": "groq",
         "model_name": "openai/gpt-oss-20b",
         "temperature": 0.2,
+        "fallbacks": [
+            {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+        ],
     },
 }
 
 
 def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(DEFAULT_AI_STAGES)
+    import copy
+    out = copy.deepcopy(DEFAULT_AI_STAGES)
     for k, v in raw.items():
         norm_k = k.lower().strip()
         if "extract" in norm_k:
@@ -57,6 +75,17 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
         cfg = dict(v)
         if "model" in cfg and "model_name" not in cfg:
             cfg["model_name"] = cfg["model"]
+        if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
+            norm_fb = []
+            for fb in cfg["fallbacks"]:
+                if isinstance(fb, dict):
+                    fb_copy = dict(fb)
+                    if "model" in fb_copy and "model_name" not in fb_copy:
+                        fb_copy["model_name"] = fb_copy["model"]
+                    norm_fb.append(fb_copy)
+                else:
+                    norm_fb.append(fb)
+            cfg["fallbacks"] = norm_fb
         out[norm_k] = cfg
     return out
 
@@ -68,7 +97,13 @@ async def get_system_settings(
     """Retrieve global system settings with masked API credentials."""
     res = await session.execute(
         select(SystemSettings).where(
-            SystemSettings.key.in_(["api_keys", "notification_threshold", "polling_intervals", "max_lookback_hours"])
+            SystemSettings.key.in_([
+                "api_keys",
+                "notification_threshold",
+                "polling_intervals",
+                "max_lookback_hours",
+                "pizza_meter_enabled",
+            ])
         )
     )
     rows = {r.key: r.value_json for r in res.scalars().all()}
@@ -92,11 +127,20 @@ async def get_system_settings(
     if "max_lookback_hours" in rows and isinstance(rows["max_lookback_hours"], dict):
         configured_lookbacks.update({k: float(v) for k, v in rows["max_lookback_hours"].items()})
 
+    pizza_meter_enabled = True
+    if "pizza_meter_enabled" in rows:
+        val = rows["pizza_meter_enabled"]
+        if isinstance(val, dict):
+            pizza_meter_enabled = bool(val.get("enabled", True))
+        elif isinstance(val, bool):
+            pizza_meter_enabled = val
+
     return {
         "api_keys": masked_keys,
         "notification_threshold": rows.get("notification_threshold", {}).get("threshold", 7),
         "polling_intervals": rows.get("polling_intervals", {}),
         "max_lookback_hours": configured_lookbacks,
+        "pizza_meter_enabled": pizza_meter_enabled,
     }
 
 
@@ -105,7 +149,7 @@ async def update_system_settings(
     payload: Dict[str, Any],
     session: AsyncSession = Depends(get_db_session),
 ) -> Dict[str, Any]:
-    """Update system settings (API keys, threshold, intervals, lookback) and notify workers."""
+    """Update system settings (API keys, threshold, intervals, lookback, pizza meter) and notify workers."""
     if "api_keys" in payload:
         res = await session.execute(
             select(SystemSettings).where(SystemSettings.key == "api_keys")
@@ -154,6 +198,17 @@ async def update_system_settings(
             existing.value_json = current_lb
         else:
             session.add(SystemSettings(key="max_lookback_hours", value_json=current_lb))
+
+    if "pizza_meter_enabled" in payload:
+        res = await session.execute(
+            select(SystemSettings).where(SystemSettings.key == "pizza_meter_enabled")
+        )
+        existing = res.scalars().first()
+        val = {"enabled": bool(payload["pizza_meter_enabled"])}
+        if existing:
+            existing.value_json = val
+        else:
+            session.add(SystemSettings(key="pizza_meter_enabled", value_json=val))
 
     await session.commit()
 
@@ -219,7 +274,20 @@ async def update_ai_pipeline_stages(
     # Hot-reload in orchestrator singleton immediately
     orchestrator = get_pipeline_orchestrator()
     for s_id, s_cfg in normalized.items():
-        from backend.app.pipeline.models import AIStageConfig
+        from backend.app.pipeline.models import AIStageConfig, AIFallbackConfig
+        raw_fb = s_cfg.get("fallbacks", [])
+        parsed_fb = []
+        for fb in raw_fb:
+            if isinstance(fb, dict):
+                parsed_fb.append(AIFallbackConfig(
+                    provider=fb.get("provider", "gemini"),
+                    model_name=fb.get("model_name") or fb.get("model", "gemini-3.1-flash-lite"),
+                    temperature=fb.get("temperature"),
+                    api_key_override=fb.get("api_key_override"),
+                ))
+            elif isinstance(fb, AIFallbackConfig):
+                parsed_fb.append(fb)
+
         orchestrator.set_stage_config(
             s_id,
             AIStageConfig(
@@ -228,8 +296,10 @@ async def update_ai_pipeline_stages(
                 model_name=s_cfg.get("model_name") or s_cfg.get("model", "gemini-3.5-flash-lite"),
                 temperature=s_cfg.get("temperature", 0.2),
                 api_key_override=s_cfg.get("api_key_override"),
+                fallbacks=parsed_fb,
             ),
         )
+    orchestrator.clear_cooldowns()
 
     # Publish reload event to Redis bus
     bus = get_redis_bus()
