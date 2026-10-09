@@ -212,6 +212,7 @@ export interface MapCluster {
   size: number;
   center_x: number;
   center_y: number;
+  radius?: number;
   event_ids?: string[];
 }
 

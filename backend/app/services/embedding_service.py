@@ -94,13 +94,25 @@ def build_embedding_document(event: Event, theme_name: Optional[str] = None) -> 
     return doc
 
 
+MOCK_STOPWORDS = {
+    "the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "or", "is", "was", "are",
+    "by", "with", "from", "headline", "timestamp", "content", "source", "domain", "entities",
+    "location", "utc", "http", "https", "that", "this", "it", "as", "be", "has", "have", "had",
+    "will", "would", "about", "into", "over", "after"
+}
+
+
 def generate_deterministic_mock_embedding(text: str, dim: int = 3072) -> List[float]:
     """
     Generate a deterministic bag-of-words pseudo-random unit vector.
     Texts sharing key vocabulary will yield realistic cosine similarities.
+    Filters common boilerplate/stopwords so dissimilar stories do not link falsely.
     """
     cleaned = text.lower().strip()
     words = [w.strip(".,;:!?\"'()[]{}") for w in cleaned.split() if w.strip(".,;:!?\"'()[]{}")]
+    filtered_words = [w for w in words if w not in MOCK_STOPWORDS]
+    if filtered_words:
+        words = filtered_words
 
     if not words:
         full_hash = int(hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:14], 16)
@@ -122,6 +134,46 @@ def generate_deterministic_mock_embedding(text: str, dim: int = 3072) -> List[fl
     if norm > 0:
         vec = vec / norm
     return [float(x) for x in vec]
+
+
+def resolve_node_collisions(
+    coords: np.ndarray,
+    min_dist: float = 8.5,
+    max_iter: int = 40,
+    bounds: float = 85.0,
+) -> np.ndarray:
+    """
+    Relax 2D node coordinates using iterative spring repulsion so no two nodes overlap.
+    Guarantees pairwise Euclidean distance >= min_dist while keeping positions inside [-bounds, bounds].
+    """
+    n = len(coords)
+    if n <= 1:
+        return coords
+
+    pts = coords.copy().astype(np.float32)
+    rng = np.random.RandomState(42)
+
+    for _ in range(max_iter):
+        moved = False
+        for i in range(n):
+            for j in range(i + 1, n):
+                diff = pts[i] - pts[j]
+                d = float(np.linalg.norm(diff))
+                if d < min_dist:
+                    moved = True
+                    if d < 1e-4:
+                        angle = rng.uniform(0.0, 2.0 * np.pi)
+                        u = np.array([np.cos(angle), np.sin(angle)], dtype=np.float32)
+                    else:
+                        u = diff / d
+                    overlap = (min_dist - d) * 0.5
+                    pts[i] += u * overlap
+                    pts[j] -= u * overlap
+        if not moved:
+            break
+
+    return np.clip(pts, -bounds, bounds)
+
 
 
 class EmbeddingService:
@@ -451,10 +503,11 @@ class EmbeddingService:
         return list((await session.execute(stmt_all)).scalars().all())
 
     def compute_pca_2d(
-        self, vectors: List[List[float]]
+        self, vectors: List[List[float]], min_distance: float = 8.5
     ) -> Tuple[List[Tuple[float, float]], Optional[PCA]]:
         """
-        Project high-dimensional vectors to 2D (x, y) coordinates normalized to [-90, 90].
+        Project high-dimensional vectors to 2D (x, y) coordinates normalized to [-90, 90]
+        with automatic collision separation to prevent node stacking.
         """
         if not vectors:
             return [], None
@@ -463,12 +516,14 @@ class EmbeddingService:
         if n == 1:
             return [(0.0, 0.0)], None
 
+        pca = PCA(n_components=2, random_state=42)
         arr = np.array(vectors, dtype=np.float32)
         # Handle zero or constant vectors
         if np.all(arr == arr[0]):
-            return [(0.0, 0.0) for _ in range(n)], None
-
-        pca = PCA(n_components=2, random_state=42)
+            pts = np.zeros((n, 2), dtype=np.float32)
+            resolved = resolve_node_collisions(pts, min_dist=min_distance)
+            pca.fit(resolved)
+            return [(round(float(x), 2), round(float(y), 2)) for x, y in resolved], pca
         coords = pca.fit_transform(arr)
 
         # Normalize to [-90, 90] bounds for canvas rendering
@@ -478,17 +533,109 @@ class EmbeddingService:
         x_span = x_max - x_min if (x_max - x_min) > 1e-5 else 1.0
         y_span = y_max - y_min if (y_max - y_min) > 1e-5 else 1.0
 
-        scaled_x = ((coords[:, 0] - x_min) / x_span) * 160.0 - 80.0
-        scaled_y = ((coords[:, 1] - y_min) / y_span) * 160.0 - 80.0
+        scaled_x = ((coords[:, 0] - x_min) / x_span) * 140.0 - 70.0
+        scaled_y = ((coords[:, 1] - y_min) / y_span) * 140.0 - 70.0
 
-        results = [(round(float(x), 2), round(float(y), 2)) for x, y in zip(scaled_x, scaled_y)]
+        pts = np.column_stack([scaled_x, scaled_y])
+        pts = resolve_node_collisions(pts, min_dist=min_distance)
+
+        results = [(round(float(x), 2), round(float(y), 2)) for x, y in pts]
         return results, pca
+
+    def compute_galaxy_coordinates(
+        self,
+        vectors: List[List[float]],
+        clusters: List[Dict[str, Any]],
+        node_metrics: List[Dict[str, Any]],
+        min_distance: float = 8.5,
+    ) -> List[Tuple[float, float]]:
+        """
+        Compute intuitive 2D coordinates arranged by thematic cluster galaxies:
+        - Main clusters are distributed radially across the radar chart.
+        - Intra-cluster nodes orbit their cluster centroid using phyllotaxis packing.
+        - Outliers orbit in the peripheral zone.
+        - Strict collision relaxation ensures no two nodes ever overlap.
+        """
+        n = len(vectors)
+        if n == 0:
+            return []
+        if n == 1:
+            return [(0.0, 0.0)]
+
+        cluster_by_idx = [m.get("cluster_id", 0) for m in node_metrics]
+        main_clusters = [c for c in clusters if c["id"] > 0 and c["size"] >= 2]
+        k_clusters = len(main_clusters)
+        cluster_centers: Dict[int, np.ndarray] = {}
+
+        if k_clusters == 1:
+            cluster_centers[main_clusters[0]["id"]] = np.array([0.0, 0.0], dtype=np.float32)
+        elif k_clusters == 2:
+            cluster_centers[main_clusters[0]["id"]] = np.array([-36.0, 0.0], dtype=np.float32)
+            cluster_centers[main_clusters[1]["id"]] = np.array([36.0, 0.0], dtype=np.float32)
+        elif k_clusters > 2:
+            radius = min(46.0, 32.0 + k_clusters * 2.5)
+            for idx, c in enumerate(main_clusters):
+                angle = (2.0 * np.pi * idx / k_clusters) - (np.pi / 2.0)
+                cluster_centers[c["id"]] = np.array([
+                    radius * np.cos(angle),
+                    radius * np.sin(angle)
+                ], dtype=np.float32)
+
+        coords = np.zeros((n, 2), dtype=np.float32)
+        cluster_item_count: Dict[int, int] = {}
+        outlier_indices: List[int] = []
+
+        for i in range(n):
+            cid = cluster_by_idx[i]
+            if cid in cluster_centers:
+                c_center = cluster_centers[cid]
+                rank = cluster_item_count.get(cid, 0)
+                cluster_item_count[cid] = rank + 1
+                r_offset = np.sqrt(rank) * 6.5
+                angle = rank * 2.39996323  # golden angle
+                coords[i] = c_center + np.array([
+                    r_offset * np.cos(angle),
+                    r_offset * np.sin(angle)
+                ], dtype=np.float32)
+            else:
+                outlier_indices.append(i)
+
+        n_outliers = len(outlier_indices)
+        if n_outliers > 0:
+            orbit_r = 74.0
+            for out_rank, i in enumerate(outlier_indices):
+                angle = (2.0 * np.pi * out_rank / n_outliers) - (np.pi / 4.0)
+                coords[i] = np.array([
+                    orbit_r * np.cos(angle),
+                    orbit_r * np.sin(angle)
+                ], dtype=np.float32)
+
+        # Apply strict collision avoidance relaxation
+        resolved = resolve_node_collisions(coords, min_dist=min_distance, max_iter=40, bounds=85.0)
+
+        # Update cluster centroids and radii in the cluster objects
+        for c in clusters:
+            c_nodes = [resolved[i] for i in range(n) if cluster_by_idx[i] == c["id"]]
+            if c_nodes:
+                c_arr = np.array(c_nodes)
+                cx = float(np.mean(c_arr[:, 0]))
+                cy = float(np.mean(c_arr[:, 1]))
+                c["center_x"] = round(cx, 2)
+                c["center_y"] = round(cy, 2)
+                dists = [float(np.linalg.norm(pt - np.array([cx, cy]))) for pt in c_arr]
+                c["radius"] = round(max(dists) + 8.0, 2) if dists else 15.0
+            else:
+                c["center_x"] = 0.0
+                c["center_y"] = 0.0
+                c["radius"] = 15.0
+
+        return [(round(float(x), 2), round(float(y), 2)) for x, y in resolved]
 
     def compute_trustworthiness_and_corroboration(
         self,
         events: List[Event],
         embeddings: List[List[float]],
-        similarity_threshold: float = 0.40,
+        similarity_threshold: float = 0.38,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Compute pairwise cosine similarity, clustering, and intelligence trustworthiness metrics.
@@ -530,6 +677,13 @@ class EmbeddingService:
                 if score >= similarity_threshold:
                     neighbors_idx.append(j)
                     adj[i].append(j)
+
+            similarities_list.sort(key=lambda x: x[1], reverse=True)
+            top_neighbors = similarities_list[:4]
+
+            # Only add edges for top neighbors to prevent screen clutter
+            for j, score in top_neighbors:
+                if score >= similarity_threshold:
                     edge_pair = (min(i, j), max(i, j))
                     if edge_pair not in edge_set:
                         edge_set.add(edge_pair)
@@ -538,9 +692,6 @@ class EmbeddingService:
                             "target": events[j].id,
                             "similarity": round(score, 3),
                         })
-
-            similarities_list.sort(key=lambda x: x[1], reverse=True)
-            top_neighbors = similarities_list[:4]
 
             # Analyze corroborating sources
             corrob_events = [events[j] for j in neighbors_idx]
@@ -605,6 +756,7 @@ class EmbeddingService:
         visited = set()
         clusters: List[Dict[str, Any]] = []
         cluster_id_counter = 1
+        outlier_events = []
 
         for i in range(n):
             if i in visited:
@@ -621,28 +773,47 @@ class EmbeddingService:
                         visited.add(neighbor)
                         queue.append(neighbor)
 
-            # Assign cluster metadata
             comp_events = [events[idx] for idx in component]
-            # Dominant label from most important event in component
-            sorted_comp = sorted(
-                comp_events,
-                key=lambda x: getattr(x, "importance_score", 5) or 5,
-                reverse=True,
-            )
-            top_title = sorted_comp[0].headline or sorted_comp[0].title
-            cluster_label = top_title[:60] if len(top_title) > 60 else top_title
+            if len(component) >= 2:
+                sorted_comp = sorted(
+                    comp_events,
+                    key=lambda x: getattr(x, "importance_score", 5) or 5,
+                    reverse=True,
+                )
+                top_title = sorted_comp[0].headline or sorted_comp[0].title
+                cluster_label = top_title[:60] if len(top_title) > 60 else top_title
 
-            for idx in component:
-                node_metrics[idx]["cluster_id"] = cluster_id_counter
-                node_metrics[idx]["cluster_label"] = cluster_label
+                for idx in component:
+                    node_metrics[idx]["cluster_id"] = cluster_id_counter
+                    node_metrics[idx]["cluster_label"] = cluster_label
 
+                clusters.append({
+                    "id": cluster_id_counter,
+                    "label": cluster_label,
+                    "size": len(component),
+                    "center_x": 0.0,
+                    "center_y": 0.0,
+                    "radius": 15.0,
+                    "event_ids": [e.id for e in comp_events],
+                })
+                cluster_id_counter += 1
+            else:
+                # Single-node component: assign to outlier group
+                for idx in component:
+                    node_metrics[idx]["cluster_id"] = 0
+                    node_metrics[idx]["cluster_label"] = "Isolated Outliers"
+                outlier_events.extend(comp_events)
+
+        if outlier_events:
             clusters.append({
-                "id": cluster_id_counter,
-                "label": cluster_label,
-                "size": len(component),
-                "event_ids": [e.id for e in comp_events],
+                "id": 0,
+                "label": "Isolated Outliers",
+                "size": len(outlier_events),
+                "center_x": 0.0,
+                "center_y": 74.0,
+                "radius": 22.0,
+                "event_ids": [e.id for e in outlier_events],
             })
-            cluster_id_counter += 1
 
         return node_metrics, edges, clusters
 
@@ -658,7 +829,7 @@ class EmbeddingService:
         """
         Build the complete Relevance Map payload for the frontend:
         Queries events, auto-embeds un-embedded records if needed,
-        computes PCA 2D coordinates & trustworthiness, and saves projections.
+        computes Galaxy 2D coordinates & trustworthiness, and saves projections.
         """
         query = select(Event).order_by(Event.published_at.desc())
 
@@ -703,14 +874,22 @@ class EmbeddingService:
         valid_events = [e for e in events if e.id in emb_by_event_id]
         vectors = [emb_by_event_id[e.id].embedding_vector for e in valid_events]
 
-        # 2. Compute PCA 2D coordinates
-        coords_2d, pca_model = self.compute_pca_2d(vectors)
-        self.last_pca_model = pca_model
-
-        # 3. Compute trustworthiness and cluster metrics
+        # 2. Compute trustworthiness and cluster metrics
         node_metrics, edges, clusters = self.compute_trustworthiness_and_corroboration(
             valid_events, vectors
         )
+
+        # 3. Compute Galaxy 2D coordinates with collision avoidance
+        coords_2d = self.compute_galaxy_coordinates(vectors, clusters, node_metrics)
+        if len(vectors) > 1:
+            try:
+                pca = PCA(n_components=2, random_state=42)
+                pca.fit(np.array(vectors, dtype=np.float32))
+                self.last_pca_model = pca
+            except Exception:
+                self.last_pca_model = None
+        else:
+            self.last_pca_model = None
 
         # 4. Update coordinates and trust metrics in database
         nodes: List[Dict[str, Any]] = []

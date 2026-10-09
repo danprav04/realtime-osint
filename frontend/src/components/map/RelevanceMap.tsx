@@ -7,25 +7,21 @@ import {
   Maximize2,
   RefreshCw,
   Search,
-  SlidersHorizontal,
   ShieldCheck,
   Radio,
   Flame,
-  Layers,
   Sparkles,
-  Info,
-  Clock,
-  Compass,
   Cpu,
+  Layers,
+  Compass,
 } from 'lucide-react';
 import {
   EmbeddingsMapData,
   MapNode,
   MapEdge,
   MapCluster,
-  QuotaTracker,
 } from '@/lib/types';
-import { cn, formatRelativeTime } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { EventInspector } from './EventInspector';
 
 type ColorMode = 'trust' | 'source' | 'score';
@@ -45,40 +41,36 @@ export function RelevanceMap({
   onBackfill,
   isBackfilling,
 }: RelevanceMapProps) {
-  // Navigation & Zoom state
-  const [scale, setScale] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Filter & Display state
+  // High-performance animation / interaction refs (prevents DOM thrashing & React re-render lag)
+  const offsetRef = useRef({ x: 0, y: 0 });
+  const scaleRef = useRef(1);
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const animFrameIdRef = useRef<number | null>(null);
+
+  // Reactive UI state
   const [colorMode, setColorMode] = useState<ColorMode>('trust');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNode, setHoveredNode] = useState<MapNode | null>(null);
-  const [minTrustScore, setMinTrustScore] = useState<number>(0);
-
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+  const [selectedClusterFilter, setSelectedClusterFilter] = useState<number | 'all'>('all');
+  const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
 
   // Selected node object
   const selectedNode = useMemo(() => {
     return data.nodes.find((n) => n.id === selectedNodeId) || null;
   }, [data.nodes, selectedNodeId]);
 
-  // Filtered nodes
-  const filteredNodes = useMemo(() => {
-    return data.nodes.filter((node) => {
-      if (node.trustworthiness.score < minTrustScore) return false;
-      return true;
-    });
-  }, [data.nodes, minTrustScore]);
-
   // Match set for search highlighting
   const searchMatches = useMemo(() => {
     if (!searchQuery.trim()) return null;
     const query = searchQuery.toLowerCase();
     const set = new Set<string>();
-    filteredNodes.forEach((node) => {
+    data.nodes.forEach((node) => {
       if (
         node.title.toLowerCase().includes(query) ||
         (node.headline && node.headline.toLowerCase().includes(query)) ||
@@ -89,73 +81,449 @@ export function RelevanceMap({
       }
     });
     return set;
-  }, [filteredNodes, searchQuery]);
-
-  // Zoom handlers
-  const handleZoomIn = () => setScale((s) => Math.min(s * 1.3, 4.5));
-  const handleZoomOut = () => setScale((s) => Math.max(s / 1.3, 0.5));
-  const handleResetView = () => {
-    setScale(1);
-    setOffset({ x: 0, y: 0 });
-  };
-
-  // Mouse pan drag handlers
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).tagName.toLowerCase() === 'circle') return;
-    setIsDragging(true);
-    setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y });
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    setOffset({
-      x: e.clientX - dragStart.x,
-      y: e.clientY - dragStart.y,
-    });
-  };
-
-  const handleMouseUp = () => setIsDragging(false);
-
-  // Wheel zoom
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.15 : 0.88;
-    setScale((s) => Math.min(Math.max(s * zoomFactor, 0.45), 5.0));
-  };
+  }, [data.nodes, searchQuery]);
 
   // Color mapper helper
-  const getNodeFill = (node: MapNode) => {
-    if (colorMode === 'trust') {
-      const s = node.trustworthiness.score;
-      if (s >= 80) return '#10b981'; // Emerald (High trust)
-      if (s >= 60) return '#06b6d4'; // Cyan (Cross-checked)
-      if (s >= 40) return '#f59e0b'; // Amber (Single-source unverified)
-      return '#f43f5e'; // Rose (Outlier)
+  const getNodeFill = useCallback(
+    (node: MapNode) => {
+      if (colorMode === 'trust') {
+        const s = node.trustworthiness.score;
+        if (s >= 80) return '#10b981'; // Emerald (High trust)
+        if (s >= 60) return '#06b6d4'; // Cyan (Verified)
+        if (s >= 40) return '#f59e0b'; // Amber (Unverified)
+        return '#f43f5e'; // Rose (Outlier)
+      }
+
+      if (colorMode === 'source') {
+        switch (node.source_type.toLowerCase()) {
+          case 'telegram':
+            return '#38bdf8';
+          case 'newsapi':
+            return '#a855f7';
+          case 'rss':
+            return '#34d399';
+          case 'reddit':
+            return '#fb923c';
+          case 'ais':
+            return '#60a5fa';
+          default:
+            return '#94a3b8';
+        }
+      }
+
+      // colorMode === 'score'
+      const sc = node.importance_score;
+      if (sc >= 9) return '#ef4444'; // Red (Critical)
+      if (sc >= 7) return '#f97316'; // Orange (High)
+      if (sc >= 4) return '#3b82f6'; // Blue (Medium)
+      return '#64748b'; // Slate (Low)
+    },
+    [colorMode]
+  );
+
+  // Resize observer to keep canvas sharp at full container size
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateDimensions = () => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setDimensions({
+          width: Math.floor(rect.width),
+          height: Math.floor(rect.height),
+        });
+      }
+    };
+
+    updateDimensions();
+    const observer = new ResizeObserver(() => updateDimensions());
+    observer.observe(container);
+
+    return () => observer.disconnect();
+  }, []);
+
+  // Main 60 FPS Canvas Draw Routine
+  const renderCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const { width, height } = dimensions;
+    const dpr = window.devicePixelRatio || 1;
+
+    // Coordinate transforms
+    const centerX = width / 2 + offsetRef.current.x;
+    const centerY = height / 2 + offsetRef.current.y;
+    const baseScale = Math.min(width, height) / 220;
+    const currentScale = scaleRef.current;
+
+    const toScreenX = (mapX: number) => centerX + mapX * baseScale * currentScale;
+    const toScreenY = (mapY: number) => centerY + mapY * baseScale * currentScale;
+
+    // Reset transform & clear
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    // -------------------------------------------------------------
+    // Layer 1: Radar Background Grid & Range Rings
+    // -------------------------------------------------------------
+    ctx.save();
+    ctx.strokeStyle = 'rgba(113, 113, 122, 0.18)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+
+    const radarRadii = [25, 50, 75, 95];
+    radarRadii.forEach((r) => {
+      const screenR = r * baseScale * currentScale;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, screenR, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+
+    // Crosshairs
+    ctx.beginPath();
+    ctx.moveTo(centerX - 100 * baseScale * currentScale, centerY);
+    ctx.lineTo(centerX + 100 * baseScale * currentScale, centerY);
+    ctx.moveTo(centerX, centerY - 100 * baseScale * currentScale);
+    ctx.lineTo(centerX, centerY + 100 * baseScale * currentScale);
+    ctx.stroke();
+
+    // Range markers
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(161, 161, 170, 0.35)';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('25%', centerX + 26 * baseScale * currentScale, centerY - 4);
+    ctx.fillText('50%', centerX + 51 * baseScale * currentScale, centerY - 4);
+    ctx.fillText('75%', centerX + 76 * baseScale * currentScale, centerY - 4);
+    ctx.fillText('Perimeter', centerX + 96 * baseScale * currentScale, centerY - 4);
+    ctx.restore();
+
+    // -------------------------------------------------------------
+    // Layer 2: Topical Cluster Constellations & Badges
+    // -------------------------------------------------------------
+    data.clusters.forEach((cluster) => {
+      if (cluster.center_x === undefined || cluster.center_y === undefined) return;
+      if (selectedClusterFilter !== 'all' && cluster.id !== selectedClusterFilter) return;
+
+      const scX = toScreenX(cluster.center_x);
+      const scY = toScreenY(cluster.center_y);
+      const rawRadius = cluster.radius || Math.max(14, cluster.size * 3.2);
+      const scRadius = Math.max(20, rawRadius * baseScale * currentScale);
+
+      // Celestial cluster disc
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(scX, scY, scRadius, 0, Math.PI * 2);
+      ctx.fillStyle = cluster.id === 0 ? 'rgba(244, 63, 94, 0.02)' : 'rgba(6, 182, 212, 0.035)';
+      ctx.fill();
+
+      ctx.strokeStyle = cluster.id === 0 ? 'rgba(244, 63, 94, 0.25)' : 'rgba(6, 182, 212, 0.25)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+
+      // Cluster label pill
+      const labelText =
+        cluster.id === 0
+          ? `Outliers • ${cluster.size}`
+          : `Cluster #${cluster.id}: ${cluster.label.slice(0, 24)}${cluster.label.length > 24 ? '…' : ''} (${cluster.size})`;
+
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      const textWidth = ctx.measureText(labelText).width;
+      const pillY = scY - scRadius - 12;
+
+      // Pill background
+      ctx.fillStyle = 'rgba(24, 24, 27, 0.75)';
+      ctx.beginPath();
+      ctx.roundRect(scX - textWidth / 2 - 8, pillY - 10, textWidth + 16, 16, 4);
+      ctx.fill();
+      ctx.strokeStyle = cluster.id === 0 ? 'rgba(244, 63, 94, 0.35)' : 'rgba(6, 182, 212, 0.35)';
+      ctx.setLineDash([]);
+      ctx.stroke();
+
+      // Pill text
+      ctx.fillStyle = cluster.id === 0 ? '#fda4af' : '#67e8f9';
+      ctx.fillText(labelText, scX, pillY + 2);
+      ctx.restore();
+    });
+
+    // -------------------------------------------------------------
+    // Layer 3: Semantic Similarity Edges
+    // -------------------------------------------------------------
+    const nodeMap = new Map<string, MapNode>();
+    data.nodes.forEach((n) => nodeMap.set(n.id, n));
+
+    data.edges.forEach((edge) => {
+      const src = nodeMap.get(edge.source);
+      const tgt = nodeMap.get(edge.target);
+      if (!src || !tgt) return;
+
+      const isConnectedToSelected =
+        selectedNodeId === src.id || selectedNodeId === tgt.id;
+      const isConnectedToHovered =
+        hoveredNode?.id === src.id || hoveredNode?.id === tgt.id;
+      const isHighlighted = isConnectedToSelected || isConnectedToHovered;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(toScreenX(src.x), toScreenY(src.y));
+      ctx.lineTo(toScreenX(tgt.x), toScreenY(tgt.y));
+
+      if (isHighlighted) {
+        ctx.strokeStyle = '#06b6d4';
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash([]);
+      } else {
+        ctx.strokeStyle = 'rgba(113, 113, 122, 0.22)';
+        ctx.lineWidth = 0.8;
+        ctx.setLineDash(edge.similarity > 0.75 ? [] : [2, 2]);
+      }
+      ctx.stroke();
+      ctx.restore();
+    });
+
+    // -------------------------------------------------------------
+    // Layer 4: Intelligence Data Nodes
+    // -------------------------------------------------------------
+    data.nodes.forEach((node) => {
+      if (selectedClusterFilter !== 'all' && node.cluster_id !== selectedClusterFilter) {
+        return;
+      }
+
+      const isSelected = selectedNodeId === node.id;
+      const isHovered = hoveredNode?.id === node.id;
+      const isMatch = searchMatches ? searchMatches.has(node.id) : true;
+      const isDimmed = searchMatches ? !isMatch : false;
+
+      const scX = toScreenX(node.x);
+      const scY = toScreenY(node.y);
+      const baseRadius = 4.5 + Math.min((node.importance_score || 5) * 0.35, 3.5);
+      const radius = isHovered ? baseRadius + 2.5 : isSelected ? baseRadius + 1.5 : baseRadius;
+      const fillColor = getNodeFill(node);
+
+      ctx.save();
+      ctx.globalAlpha = isDimmed ? 0.15 : 1.0;
+
+      // Halo ring for High-Trust Corroborated Reports (>= 80%)
+      if (node.trustworthiness.score >= 80 && !isDimmed) {
+        ctx.beginPath();
+        ctx.arc(scX, scY, radius + 4, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.2)';
+        ctx.fill();
+      }
+
+      // Outer animated reticle for selected node
+      if (isSelected) {
+        ctx.beginPath();
+        ctx.arc(scX, scY, radius + 6, 0, Math.PI * 2);
+        ctx.strokeStyle = '#06b6d4';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Target ticks
+        ctx.beginPath();
+        ctx.moveTo(scX - radius - 10, scY);
+        ctx.lineTo(scX + radius + 10, scY);
+        ctx.moveTo(scX, scY - radius - 10);
+        ctx.lineTo(scX, scY + radius + 10);
+        ctx.strokeStyle = 'rgba(6, 182, 212, 0.4)';
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
+
+      // Hover ring
+      if (isHovered) {
+        ctx.beginPath();
+        ctx.arc(scX, scY, radius + 3, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      }
+
+      // Main Node Disc
+      ctx.beginPath();
+      ctx.arc(scX, scY, radius, 0, Math.PI * 2);
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(0, 0, 0, 0.6)';
+      ctx.lineWidth = isSelected ? 1.5 : 0.8;
+      ctx.stroke();
+
+      ctx.restore();
+    });
+  }, [
+    dimensions,
+    data.clusters,
+    data.edges,
+    data.nodes,
+    selectedClusterFilter,
+    selectedNodeId,
+    hoveredNode,
+    searchMatches,
+    getNodeFill,
+  ]);
+
+  // Request redraw whenever reactive props change
+  useEffect(() => {
+    if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+    animFrameIdRef.current = requestAnimationFrame(renderCanvas);
+    return () => {
+      if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+    };
+  }, [renderCanvas]);
+
+  // Fast Euclidean node hit-test
+  const getNodeAtScreenPos = useCallback(
+    (screenX: number, screenY: number): MapNode | null => {
+      const { width, height } = dimensions;
+      const centerX = width / 2 + offsetRef.current.x;
+      const centerY = height / 2 + offsetRef.current.y;
+      const baseScale = Math.min(width, height) / 220;
+      const currentScale = scaleRef.current;
+
+      for (let i = data.nodes.length - 1; i >= 0; i--) {
+        const node = data.nodes[i];
+        if (selectedClusterFilter !== 'all' && node.cluster_id !== selectedClusterFilter) {
+          continue;
+        }
+
+        const scX = centerX + node.x * baseScale * currentScale;
+        const scY = centerY + node.y * baseScale * currentScale;
+        const radius = 6.0 + Math.min((node.importance_score || 5) * 0.35, 3.5);
+
+        const dx = screenX - scX;
+        const dy = screenY - scY;
+        if (dx * dx + dy * dy <= (radius + 5) * (radius + 5)) {
+          return node;
+        }
+      }
+      return null;
+    },
+    [data.nodes, dimensions, selectedClusterFilter]
+  );
+
+  // Mouse pan drag handlers (100% 60 FPS - updates refs and calls rAF)
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    const hitNode = getNodeAtScreenPos(clickX, clickY);
+
+    if (hitNode) {
+      setSelectedNodeId(hitNode.id);
+      return;
     }
 
-    if (colorMode === 'source') {
-      switch (node.source_type.toLowerCase()) {
-        case 'telegram':
-          return '#38bdf8';
-        case 'newsapi':
-          return '#a855f7';
-        case 'rss':
-          return '#34d399';
-        case 'reddit':
-          return '#fb923c';
-        case 'ais':
-          return '#60a5fa';
-        default:
-          return '#94a3b8';
+    // Start drag pan
+    isDraggingRef.current = true;
+    dragStartRef.current = {
+      x: e.clientX - offsetRef.current.x,
+      y: e.clientY - offsetRef.current.y,
+    };
+    if (canvasRef.current) canvasRef.current.style.cursor = 'grabbing';
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    if (isDraggingRef.current) {
+      offsetRef.current = {
+        x: e.clientX - dragStartRef.current.x,
+        y: e.clientY - dragStartRef.current.y,
+      };
+      if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+      animFrameIdRef.current = requestAnimationFrame(renderCanvas);
+      return;
+    }
+
+    // Hover test
+    const hitNode = getNodeAtScreenPos(mouseX, mouseY);
+    if (hitNode !== hoveredNode) {
+      setHoveredNode(hitNode);
+      if (hitNode) {
+        setTooltipPos({ x: mouseX, y: mouseY });
       }
     }
+    if (canvasRef.current) {
+      canvasRef.current.style.cursor = hitNode ? 'pointer' : 'grab';
+    }
+  };
 
-    // colorMode === 'score'
-    const sc = node.importance_score;
-    if (sc >= 9) return '#ef4444'; // Red (Critical)
-    if (sc >= 7) return '#f97316'; // Orange (High)
-    if (sc >= 4) return '#3b82f6'; // Blue (Medium)
-    return '#64748b'; // Slate (Low)
+  const handleMouseUp = () => {
+    isDraggingRef.current = false;
+    if (canvasRef.current) {
+      canvasRef.current.style.cursor = hoveredNode ? 'pointer' : 'grab';
+    }
+  };
+
+  // Wheel zoom centered at mouse position
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const zoomFactor = e.deltaY < 0 ? 1.15 : 0.88;
+    const newScale = Math.min(Math.max(scaleRef.current * zoomFactor, 0.45), 5.0);
+
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (rect) {
+      const mouseX = e.clientX - rect.left - dimensions.width / 2;
+      const mouseY = e.clientY - rect.top - dimensions.height / 2;
+      const scaleRatio = newScale / scaleRef.current;
+      offsetRef.current = {
+        x: mouseX - (mouseX - offsetRef.current.x) * scaleRatio,
+        y: mouseY - (mouseY - offsetRef.current.y) * scaleRatio,
+      };
+    }
+
+    scaleRef.current = newScale;
+    if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+    animFrameIdRef.current = requestAnimationFrame(renderCanvas);
+  };
+
+  // Zoom button handlers
+  const handleZoomIn = () => {
+    scaleRef.current = Math.min(scaleRef.current * 1.3, 5.0);
+    renderCanvas();
+  };
+
+  const handleZoomOut = () => {
+    scaleRef.current = Math.max(scaleRef.current / 1.3, 0.45);
+    renderCanvas();
+  };
+
+  const handleResetView = () => {
+    scaleRef.current = 1;
+    offsetRef.current = { x: 0, y: 0 };
+    setSelectedClusterFilter('all');
+    renderCanvas();
+  };
+
+  // Jump camera directly to a cluster
+  const handleJumpToCluster = (clusterId: number | 'all') => {
+    setSelectedClusterFilter(clusterId);
+    if (clusterId === 'all') {
+      handleResetView();
+      return;
+    }
+
+    const cluster = data.clusters.find((c) => c.id === clusterId);
+    if (cluster && cluster.center_x !== undefined && cluster.center_y !== undefined) {
+      const baseScale = Math.min(dimensions.width, dimensions.height) / 220;
+      scaleRef.current = 1.45;
+      offsetRef.current = {
+        x: -cluster.center_x * baseScale * scaleRef.current,
+        y: -cluster.center_y * baseScale * scaleRef.current,
+      };
+      renderCanvas();
+    }
   };
 
   // Jump to neighbor node
@@ -163,11 +531,13 @@ export function RelevanceMap({
     const target = data.nodes.find((n) => n.event_id === eventId || n.id === eventId);
     if (target) {
       setSelectedNodeId(target.id);
-      // Pan camera towards target
-      setOffset({
-        x: -target.x * 3.5,
-        y: -target.y * 3.5,
-      });
+      const baseScale = Math.min(dimensions.width, dimensions.height) / 220;
+      scaleRef.current = Math.max(scaleRef.current, 1.4);
+      offsetRef.current = {
+        x: -target.x * baseScale * scaleRef.current,
+        y: -target.y * baseScale * scaleRef.current,
+      };
+      renderCanvas();
     }
   };
 
@@ -286,173 +656,69 @@ export function RelevanceMap({
         </div>
       </div>
 
-      {/* SVG Canvas Map Area */}
+      {/* Cluster Navigation Quick Pills Bar */}
+      {data.clusters.length > 0 && (
+        <div className="z-10 flex items-center space-x-1.5 px-3 py-1.5 hairline-b bg-canvas-subtle/50 overflow-x-auto scrollbar-none text-xs">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 mr-1 flex items-center gap-1">
+            <Layers className="w-3 h-3" />
+            Galaxies:
+          </span>
+          <button
+            onClick={() => handleJumpToCluster('all')}
+            className={cn(
+              'px-2 py-0.5 rounded text-[11px] font-medium whitespace-nowrap transition-colors',
+              selectedClusterFilter === 'all'
+                ? 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/30'
+                : 'bg-surface-card text-zinc-400 hover:text-zinc-200 border border-white/5'
+            )}
+          >
+            All Reports ({data.nodes.length})
+          </button>
+          {data.clusters.map((c) => (
+            <button
+              key={`cluster-nav-${c.id}`}
+              onClick={() => handleJumpToCluster(c.id)}
+              className={cn(
+                'px-2 py-0.5 rounded text-[11px] font-medium whitespace-nowrap transition-colors',
+                selectedClusterFilter === c.id
+                  ? 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/30'
+                  : 'bg-surface-card text-zinc-400 hover:text-zinc-200 border border-white/5'
+              )}
+            >
+              {c.id === 0 ? 'Outliers' : `C#${c.id}: ${c.label.slice(0, 20)}`} ({c.size})
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Hardware-Accelerated 60 FPS HTML5 Canvas Map Area */}
       <div
         ref={containerRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onWheel={handleWheel}
-        className={cn(
-          'relative flex-1 w-full h-full overflow-hidden cursor-grab active:cursor-grabbing bg-canvas-base',
-          isDragging && 'cursor-grabbing'
-        )}
+        className="relative flex-1 w-full h-full overflow-hidden bg-canvas-base"
       >
-        <svg
-          className="w-full h-full"
-          viewBox="-110 -110 220 220"
-          preserveAspectRatio="xMidYMid meet"
-        >
-          <defs>
-            {/* Glow filters for corroborated nodes */}
-            <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="2" result="blur" />
-              <feComposite in="SourceGraphic" in2="blur" operator="over" />
-            </filter>
-            <filter id="glow-strong" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="3.5" result="blur" />
-              <feComposite in="SourceGraphic" in2="blur" operator="over" />
-            </filter>
-          </defs>
-
-          {/* Transformed Content Group */}
-          <g
-            transform={`translate(${offset.x * 0.25}, ${offset.y * 0.25}) scale(${scale})`}
-            className="transition-transform duration-75"
-          >
-            {/* Radar Coordinates Background Grid */}
-            <g opacity="0.12" stroke="#71717a" strokeWidth="0.5" fill="none">
-              <circle cx="0" cy="0" r="25" strokeDasharray="2,2" />
-              <circle cx="0" cy="0" r="50" strokeDasharray="3,3" />
-              <circle cx="0" cy="0" r="75" strokeDasharray="4,4" />
-              <circle cx="0" cy="0" r="95" />
-              {/* Crosshair Axes */}
-              <line x1="-100" y1="0" x2="100" y2="0" />
-              <line x1="0" y1="-100" x2="0" y2="100" />
-            </g>
-
-            {/* Clusters Background Label & Centroids */}
-            {data.clusters.map((cluster) => {
-              if (!cluster.center_x && !cluster.center_y) return null;
-              return (
-                <g key={`cluster-${cluster.id}`} opacity="0.6">
-                  <circle
-                    cx={cluster.center_x}
-                    cy={cluster.center_y}
-                    r={Math.max(12, cluster.size * 3.5)}
-                    fill="rgba(6, 182, 212, 0.04)"
-                    stroke="rgba(6, 182, 212, 0.2)"
-                    strokeWidth="0.5"
-                    strokeDasharray="2,2"
-                  />
-                  <text
-                    x={cluster.center_x}
-                    y={cluster.center_y - Math.max(14, cluster.size * 3.5) - 2}
-                    textAnchor="middle"
-                    fill="#a1a1aa"
-                    fontSize="3"
-                    fontFamily="monospace"
-                    className="select-none pointer-events-none"
-                  >
-                    Cluster #{cluster.id} • {cluster.size} reports
-                  </text>
-                </g>
-              );
-            })}
-
-            {/* Semantic Link Edges between Corroborated Reports */}
-            {data.edges.map((edge, idx) => {
-              const srcNode = data.nodes.find((n) => n.id === edge.source);
-              const tgtNode = data.nodes.find((n) => n.id === edge.target);
-              if (!srcNode || !tgtNode) return null;
-
-              const isEdgeHighlighted =
-                selectedNodeId === srcNode.id || selectedNodeId === tgtNode.id;
-
-              return (
-                <line
-                  key={`edge-${idx}`}
-                  x1={srcNode.x}
-                  y1={srcNode.y}
-                  x2={tgtNode.x}
-                  y2={tgtNode.y}
-                  stroke={isEdgeHighlighted ? '#06b6d4' : '#52525b'}
-                  strokeWidth={isEdgeHighlighted ? 1.0 : 0.35}
-                  strokeOpacity={isEdgeHighlighted ? 0.8 : 0.25}
-                  strokeDasharray={edge.similarity > 0.8 ? 'none' : '1,1'}
-                />
-              );
-            })}
-
-            {/* Data Nodes */}
-            {filteredNodes.map((node) => {
-              const isSelected = selectedNodeId === node.id;
-              const isMatch = searchMatches ? searchMatches.has(node.id) : true;
-              const isDimmed = searchMatches ? !isMatch : false;
-              const nodeColor = getNodeFill(node);
-              const radius = 2.5 + Math.min(node.importance_score * 0.45, 4.0);
-
-              return (
-                <g
-                  key={node.id}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedNodeId(node.id);
-                  }}
-                  onMouseEnter={() => setHoveredNode(node)}
-                  onMouseLeave={() => setHoveredNode(null)}
-                  className="cursor-pointer group"
-                  opacity={isDimmed ? 0.15 : 1}
-                >
-                  {/* Selected Ripple Outer Ring */}
-                  {isSelected && (
-                    <circle
-                      cx={node.x}
-                      cy={node.y}
-                      r={radius + 4}
-                      fill="none"
-                      stroke="#06b6d4"
-                      strokeWidth="0.8"
-                      strokeDasharray="2,1"
-                      className="animate-spin origin-center"
-                    />
-                  )}
-
-                  {/* Halo Glow for High-Trust Corroborated Nodes */}
-                  {node.trustworthiness.score >= 80 && !isDimmed && (
-                    <circle
-                      cx={node.x}
-                      cy={node.y}
-                      r={radius + 2}
-                      fill={nodeColor}
-                      opacity="0.25"
-                      filter="url(#glow)"
-                    />
-                  )}
-
-                  {/* Main Node Point */}
-                  <circle
-                    cx={node.x}
-                    cy={node.y}
-                    r={radius}
-                    fill={nodeColor}
-                    stroke={isSelected ? '#ffffff' : 'rgba(0,0,0,0.4)'}
-                    strokeWidth={isSelected ? 0.8 : 0.3}
-                    className="transition-transform duration-150 group-hover:scale-125"
-                  />
-                </g>
-              );
-            })}
-          </g>
-        </svg>
+        <canvas
+          ref={canvasRef}
+          width={dimensions.width * (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1)}
+          height={dimensions.height * (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1)}
+          style={{
+            width: `${dimensions.width}px`,
+            height: `${dimensions.height}px`,
+            display: 'block',
+          }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onWheel={handleWheel}
+          className="w-full h-full cursor-grab active:cursor-grabbing"
+        />
 
         {/* Hover Tooltip Overlay Card */}
         {hoveredNode && !selectedNode && (
           <div
-            className="absolute pointer-events-none z-30 max-w-xs p-3 rounded-lg bg-surface-card/95 backdrop-blur border border-white/10 shadow-xl space-y-1.5 transition-opacity"
+            className="absolute pointer-events-none z-30 max-w-xs p-3 rounded-lg bg-surface-card/95 backdrop-blur border border-white/10 shadow-xl space-y-1.5 transition-all"
             style={{
-              left: '20px',
-              bottom: '20px',
+              left: `${Math.min(tooltipPos.x + 15, dimensions.width - 290)}px`,
+              top: `${Math.min(tooltipPos.y + 15, dimensions.height - 130)}px`,
             }}
           >
             <div className="flex items-center justify-between gap-2">
@@ -460,7 +726,7 @@ export function RelevanceMap({
                 {hoveredNode.source_name}
               </span>
               <span
-                className="text-[10px] font-semibold px-1.5 py-0.2 rounded"
+                className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
                 style={{ color: getNodeFill(hoveredNode) }}
               >
                 {hoveredNode.trustworthiness.score}% • {hoveredNode.trustworthiness.label}
@@ -475,7 +741,7 @@ export function RelevanceMap({
           </div>
         )}
 
-        {/* Map Floating Navigation Controls */}
+        {/* Floating Navigation Controls */}
         <div className="absolute right-4 bottom-4 z-20 flex flex-col items-center p-1 rounded-lg bg-surface-card/90 backdrop-blur border border-white/10 shadow-lg space-y-1 text-zinc-400">
           <button
             onClick={handleZoomIn}
@@ -510,7 +776,7 @@ export function RelevanceMap({
             <>
               <div className="flex items-center space-x-1">
                 <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                <span className="text-zinc-300">High Trust (&ge;80%)</span>
+                <span className="text-zinc-300">High (&ge;80%)</span>
               </div>
               <div className="flex items-center space-x-1">
                 <span className="w-2 h-2 rounded-full bg-cyan-500" />
