@@ -15,6 +15,7 @@ from backend.app.services.redis_bus import (
     CHANNEL_EVENTS_ALERT,
     CHANNEL_EVENTS_NEW,
     CHANNEL_STATS_UPDATE,
+    CHANNEL_MAP_UPDATE,
     RedisBus,
     get_redis_bus,
 )
@@ -132,6 +133,9 @@ async def handle_bus_event_alert(channel: str, data: Any) -> None:
             payload["id"] = payload["event_id"]
         elif "id" in payload and "event_id" not in payload:
             payload["event_id"] = payload["id"]
+        if "published_at" not in payload and "created_at" not in payload and "timestamp" not in payload:
+            from datetime import datetime, timezone
+            payload["timestamp"] = datetime.now(timezone.utc).isoformat()
     _broadcast_log.append({"type": "alert:critical", "payload": payload})
     await sio.emit("alert:critical", payload)
 
@@ -141,6 +145,13 @@ async def handle_bus_stats_update(channel: str, data: Any) -> None:
     payload = data if isinstance(data, dict) else {"raw": data}
     _broadcast_log.append({"type": "stats:update", "payload": payload})
     await sio.emit("stats:update", payload)
+
+
+async def handle_bus_map_update(channel: str, data: Any) -> None:
+    """Broadcast embeddings relevance map update notification."""
+    payload = data if isinstance(data, dict) else {"raw": data}
+    _broadcast_log.append({"type": "map:update", "payload": payload})
+    await sio.emit("map:update", payload)
 
 
 async def init_socket_server(bus: Optional[RedisBus] = None) -> None:
@@ -153,6 +164,7 @@ async def init_socket_server(bus: Optional[RedisBus] = None) -> None:
     event_bus.subscribe(CHANNEL_EVENTS_NEW, handle_bus_event_new)
     event_bus.subscribe(CHANNEL_EVENTS_ALERT, handle_bus_event_alert)
     event_bus.subscribe(CHANNEL_STATS_UPDATE, handle_bus_stats_update)
+    event_bus.subscribe(CHANNEL_MAP_UPDATE, handle_bus_map_update)
     _is_initialized = True
     logger.info("Real-Time Gateway Socket.IO server initialized and subscribed to Redis bus.")
 
@@ -167,6 +179,7 @@ async def shutdown_socket_server(bus: Optional[RedisBus] = None) -> None:
     event_bus.unsubscribe(CHANNEL_EVENTS_NEW, handle_bus_event_new)
     event_bus.unsubscribe(CHANNEL_EVENTS_ALERT, handle_bus_event_alert)
     event_bus.unsubscribe(CHANNEL_STATS_UPDATE, handle_bus_stats_update)
+    event_bus.unsubscribe(CHANNEL_MAP_UPDATE, handle_bus_map_update)
     _active_clients.clear()
     _is_initialized = False
     logger.info("Real-Time Gateway Socket.IO server shut down.")

@@ -12,6 +12,7 @@ import {
   Layers,
   Wifi,
   WifiOff,
+  Compass,
 } from 'lucide-react';
 import { useSocketConnection } from '@/lib/socket';
 import { getActiveTheme } from '@/lib/api';
@@ -41,6 +42,7 @@ export function Navbar() {
 
   const navItems = [
     { href: '/', label: 'Live Feed', icon: Radio },
+    { href: '/map', label: 'Relevance Map', icon: Compass },
     { href: '/trends', label: 'Trends & Analytics', icon: BarChart3 },
     { href: '/settings', label: 'Settings', icon: Sliders },
   ];

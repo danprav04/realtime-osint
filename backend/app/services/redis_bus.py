@@ -12,12 +12,14 @@ CHANNEL_CONFIG_RELOAD = "osint:config:reload"
 CHANNEL_EVENTS_NEW = "osint:events:new"
 CHANNEL_EVENTS_ALERT = "osint:events:alert"
 CHANNEL_STATS_UPDATE = "osint:stats:update"
+CHANNEL_MAP_UPDATE = "osint:map:update"
 
 ALL_CHANNELS = [
     CHANNEL_CONFIG_RELOAD,
     CHANNEL_EVENTS_NEW,
     CHANNEL_EVENTS_ALERT,
     CHANNEL_STATS_UPDATE,
+    CHANNEL_MAP_UPDATE,
 ]
 
 HandlerFunc = Callable[[str, Any], Coroutine[Any, Any, None]]

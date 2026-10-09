@@ -28,3 +28,7 @@ asyncpraw>=7.8.0
 
 # --- Real-Time Gateway ---
 python-socketio>=5.11.0
+
+# --- ML, Embeddings & Projections ---
+numpy>=1.26.0
+scikit-learn>=1.5.0

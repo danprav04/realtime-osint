@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     # AI Pipeline credentials
     GEMINI_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
+    HF_EMBEDDING_URL: Optional[str] = None  # Self-hosted unlimited HF Space TEI endpoint
+    HF_API_KEY: Optional[str] = None
 
     # Alert notification defaults
     TELEGRAM_BOT_TOKEN: Optional[str] = None

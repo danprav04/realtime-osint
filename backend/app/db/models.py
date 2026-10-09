@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     SmallInteger,
@@ -177,6 +178,9 @@ class Event(Base):
     alerts: Mapped[List["Alert"]] = relationship(
         "Alert", back_populates="event", cascade="all, delete-orphan", lazy="selectin"
     )
+    embedding: Mapped[Optional["EventEmbedding"]] = relationship(
+        "EventEmbedding", back_populates="event", uselist=False, cascade="all, delete-orphan", lazy="selectin"
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -235,6 +239,45 @@ class Alert(Base):
             "channel": self.channel,
             "status": self.status,
             "error_message": self.error_message,
+        }
+
+
+class EventEmbedding(Base):
+    """
+    High-dimensional vector embedding and 2D relevance map projection coordinates
+    with corroboration and trustworthiness metrics.
+    """
+    __tablename__ = "event_embeddings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    event_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("events.id", ondelete="CASCADE"), unique=True, nullable=False, index=True
+    )
+    embedding_vector: Mapped[List[float]] = mapped_column(JSON, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), default="gemini-embedding-001", nullable=False)
+    x_coord: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    y_coord: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    trustworthiness_score: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True, index=True)
+    corroboration_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cluster_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    cluster_label: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    embedded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    # Relationships
+    event: Mapped["Event"] = relationship("Event", back_populates="embedding")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "event_id": self.event_id,
+            "model_name": self.model_name,
+            "x": self.x_coord,
+            "y": self.y_coord,
+            "trustworthiness_score": self.trustworthiness_score,
+            "corroboration_count": self.corroboration_count,
+            "cluster_id": self.cluster_id,
+            "cluster_label": self.cluster_label,
+            "embedded_at": self.embedded_at.isoformat() if self.embedded_at else None,
         }
 
 
