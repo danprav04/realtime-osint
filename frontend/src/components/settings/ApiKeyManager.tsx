@@ -1,17 +1,20 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Key, Eye, EyeOff, Save, Check, AlertCircle, Bell, Shield, Pizza } from 'lucide-react';
-import { SystemSettings } from '@/lib/types';
+import { Key, Eye, EyeOff, Save, Check, AlertCircle, Bell, Shield, Pizza, ExternalLink } from 'lucide-react';
+import { AIPipelineSettings, Source, SystemSettings } from '@/lib/types';
 import { updateSettings } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { ProviderRateLimitsBar } from './ProviderRateLimitsBar';
 
 interface ApiKeyManagerProps {
   initialSettings: SystemSettings | null;
+  aiSettings?: AIPipelineSettings | null;
+  sources?: Source[] | null;
   onRefresh: () => void;
 }
 
-export function ApiKeyManager({ initialSettings, onRefresh }: ApiKeyManagerProps) {
+export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh }: ApiKeyManagerProps) {
   const [apiKeys, setApiKeys] = useState<Record<string, string>>(
     initialSettings?.api_keys || {
       gemini_api_key: '',
@@ -60,6 +63,18 @@ export function ApiKeyManager({ initialSettings, onRefresh }: ApiKeyManagerProps
 
   useEffect(() => {
     if (initialSettings) {
+      if (initialSettings.api_keys) {
+        setApiKeys((prev) => ({ ...prev, ...initialSettings.api_keys }));
+      }
+      if (initialSettings.notification_threshold !== undefined) {
+        setNotificationThreshold(initialSettings.notification_threshold);
+      }
+      if (initialSettings.polling_intervals) {
+        setPollingIntervals((prev) => ({ ...prev, ...initialSettings.polling_intervals }));
+      }
+      if (initialSettings.max_lookback_hours) {
+        setMaxLookbackHours((prev) => ({ ...prev, ...initialSettings.max_lookback_hours }));
+      }
       if (initialSettings.pizza_meter_enabled !== undefined) {
         setPizzaMeterEnabled(initialSettings.pizza_meter_enabled);
       }
@@ -127,15 +142,83 @@ export function ApiKeyManager({ initialSettings, onRefresh }: ApiKeyManagerProps
   };
 
   const keyFields = [
-    { id: 'gemini_api_key', label: 'Google Gemini API Key', placeholder: 'AIzaSy...' },
-    { id: 'groq_api_key', label: 'Groq Cloud API Key', placeholder: 'gsk_...' },
-    { id: 'telegram_bot_token', label: 'Telegram Bot Token (Alerts)', placeholder: '123456:ABC-DEF...' },
-    { id: 'telegram_chat_id', label: 'Telegram Alert Chat / Channel ID', placeholder: '-1001234567890' },
-    { id: 'telegram_api_id', label: 'Telegram MTProto API ID', placeholder: '1234567' },
-    { id: 'telegram_api_hash', label: 'Telegram MTProto API Hash', placeholder: 'abcdef0123456...' },
-    { id: 'newsapi_key', label: 'NewsAPI / Currents API Key', placeholder: 'news_api_key_...' },
-    { id: 'reddit_client_id', label: 'Reddit Client ID', placeholder: 'reddit_app_id' },
-    { id: 'reddit_client_secret', label: 'Reddit Client Secret', placeholder: 'reddit_secret' },
+    {
+      id: 'gemini_api_key',
+      label: 'Google Gemini API Key',
+      placeholder: 'AIzaSy...',
+      rateLimitUrl: 'https://aistudio.google.com/rate-limit',
+      rateLimitLabel: 'AI Studio Rate Limits',
+    },
+    {
+      id: 'groq_api_key',
+      label: 'Groq Cloud API Key',
+      placeholder: 'gsk_...',
+      rateLimitUrl: 'https://console.groq.com/settings/limits',
+      rateLimitLabel: 'Groq Rate Limits',
+    },
+    {
+      id: 'hf_embedding_url',
+      label: 'Hugging Face Space TEI URL',
+      placeholder: 'https://danprav-osint-embeddings-tei.hf.space',
+      rateLimitUrl: 'https://huggingface.co/spaces/danprav/osint-embeddings-tei',
+      rateLimitLabel: 'HF Space Console',
+    },
+    {
+      id: 'hf_api_key',
+      label: 'Hugging Face Access Token (Optional)',
+      placeholder: 'hf_...',
+      rateLimitUrl: 'https://huggingface.co/settings/tokens',
+      rateLimitLabel: 'HF Access Tokens',
+    },
+    {
+      id: 'telegram_bot_token',
+      label: 'Telegram Bot Token (Alerts)',
+      placeholder: '123456:ABC-DEF...',
+      rateLimitUrl: 'https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this',
+      rateLimitLabel: 'Bot Rate Limits',
+    },
+    {
+      id: 'telegram_chat_id',
+      label: 'Telegram Alert Chat / Channel ID',
+      placeholder: '-1001234567890',
+      rateLimitUrl: 'https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this',
+      rateLimitLabel: 'Dispatch Limits',
+    },
+    {
+      id: 'telegram_api_id',
+      label: 'Telegram MTProto API ID',
+      placeholder: '1234567',
+      rateLimitUrl: 'https://my.telegram.org/apps',
+      rateLimitLabel: 'MTProto App Console',
+    },
+    {
+      id: 'telegram_api_hash',
+      label: 'Telegram MTProto API Hash',
+      placeholder: 'abcdef0123456...',
+      rateLimitUrl: 'https://my.telegram.org/apps',
+      rateLimitLabel: 'MTProto App Console',
+    },
+    {
+      id: 'newsapi_key',
+      label: 'NewsAPI / Currents API Key',
+      placeholder: 'news_api_key_...',
+      rateLimitUrl: 'https://newsapi.org/account',
+      rateLimitLabel: 'NewsAPI Quota',
+    },
+    {
+      id: 'reddit_client_id',
+      label: 'Reddit Client ID',
+      placeholder: 'reddit_app_id',
+      rateLimitUrl: 'https://www.reddit.com/prefs/apps',
+      rateLimitLabel: 'Reddit App Console',
+    },
+    {
+      id: 'reddit_client_secret',
+      label: 'Reddit Client Secret',
+      placeholder: 'reddit_secret',
+      rateLimitUrl: 'https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki',
+      rateLimitLabel: 'Reddit Rate Limits (100 QPM)',
+    },
   ];
 
   return (
@@ -264,17 +347,56 @@ export function ApiKeyManager({ initialSettings, onRefresh }: ApiKeyManagerProps
 
         {/* API Keys Grid */}
         <div className="space-y-3">
-          <h4 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
-            Provider API Keys & Tokens
-          </h4>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+              Provider API Keys &amp; Tokens
+            </h4>
+            <span className="text-[11px] text-zinc-400">
+              Click any provider&apos;s rate limit link to inspect live RPM/RPD quotas
+            </span>
+          </div>
+
+          <ProviderRateLimitsBar
+            apiKeysOverride={apiKeys}
+            aiSettings={aiSettings}
+            sources={sources}
+            compact
+            title="Connected Provider Rate Limits (Live Status)"
+          />
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {keyFields.map((field) => {
               const isVisible = showKeys[field.id];
               const value = apiKeys[field.id] || '';
+              const isConfigured = Boolean(value && String(value).trim().length > 0);
 
               return (
                 <div key={field.id} className="space-y-1">
-                  <label className="block text-zinc-300 font-medium">{field.label}</label>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center space-x-2 min-w-0">
+                      <label className="block text-zinc-300 font-medium truncate">
+                        {field.label}
+                      </label>
+                      {isConfigured && (
+                        <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          <span>CONNECTED</span>
+                        </span>
+                      )}
+                    </div>
+                    {field.rateLimitUrl && (
+                      <a
+                        href={field.rateLimitUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={`Open ${field.rateLimitLabel} in new tab`}
+                        className="inline-flex items-center space-x-1 text-[10px] font-mono text-accent-cyan hover:text-accent-cyan/80 hover:underline shrink-0 transition-colors"
+                      >
+                        <span>{field.rateLimitLabel}</span>
+                        <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    )}
+                  </div>
                   <div className="relative">
                     <input
                       type={isVisible ? 'text' : 'password'}

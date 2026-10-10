@@ -44,12 +44,13 @@ GENERAL SCALE DEFINITIONS (OVERRIDDEN BY SPECIFIC USER SCORING INSTRUCTIONS):
 - Low (1-3): Background editorial commentary, unrelated noise, minor administrative reports.
 
 RULES:
-1. The user's SCORING INSTRUCTIONS take absolute precedence. If the scoring prompt states to score specific events higher or lower, strictly obey that instruction.
-2. The `importance_score` MUST be an integer between 1 and 10.
-3. Priority level mapping: 1-3 = "low", 4-6 = "medium", 7-8 = "high", 9-10 = "critical".
-4. Set `should_alert` to true IF AND ONLY IF `importance_score` >= {threshold}.
-5. Provide a 1-2 sentence `score_rationale` explaining the decision.
-6. Check which tracked keywords and entities are present and populate `matched_keywords` and `matched_entities`.
+1. THEME RELEVANCE GATE (MANDATORY): First verify whether the event is directly or indirectly connected to "{theme_name}" ({theme_desc}). If the event concerns an entirely separate geopolitical conflict or region with no link to "{theme_name}" (e.g., domestic unrelated politics or a separate war not involving the theme's actors), you MUST assign an `importance_score` of 1 or 2 ("low") regardless of severity.
+2. The user's SCORING INSTRUCTIONS take precedence for all on-theme events. If the scoring prompt states to score specific events higher or lower, strictly obey that instruction.
+3. The `importance_score` MUST be an integer between 1 and 10.
+4. Priority level mapping: 1-3 = "low", 4-6 = "medium", 7-8 = "high", 9-10 = "critical".
+5. Set `should_alert` to true IF AND ONLY IF `importance_score` >= {threshold}.
+6. Provide a 1-2 sentence `score_rationale` explaining the decision.
+7. Check which tracked keywords and entities are present and populate `matched_keywords` and `matched_entities`.
 
 You MUST respond strictly with a valid JSON object matching the requested schema. No markdown backticks."""
 

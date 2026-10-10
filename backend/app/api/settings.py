@@ -3,12 +3,14 @@ backend/app/api/settings.py - System Settings & AI Pipeline Configuration Endpoi
 """
 
 import logging
+import os
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import require_api_key
+from backend.app.config import get_settings
 from backend.app.db.models import SystemSettings
 from backend.app.db.session import get_db_session
 from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
@@ -120,11 +122,33 @@ async def get_system_settings(
     rows = {r.key: r.value_json for r in res.scalars().all()}
 
     raw_keys = rows.get("api_keys", {})
+    app_settings = get_settings()
+    env_keys = {
+        "gemini_api_key": app_settings.GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY"),
+        "groq_api_key": app_settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY"),
+        "telegram_bot_token": app_settings.TELEGRAM_BOT_TOKEN or os.environ.get("TELEGRAM_BOT_TOKEN"),
+        "telegram_chat_id": app_settings.TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID"),
+        "telegram_api_id": os.environ.get("TELEGRAM_API_ID"),
+        "telegram_api_hash": os.environ.get("TELEGRAM_API_HASH"),
+        "newsapi_key": os.environ.get("NEWSAPI_KEY"),
+        "reddit_client_id": os.environ.get("REDDIT_CLIENT_ID"),
+        "reddit_client_secret": os.environ.get("REDDIT_CLIENT_SECRET"),
+        "hf_api_key": app_settings.HF_API_KEY or os.environ.get("HF_API_KEY"),
+    }
+    effective_keys = {}
+    for k, env_v in env_keys.items():
+        if env_v:
+            effective_keys[k] = env_v
+    if isinstance(raw_keys, dict):
+        for k, db_v in raw_keys.items():
+            if db_v or k not in effective_keys:
+                effective_keys[k] = db_v
+
     masked_keys = {}
-    for k, v in raw_keys.items():
+    for k, v in effective_keys.items():
         if v and len(str(v)) > 4:
             masked_keys[k] = f"***{str(v)[-4:]}"
-        else:
+        elif v or k in (raw_keys if isinstance(raw_keys, dict) else {}):
             masked_keys[k] = "***"
 
     default_lookbacks = {

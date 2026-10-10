@@ -14,6 +14,7 @@ import {
   Source,
   AIPipelineSettings,
   SystemSettings,
+  EmbeddingStatus,
 } from '@/lib/types';
 import {
   getThemes,
@@ -21,11 +22,13 @@ import {
   getSources,
   getAIPipelineSettings,
   getSettings,
+  getEmbeddingStatus,
 } from '@/lib/api';
 import { ThemeForm } from '@/components/settings/ThemeForm';
 import { SourceManager } from '@/components/settings/SourceManager';
 import { AIConfigMatrix } from '@/components/settings/AIConfigMatrix';
 import { ApiKeyManager } from '@/components/settings/ApiKeyManager';
+import { ProviderRateLimitsBar } from '@/components/settings/ProviderRateLimitsBar';
 import { AppIcon } from '@/components/AppIcon';
 import { cn } from '@/lib/utils';
 
@@ -39,16 +42,18 @@ export default function SettingsPage() {
   const [sources, setSources] = useState<Source[]>([]);
   const [aiSettings, setAiSettings] = useState<AIPipelineSettings | null>(null);
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
 
   const loadAllSettings = useCallback(async () => {
     try {
-      const [themesData, activeThemeData, sourcesData, aiData, sysData] =
+      const [themesData, activeThemeData, sourcesData, aiData, sysData, embedData] =
         await Promise.all([
           getThemes().catch(() => []),
           getActiveTheme().catch(() => null),
           getSources().catch(() => []),
           getAIPipelineSettings().catch(() => null),
           getSettings().catch(() => null),
+          getEmbeddingStatus().catch(() => null),
         ]);
 
       setThemes(themesData);
@@ -56,6 +61,7 @@ export default function SettingsPage() {
       setSources(sourcesData);
       setAiSettings(aiData);
       setSystemSettings(sysData);
+      setEmbeddingStatus(embedData);
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -122,6 +128,14 @@ export default function SettingsPage() {
         </button>
       </div>
 
+      {/* Connected Provider Rate Limits & Quotas Shortcut Bar */}
+      <ProviderRateLimitsBar
+        systemSettings={systemSettings}
+        aiSettings={aiSettings}
+        sources={sources}
+        hfSpaceConfigured={embeddingStatus?.hf_space_configured}
+      />
+
       {/* Tab Selector Navigation */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {tabs.map((tab) => {
@@ -185,6 +199,7 @@ export default function SettingsPage() {
         {activeTab === 'ai' && (
           <AIConfigMatrix
             initialSettings={aiSettings}
+            systemSettings={systemSettings}
             onRefresh={loadAllSettings}
           />
         )}
@@ -192,6 +207,8 @@ export default function SettingsPage() {
         {activeTab === 'keys' && (
           <ApiKeyManager
             initialSettings={systemSettings}
+            aiSettings={aiSettings}
+            sources={sources}
             onRefresh={loadAllSettings}
           />
         )}

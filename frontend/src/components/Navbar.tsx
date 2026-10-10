@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -13,12 +13,15 @@ import {
   Wifi,
   WifiOff,
   Compass,
+  Gauge,
+  ExternalLink,
+  ChevronDown,
 } from 'lucide-react';
 import { useSocketConnection } from '@/lib/socket';
-import { getActiveTheme } from '@/lib/api';
-import { Theme } from '@/lib/types';
+import { getActiveTheme, getSettings, getAIPipelineSettings, getSources } from '@/lib/api';
+import { Theme, SystemSettings, AIPipelineSettings, Source } from '@/lib/types';
 import { AuthModal } from './AuthModal';
-import { cn } from '@/lib/utils';
+import { cn, getProviderRateLimitStatuses } from '@/lib/utils';
 
 import { AppIcon } from '@/components/AppIcon';
 
@@ -26,21 +29,56 @@ export function Navbar() {
   const pathname = usePathname();
   const { isConnected } = useSocketConnection();
   const [activeTheme, setActiveTheme] = useState<Theme | null>(null);
+  const [sysSettings, setSysSettings] = useState<SystemSettings | null>(null);
+  const [aiSettings, setAiSettings] = useState<AIPipelineSettings | null>(null);
+  const [sources, setSources] = useState<Source[]>([]);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isLimitsOpen, setIsLimitsOpen] = useState(false);
+  const limitsMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let isMounted = true;
-    getActiveTheme()
-      .then((theme) => {
-        if (isMounted) setActiveTheme(theme);
-      })
-      .catch(() => {
-        // Fallback or retry silently
-      });
+    Promise.all([
+      getActiveTheme().catch(() => null),
+      getSettings().catch(() => null),
+      getAIPipelineSettings().catch(() => null),
+      getSources().catch(() => []),
+    ]).then(([theme, sys, ai, srcList]) => {
+      if (!isMounted) return;
+      if (theme) setActiveTheme(theme);
+      if (sys) setSysSettings(sys);
+      if (ai) setAiSettings(ai);
+      if (srcList) setSources(srcList);
+    });
     return () => {
       isMounted = false;
     };
   }, [pathname]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (limitsMenuRef.current && !limitsMenuRef.current.contains(e.target as Node)) {
+        setIsLimitsOpen(false);
+      }
+    };
+    if (isLimitsOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isLimitsOpen]);
+
+  const allProviderStatuses = getProviderRateLimitStatuses({
+    apiKeys: sysSettings?.api_keys,
+    aiSettings,
+    sources,
+  });
+  const connectedProviders = allProviderStatuses.filter((p) => p.isConnected);
+  const menuProviders =
+    connectedProviders.length > 0
+      ? connectedProviders
+      : allProviderStatuses.filter((p) => p.id === 'gemini' || p.id === 'groq');
 
   const navItems = [
     { href: '/', label: 'Live Feed', icon: Radio },
@@ -92,19 +130,115 @@ export function Navbar() {
           </div>
 
           {/* Right Header Status Bar */}
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-2.5">
             {/* Active Theme Chip */}
             {activeTheme && (
               <Link
                 href="/settings"
                 title="Active Topic Theme (Click to switch or edit in Settings)"
-                className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-surface-card hairline-border text-[11px] text-zinc-300 hover:bg-surface-raised transition-colors"
+                className="hidden lg:flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-surface-card hairline-border text-[11px] text-zinc-300 hover:bg-surface-raised transition-colors"
               >
                 <Layers className="w-3 h-3 text-accent-amber" />
                 <span className="text-zinc-400">Theme:</span>
                 <span className="font-medium text-zinc-200 truncate max-w-[130px]">{activeTheme.name}</span>
               </Link>
             )}
+
+            {/* Connected Provider Rate Limits Shortcut Dropdown */}
+            <div className="relative" ref={limitsMenuRef}>
+              <button
+                type="button"
+                onClick={() => setIsLimitsOpen((prev) => !prev)}
+                title="Shortcut links to rate limits of connected providers"
+                className={cn(
+                  'flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-[11px] hairline-border transition-colors pressable',
+                  isLimitsOpen
+                    ? 'bg-surface-raised text-accent-cyan border-accent-cyan/40'
+                    : 'bg-surface-card text-zinc-300 hover:text-zinc-100 hover:bg-surface-raised'
+                )}
+              >
+                <Gauge className="w-3.5 h-3.5 text-accent-cyan" />
+                <span className="hidden sm:inline font-medium">Rate Limits</span>
+                <ChevronDown
+                  className={cn(
+                    'w-3 h-3 text-zinc-400 transition-transform duration-150',
+                    isLimitsOpen && 'rotate-180 text-accent-cyan'
+                  )}
+                />
+              </button>
+
+              {isLimitsOpen && (
+                <div className="absolute right-0 mt-2 w-80 rounded-xl bg-surface-overlay/95 backdrop-blur-md border border-white/10 shadow-2xl p-3 z-50 space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between pb-2 border-b border-white/10">
+                    <div>
+                      <span className="font-semibold text-zinc-100 block">
+                        Connected Provider Rate Limits
+                      </span>
+                      <span className="text-[10px] text-zinc-400">
+                        Open live RPM / RPD quota dashboards
+                      </span>
+                    </div>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 tabular">
+                      {menuProviders.length} Active
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto pr-0.5">
+                    {menuProviders.map((provider) => (
+                      <div
+                        key={provider.id}
+                        className="p-2 rounded-lg bg-surface-card/90 hairline-border flex items-center justify-between gap-2 hover:border-white/15 transition-colors"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center space-x-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)] shrink-0" />
+                            <span className="font-semibold text-zinc-100 truncate text-[11px]">
+                              {provider.name}
+                            </span>
+                          </div>
+                          <span className="block text-[10px] font-mono text-zinc-400 pl-3 tabular truncate">
+                            {provider.quotaSummary}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center space-x-1 shrink-0">
+                          <a
+                            href={provider.rateLimitUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => setIsLimitsOpen(false)}
+                            className="inline-flex items-center space-x-1 px-2 py-1 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/25 text-[10px] font-mono font-semibold transition-colors"
+                          >
+                            <span>Limits</span>
+                            <ExternalLink className="w-2.5 h-2.5" />
+                          </a>
+                          <a
+                            href={provider.usageUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => setIsLimitsOpen(false)}
+                            title={`Open ${provider.name} Usage / Console`}
+                            className="p-1 rounded bg-surface-raised hover:bg-white/10 text-zinc-400 hover:text-zinc-200 hairline-border transition-colors"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="pt-1.5 border-t border-white/10 flex items-center justify-between text-[11px]">
+                    <Link
+                      href="/settings"
+                      onClick={() => setIsLimitsOpen(false)}
+                      className="text-accent-cyan hover:underline font-medium"
+                    >
+                      Configure Keys &amp; Fallbacks &rarr;
+                    </Link>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* WebSocket Connection Status Beacon */}
             <div

@@ -426,6 +426,74 @@ test('AppIcon & AppLogo - exports valid React components with props support', as
   assert.ok(content.includes('viewBox="0 0 512 512"'), 'AppIcon must render SVG with 512 viewBox');
 });
 
+// Test 21: Provider Rate Limit Shortcuts - validates URLs and connected provider resolution
+test('Utils - getProviderRateLimitStatuses resolves connected providers and rate limit URLs accurately', async () => {
+  const {
+    PROVIDER_RATE_LIMITS,
+    getProviderRateLimitInfo,
+    getProviderRateLimitStatuses,
+  } = await import('../src/lib/utils.ts');
+
+  assert.ok(Array.isArray(PROVIDER_RATE_LIMITS));
+  assert.ok(PROVIDER_RATE_LIMITS.length >= 6);
+
+  const geminiInfo = getProviderRateLimitInfo('gemini');
+  assert.ok(geminiInfo);
+  assert.equal(geminiInfo.rateLimitUrl, 'https://aistudio.google.com/rate-limit');
+
+  const groqInfo = getProviderRateLimitInfo('groq_api_key');
+  assert.ok(groqInfo);
+  assert.equal(groqInfo.rateLimitUrl, 'https://console.groq.com/settings/limits');
+
+  const statuses = getProviderRateLimitStatuses({
+    apiKeys: {
+      gemini_api_key: '***1234',
+      newsapi_key: '',
+    },
+    aiSettings: {
+      extraction: { provider: 'groq', fallbacks: [{ provider: 'gemini' }] },
+    },
+    sources: [
+      { source_type: 'telegram', is_enabled: true },
+      { source_type: 'reddit', is_enabled: false },
+    ],
+    hfSpaceConfigured: true,
+  });
+
+  const byId = Object.fromEntries(statuses.map((s) => [s.id, s]));
+  assert.equal(byId.gemini.isConnected, true);
+  assert.equal(byId.gemini.hasApiKey, true);
+  assert.equal(byId.gemini.connectionType, 'api_key');
+
+  assert.equal(byId.groq.isConnected, true);
+  assert.equal(byId.groq.hasApiKey, false);
+  assert.equal(byId.groq.connectionType, 'pipeline');
+
+  assert.equal(byId.telegram.isConnected, true);
+  assert.equal(byId.telegram.connectionType, 'source');
+
+  assert.equal(byId.huggingface.isConnected, true);
+  assert.equal(byId.huggingface.connectionType, 'pipeline');
+
+  assert.equal(byId.newsapi.isConnected, false);
+  assert.equal(byId.reddit.isConnected, false);
+});
+
+// Test 22: ProviderRateLimitsBar Component - validates component file and shortcut links
+test('ProviderRateLimitsBar - exports component and links to provider rate limit dashboards', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const barPath = path.resolve('src/components/settings/ProviderRateLimitsBar.tsx');
+  assert.ok(fs.existsSync(barPath), 'ProviderRateLimitsBar.tsx must exist');
+
+  const barContent = fs.readFileSync(barPath, 'utf-8');
+  assert.ok(barContent.includes('export function ProviderRateLimitsBar'));
+  assert.ok(barContent.includes('provider.rateLimitUrl'));
+  assert.ok(barContent.includes('View Rate Limits'));
+});
+
 console.log('Running frontend automated tests...');
+
 
 

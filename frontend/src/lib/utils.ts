@@ -195,3 +195,202 @@ export function sortEvents<
   });
 }
 
+export interface ProviderRateLimitInfo {
+  id: 'gemini' | 'groq' | 'telegram' | 'newsapi' | 'reddit' | 'huggingface';
+  name: string;
+  shortName: string;
+  category: 'ai' | 'ingestion' | 'alert';
+  rateLimitUrl: string;
+  usageUrl: string;
+  docsUrl: string;
+  quotaSummary: string;
+  keyFields: string[];
+  sourceTypes?: string[];
+  description: string;
+}
+
+export interface ProviderRateLimitStatus extends ProviderRateLimitInfo {
+  isConnected: boolean;
+  hasApiKey: boolean;
+  connectionType: 'api_key' | 'pipeline' | 'source' | 'disconnected';
+  connectionLabel: string;
+}
+
+export const PROVIDER_RATE_LIMITS: ProviderRateLimitInfo[] = [
+  {
+    id: 'gemini',
+    name: 'Google Gemini',
+    shortName: 'Gemini',
+    category: 'ai',
+    rateLimitUrl: 'https://aistudio.google.com/rate-limit',
+    usageUrl: 'https://aistudio.google.com/usage',
+    docsUrl: 'https://ai.google.dev/gemini-api/docs/rate-limits',
+    quotaSummary: '15 RPM • 500–14.4K RPD',
+    keyFields: ['gemini_api_key'],
+    description: 'Google AI Studio active RPM, TPM, and daily RPD model quotas',
+  },
+  {
+    id: 'groq',
+    name: 'Groq Cloud',
+    shortName: 'Groq',
+    category: 'ai',
+    rateLimitUrl: 'https://console.groq.com/settings/limits',
+    usageUrl: 'https://console.groq.com/dashboard/usage',
+    docsUrl: 'https://console.groq.com/docs/rate-limits',
+    quotaSummary: '30 RPM • 1K–14.4K RPD',
+    keyFields: ['groq_api_key'],
+    description: 'Groq Console organization RPM, RPD, TPM, and TPD model limits',
+  },
+  {
+    id: 'telegram',
+    name: 'Telegram API',
+    shortName: 'Telegram',
+    category: 'alert',
+    rateLimitUrl: 'https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this',
+    usageUrl: 'https://my.telegram.org/apps',
+    docsUrl: 'https://core.telegram.org/api/obtaining_api_id',
+    quotaSummary: '30 msg/s • 20 msg/min group',
+    keyFields: ['telegram_bot_token', 'telegram_chat_id', 'telegram_api_id', 'telegram_api_hash'],
+    sourceTypes: ['telegram'],
+    description: 'Telegram Bot API dispatch limits and MTProto application console',
+  },
+  {
+    id: 'newsapi',
+    name: 'NewsAPI / Currents',
+    shortName: 'NewsAPI',
+    category: 'ingestion',
+    rateLimitUrl: 'https://newsapi.org/account',
+    usageUrl: 'https://currentsapi.services/en/profile',
+    docsUrl: 'https://newsapi.org/pricing',
+    quotaSummary: '100 req/day • GDELT: Free',
+    keyFields: ['newsapi_key'],
+    sourceTypes: ['newsapi'],
+    description: 'NewsAPI developer account request quota and Currents API usage',
+  },
+  {
+    id: 'reddit',
+    name: 'Reddit Data API',
+    shortName: 'Reddit',
+    category: 'ingestion',
+    rateLimitUrl: 'https://www.reddit.com/prefs/apps',
+    usageUrl: 'https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki',
+    docsUrl: 'https://www.reddit.com/dev/api/',
+    quotaSummary: '100 QPM (OAuth2)',
+    keyFields: ['reddit_client_id', 'reddit_client_secret'],
+    sourceTypes: ['reddit'],
+    description: 'Reddit OAuth2 application console and 100 queries/min rate limit tier',
+  },
+  {
+    id: 'huggingface',
+    name: 'Hugging Face TEI',
+    shortName: 'HF TEI',
+    category: 'ai',
+    rateLimitUrl: 'https://huggingface.co/settings/billing',
+    usageUrl: 'https://huggingface.co/spaces',
+    docsUrl: 'https://huggingface.co/docs/hub/rate-limits',
+    quotaSummary: 'Unlimited (Self-Hosted)',
+    keyFields: ['hf_api_key', 'hf_embedding_url'],
+    description: 'Hugging Face Spaces embedding server and Hub rate limits',
+  },
+];
+
+export function getProviderRateLimitInfo(providerId: string): ProviderRateLimitInfo | undefined {
+  const norm = providerId.toLowerCase().trim();
+  return PROVIDER_RATE_LIMITS.find((p) => p.id === norm || p.keyFields.includes(norm));
+}
+
+export function getProviderRateLimitStatuses(options?: {
+  apiKeys?: Record<string, string> | null;
+  aiSettings?: {
+    extraction?: { provider?: string; fallbacks?: Array<{ provider?: string }> };
+    scoring?: { provider?: string; fallbacks?: Array<{ provider?: string }> };
+    summarization?: { provider?: string; fallbacks?: Array<{ provider?: string }> };
+    visuals?: { provider?: string; fallbacks?: Array<{ provider?: string }> };
+  } | null;
+  sources?: Array<{ source_type?: string; is_enabled?: boolean; enabled?: boolean }> | null;
+  hfSpaceConfigured?: boolean;
+}): ProviderRateLimitStatus[] {
+  const apiKeys = options?.apiKeys || {};
+  const aiSettings = options?.aiSettings;
+  const sources = options?.sources || [];
+
+  const stages = aiSettings
+    ? [aiSettings.extraction, aiSettings.scoring, aiSettings.summarization, aiSettings.visuals].filter(Boolean)
+    : [];
+
+  return PROVIDER_RATE_LIMITS.map((provider) => {
+    const hasApiKey = provider.keyFields.some((k) => {
+      const val = apiKeys[k];
+      return Boolean(val && String(val).trim().length > 0);
+    });
+
+    const activeInAiPipeline =
+      (provider.id === 'gemini' || provider.id === 'groq') &&
+      stages.some(
+        (stage) =>
+          stage?.provider === provider.id ||
+          (Array.isArray(stage?.fallbacks) && stage!.fallbacks.some((fb) => fb?.provider === provider.id))
+      );
+
+    const activeInSources =
+      Array.isArray(provider.sourceTypes) &&
+      provider.sourceTypes.length > 0 &&
+      sources.some(
+        (s) =>
+          (s.is_enabled ?? s.enabled ?? true) &&
+          provider.sourceTypes!.includes(String(s.source_type || '').toLowerCase())
+      );
+
+    const hfActive = provider.id === 'huggingface' && Boolean(options?.hfSpaceConfigured);
+
+    if (hasApiKey) {
+      return {
+        ...provider,
+        isConnected: true,
+        hasApiKey: true,
+        connectionType: 'api_key',
+        connectionLabel: 'API Key Connected',
+      };
+    }
+
+    if (hfActive) {
+      return {
+        ...provider,
+        isConnected: true,
+        hasApiKey: false,
+        connectionType: 'pipeline',
+        connectionLabel: 'HF Space Connected',
+      };
+    }
+
+    if (activeInAiPipeline) {
+      return {
+        ...provider,
+        isConnected: true,
+        hasApiKey: false,
+        connectionType: 'pipeline',
+        connectionLabel: 'AI Pipeline Active',
+      };
+    }
+
+    if (activeInSources) {
+      return {
+        ...provider,
+        isConnected: true,
+        hasApiKey: false,
+        connectionType: 'source',
+        connectionLabel: 'Active Source Feed',
+      };
+    }
+
+    return {
+      ...provider,
+      isConnected: false,
+      hasApiKey: false,
+      connectionType: 'disconnected',
+      connectionLabel: 'Not Connected',
+    };
+  });
+}
+
+

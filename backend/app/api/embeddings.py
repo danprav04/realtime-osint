@@ -129,6 +129,6 @@ async def get_embedding_status(
         "coverage_percentage": coverage_pct,
         "primary_model": service.default_model,
         "fallback_model": service.fallback_model,
-        "hf_space_configured": bool(service.api_key and os.getenv("HF_EMBEDDING_URL")),
+        "hf_space_configured": bool(service.hf_embedding_url),
         "quota_tracker": quota,
     }

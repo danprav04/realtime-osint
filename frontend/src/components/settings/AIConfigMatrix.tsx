@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Cpu,
   Check,
@@ -12,16 +12,19 @@ import {
   ChevronDown,
   CornerDownRight,
   ShieldAlert,
+  ExternalLink,
+  Gauge,
 } from 'lucide-react';
-import { AIPipelineSettings, AIStageConfig, AIFallbackConfig } from '@/lib/types';
+import { AIPipelineSettings, AIStageConfig, AIFallbackConfig, SystemSettings } from '@/lib/types';
 import { updateAIPipelineSettings } from '@/lib/api';
 
 interface AIConfigMatrixProps {
   initialSettings: AIPipelineSettings | null;
+  systemSettings?: SystemSettings | null;
   onRefresh: () => void;
 }
 
-export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixProps) {
+export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: AIConfigMatrixProps) {
   const defaultStage = (
     provider: 'gemini' | 'groq',
     model: string,
@@ -58,6 +61,12 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
       ]),
     }
   );
+
+  useEffect(() => {
+    if (initialSettings) {
+      setSettings(initialSettings);
+    }
+  }, [initialSettings]);
 
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -261,6 +270,65 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
         </button>
       </div>
 
+      {/* Connected AI Provider Rate Limit Shortcuts */}
+      <div className="p-3.5 rounded-xl bg-canvas-recessed hairline-border flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="flex items-center space-x-2">
+          <Gauge className="w-4 h-4 text-accent-cyan shrink-0" />
+          <div>
+            <span className="font-semibold text-zinc-200">
+              Connected AI Provider Rate Limits &amp; Quotas
+            </span>
+            <span className="hidden sm:inline text-[11px] text-zinc-400 ml-2">
+              Monitor live RPM, TPM &amp; RPD thresholds to tune fallback chains
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <a
+            href="https://aistudio.google.com/rate-limit"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open Google AI Studio Rate Limits Dashboard (15 RPM / 500–14.4K RPD)"
+            className="inline-flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised text-zinc-200 hover:text-accent-cyan hairline-border transition-colors pressable"
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                systemSettings?.api_keys?.gemini_api_key
+                  ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)]'
+                  : 'bg-accent-cyan'
+              }`}
+            />
+            <span className="font-medium">Google Gemini Limits</span>
+            <span className="text-[10px] font-mono text-zinc-400 hidden md:inline">
+              (AI Studio)
+            </span>
+            <ExternalLink className="w-3 h-3 text-accent-cyan" />
+          </a>
+
+          <a
+            href="https://console.groq.com/settings/limits"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open Groq Cloud Console Organization Rate Limits (30 RPM / 1K–14.4K RPD)"
+            className="inline-flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised text-zinc-200 hover:text-accent-cyan hairline-border transition-colors pressable"
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                systemSettings?.api_keys?.groq_api_key
+                  ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)]'
+                  : 'bg-accent-indigo'
+              }`}
+            />
+            <span className="font-medium">Groq Cloud Limits</span>
+            <span className="text-[10px] font-mono text-zinc-400 hidden md:inline">
+              (Groq Console)
+            </span>
+            <ExternalLink className="w-3 h-3 text-accent-cyan" />
+          </a>
+        </div>
+      </div>
+
       {feedback && (
         <div
           className={`p-3 rounded-lg text-xs flex items-center space-x-2 hairline-border ${
@@ -342,9 +410,20 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
                     <div>
                       <div className="flex justify-between items-center mb-1">
                         <label className="text-zinc-400 font-medium">Model Name</label>
-                        <span className="text-[10px] text-zinc-500 font-mono">
-                          {isGemini ? 'Flash: 500 RPD' : 'Free: 30 RPM / 1K RPD'}
-                        </span>
+                        <a
+                          href={
+                            isGemini
+                              ? 'https://aistudio.google.com/rate-limit'
+                              : 'https://console.groq.com/settings/limits'
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={`View ${isGemini ? 'Google Gemini' : 'Groq Cloud'} rate limits`}
+                          className="inline-flex items-center space-x-1 text-[10px] text-accent-cyan hover:text-accent-cyan/80 font-mono hover:underline transition-colors"
+                        >
+                          <span>{isGemini ? 'Flash: 500 RPD' : 'Free: 30 RPM / 1K RPD'}</span>
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
                       </div>
                       <input
                         type="text"
@@ -511,49 +590,65 @@ export function AIConfigMatrix({ initialSettings, onRefresh }: AIConfigMatrixPro
                                 placeholder={fbIsGemini ? 'gemini-3.1-flash-lite' : 'qwen/qwen3.8-27b'}
                                 className="w-full rounded-md bg-canvas-recessed px-2.5 py-1.5 text-zinc-100 font-mono text-xs hairline-border focus:outline-none focus:border-accent-indigo"
                               />
-                              <div className="flex flex-wrap gap-1 mt-1">
-                                {fbIsGemini ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-3.1-flash-lite')}
-                                      className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
-                                    >
-                                      3.1-flash-lite
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-2.5-flash')}
-                                      className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
-                                    >
-                                      2.5-flash
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemma-4-26b-a4b-it')}
-                                      className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
-                                    >
-                                      gemma-4-26b
-                                    </button>
-                                  </>
-                                ) : (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'qwen/qwen3.8-27b')}
-                                      className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
-                                    >
-                                      qwen3.8-27b
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'openai/gpt-oss-120b')}
-                                      className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
-                                    >
-                                      gpt-oss-120b
-                                    </button>
-                                  </>
-                                )}
+                              <div className="flex flex-wrap items-center justify-between gap-1 mt-1">
+                                <div className="flex flex-wrap gap-1">
+                                  {fbIsGemini ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-3.1-flash-lite')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                      >
+                                        3.1-flash-lite
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-2.5-flash')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                      >
+                                        2.5-flash
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemma-4-26b-a4b-it')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                      >
+                                        gemma-4-26b
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'qwen/qwen3.8-27b')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                      >
+                                        qwen3.8-27b
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'openai/gpt-oss-120b')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                      >
+                                        gpt-oss-120b
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                                <a
+                                  href={
+                                    fbIsGemini
+                                      ? 'https://aistudio.google.com/rate-limit'
+                                      : 'https://console.groq.com/settings/limits'
+                                  }
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title={`Open ${fbIsGemini ? 'Gemini' : 'Groq'} rate limits`}
+                                  className="inline-flex items-center space-x-0.5 text-[9px] font-mono text-accent-cyan/80 hover:text-accent-cyan hover:underline"
+                                >
+                                  <span>{fbIsGemini ? 'Gemini Limits' : 'Groq Limits'}</span>
+                                  <ExternalLink className="w-2.5 h-2.5" />
+                                </a>
                               </div>
                             </div>
 

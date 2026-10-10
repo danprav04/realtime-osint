@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import httpx
 import numpy as np
-from sklearn.cluster import KMeans
+from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.decomposition import PCA
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,6 +94,147 @@ def build_embedding_document(event: Event, theme_name: Optional[str] = None) -> 
     if len(doc) > MAX_TEXT_CHAR_LENGTH:
         doc = doc[:MAX_TEXT_CHAR_LENGTH]
     return doc
+
+
+def truncate_at_word_boundary(text: str, max_len: int = 44) -> str:
+    """
+    Cleanly truncate a headline or label at a word boundary without chopping words in half.
+    Strips trailing outlet attributions (e.g., ' - Reuters') and leading urgent prefixes.
+    """
+    if not text:
+        return "Untitled"
+    cleaned = re.sub(r"^[\s🔴⭕️🚨⚡️⚠️\*\-\#•]+", "", text).strip()
+    cleaned = re.sub(
+        r"^(urgent|breaking|عاجل|مهم|update|live|watch|report)\s*[:\-–—]\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    # Strip trailing source attribution like " - Reuters" or " | Al Jazeera"
+    cleaned = re.sub(r"\s+[\-–—\|]\s+[A-Z][\w\s\.&]{1,25}$", "", cleaned).strip()
+
+    if len(cleaned) <= max_len:
+        return cleaned
+
+    cut = cleaned[:max_len].rstrip()
+    last_space = cut.rfind(" ")
+    if last_space >= int(max_len * 0.55):
+        cut = cut[:last_space].rstrip(" ,;:-–—")
+    return cut + "…"
+
+
+def build_semantic_embedding_text(event: Event) -> str:
+    """
+    Construct a pure semantic text representation for vector embedding.
+    Excludes non-semantic boilerplate (timestamps, source feed names, template labels)
+    so unrelated articles from the same feed or hour do not share artificial similarity.
+    Weights headline and named entities prominently for event-level clustering accuracy.
+    """
+    headline = (event.headline or event.title or "Untitled").strip()
+    headline = re.sub(r"^[\s🔴⭕️🚨⚡️⚠️\*\-\#]+", "", headline).strip()
+
+    parts = [headline]
+
+    # Location context
+    loc_str = ""
+    if isinstance(event.location_json, dict) and event.location_json:
+        loc_str = str(
+            event.location_json.get("name")
+            or event.location_json.get("country")
+            or ""
+        ).strip()
+    elif isinstance(event.location_json, str) and event.location_json.strip():
+        loc_str = event.location_json.strip()
+
+    # Entities context
+    entities_list = [str(e).strip() for e in (event.entities_json or []) if str(e).strip()]
+    if loc_str and loc_str not in entities_list:
+        entities_list.insert(0, loc_str)
+
+    if entities_list:
+        parts.append(", ".join(entities_list[:8]))
+
+    # Prefer English summary or translated text over raw untranslated text
+    content_text = (event.summary or event.translated_text or event.raw_text or "").strip()
+    if content_text and content_text.lower() != headline.lower():
+        if len(content_text) > 900:
+            content_text = content_text[:897] + "..."
+        parts.append(content_text)
+
+    doc = "\n".join(parts)
+    if len(doc) > MAX_TEXT_CHAR_LENGTH:
+        doc = doc[:MAX_TEXT_CHAR_LENGTH]
+    return doc
+
+
+def _extract_event_Lookup_tokens(event: Event) -> Set[str]:
+    """
+    Extract normalized significant entities, locations, and proper/content tokens
+    from an event to verify whether two semantically similar articles discuss the same actors/places.
+    """
+    tokens: Set[str] = set()
+    if event.entities_json:
+        for ent in event.entities_json:
+            for w in re.findall(r"[a-zA-Z0-9]{3,}", str(ent).lower()):
+                if w not in MOCK_STOPWORDS:
+                    tokens.add(w)
+
+    if isinstance(event.location_json, dict) and event.location_json:
+        loc_val = event.location_json.get("name") or event.location_json.get("country") or ""
+        for w in re.findall(r"[a-zA-Z0-9]{3,}", str(loc_val).lower()):
+            if w not in MOCK_STOPWORDS:
+                tokens.add(w)
+
+    headline = (event.headline or event.title or "").lower()
+    for w in re.findall(r"[a-zA-Z0-9]{4,}", headline):
+        if w not in MOCK_STOPWORDS:
+            tokens.add(w)
+
+    return tokens
+
+
+def _compute_pairwise_context_bonus(ev_a: Event, ev_b: Event) -> float:
+    """
+    Compute a small contextual adjustment [-0.07, +0.035] to raw cosine similarity
+    based on temporal proximity and shared named entities/locations.
+    Prevents unrelated stories separated by days or concerning disjoint actors
+    from falsely corroborating each other on generic conflict vocabulary.
+    """
+    adjustment = 0.0
+
+    # 1. Temporal proximity check
+    if ev_a.published_at and ev_b.published_at:
+        try:
+            t_a = ev_a.published_at
+            t_b = ev_b.published_at
+            if t_a.tzinfo is None:
+                t_a = t_a.replace(tzinfo=timezone.utc)
+            if t_b.tzinfo is None:
+                t_b = t_b.replace(tzinfo=timezone.utc)
+            hours_diff = abs((t_a - t_b).total_seconds()) / 3600.0
+            if hours_diff <= 18.0:
+                adjustment += 0.01
+            elif hours_diff > 96.0:
+                adjustment -= 0.055
+            elif hours_diff > 48.0:
+                adjustment -= 0.025
+        except Exception:
+            pass
+
+    # 2. Entity & key-term overlap check
+    tok_a = _extract_event_Lookup_tokens(ev_a)
+    tok_b = _extract_event_Lookup_tokens(ev_b)
+    if tok_a and tok_b:
+        overlap = tok_a.intersection(tok_b)
+        if len(overlap) >= 2:
+            adjustment += 0.025
+        elif len(overlap) == 1:
+            adjustment += 0.01
+        elif len(tok_a) >= 3 and len(tok_b) >= 3:
+            # Both have specific entities/keywords but zero overlap
+            adjustment -= 0.03
+
+    return adjustment
 
 
 MOCK_STOPWORDS = {
@@ -178,6 +319,25 @@ def resolve_node_collisions(
 
 
 
+def _homogenize_vectors(vectors: List[List[float]]) -> np.ndarray:
+    """
+    Ensure a list of embedding vectors has a uniform 2D shape before converting to np.ndarray.
+    Handles mixed dimensions (e.g., 3072d Gemini vectors + 384d HF TEI vectors in DB)
+    by zero-padding shorter vectors to the maximum dimension present.
+    """
+    if not vectors:
+        return np.empty((0, 0), dtype=np.float32)
+    lengths = {len(v) for v in vectors}
+    if len(lengths) == 1:
+        return np.array(vectors, dtype=np.float32)
+    max_dim = max(lengths)
+    out = np.zeros((len(vectors), max_dim), dtype=np.float32)
+    for idx, v in enumerate(vectors):
+        if v:
+            out[idx, : len(v)] = np.asarray(v, dtype=np.float32)
+    return out
+
+
 class EmbeddingService:
     """
     Central service for generating embeddings via Gemini batch API,
@@ -186,16 +346,42 @@ class EmbeddingService:
     """
 
     def __init__(self, api_key: Optional[str] = None):
-        self._api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self._api_key = api_key
         self.default_model = DEFAULT_EMBEDDING_MODEL
         self.fallback_model = FALLBACK_EMBEDDING_MODEL
         self.last_pca_model: Optional[PCA] = None
 
     @property
     def api_key(self) -> Optional[str]:
-        if not self._api_key:
-            self._api_key = os.getenv("GEMINI_API_KEY")
-        return self._api_key
+        if self._api_key:
+            return self._api_key
+        env_key = os.getenv("GEMINI_API_KEY")
+        if env_key:
+            return env_key
+        try:
+            return get_settings().GEMINI_API_KEY
+        except Exception:
+            return None
+
+    @property
+    def hf_embedding_url(self) -> Optional[str]:
+        env_url = os.getenv("HF_EMBEDDING_URL")
+        if env_url:
+            return env_url
+        try:
+            return get_settings().HF_EMBEDDING_URL
+        except Exception:
+            return None
+
+    @property
+    def hf_api_key(self) -> Optional[str]:
+        env_token = os.getenv("HF_API_KEY") or os.getenv("HF_TOKEN")
+        if env_token:
+            return env_token
+        try:
+            return get_settings().HF_API_KEY
+        except Exception:
+            return None
 
     async def get_quota_tracker(self, session: AsyncSession) -> Dict[str, Any]:
         """Retrieve or initialize persistent daily quota tracker from system_settings."""
@@ -307,11 +493,15 @@ class EmbeddingService:
         self, texts: List[str], endpoint_url: str, api_key: Optional[str] = None
     ) -> List[List[float]]:
         """
-        Execute batch request to a private Hugging Face Space running Text Embeddings Inference (TEI).
-        Supports native TEI (/embed) and OpenAI-compatible (/v1/embeddings).
-        Zero rate limits, runs 24/7 on free HF CPU Basic tier (2 vCPUs, 16 GB RAM).
+        Execute batch request to a Hugging Face Space running Text Embeddings Inference (TEI)
+        or a Gradio Space exposing /embed, /v1/embeddings, or /gradio_api/call/embed_batch.
         """
         clean_url = endpoint_url.strip().rstrip("/")
+        base_url = clean_url
+        for suffix in ("/embed", "/v1/embeddings"):
+            if base_url.endswith(suffix):
+                base_url = base_url[: -len(suffix)]
+
         if not clean_url.endswith("/embed") and not clean_url.endswith("/v1/embeddings"):
             url = f"{clean_url}/embed"
         else:
@@ -326,7 +516,7 @@ class EmbeddingService:
         else:
             payload = {"inputs": texts, "truncate": True}
 
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
@@ -340,8 +530,36 @@ class EmbeddingService:
                     return data["embeddings"]
                 else:
                     raise ValueError(f"Unrecognized response format from HF TEI endpoint: {type(data)}")
-            else:
-                raise RuntimeError(f"HF Space TEI error {resp.status_code}: {resp.text[:300]}")
+
+            # Fallback to Gradio 5/6 native API (/gradio_api/call/embed_batch) if /embed returned 404/405
+            if resp.status_code in (404, 405):
+                gradio_call_url = f"{base_url}/gradio_api/call/embed_batch"
+                call_resp = await client.post(
+                    gradio_call_url,
+                    json={"data": [json.dumps(texts)]},
+                    headers=headers,
+                )
+                if call_resp.status_code == 200:
+                    event_id = call_resp.json().get("event_id")
+                    if event_id:
+                        sse_resp = await client.get(
+                            f"{gradio_call_url}/{event_id}", headers=headers
+                        )
+                        if sse_resp.status_code == 200:
+                            for line in sse_resp.text.splitlines():
+                                if line.startswith("data: "):
+                                    raw_data = line[6:].strip()
+                                    if raw_data and raw_data != "null":
+                                        arr = json.loads(raw_data)
+                                        if isinstance(arr, list) and arr:
+                                            first = arr[0]
+                                            parsed = json.loads(first) if isinstance(first, str) else first
+                                            if isinstance(parsed, dict) and "embeddings" in parsed:
+                                                return parsed["embeddings"]
+                                            if isinstance(parsed, list):
+                                                return parsed
+
+            raise RuntimeError(f"HF Space TEI error {resp.status_code}: {resp.text[:300]}")
 
     async def generate_embeddings_batch(
         self,
@@ -359,19 +577,36 @@ class EmbeddingService:
         if not texts:
             return [], self.default_model
 
+        if use_mock:
+            logger.info("Using deterministic mock embeddings (explicit mock mode)")
+            results = [generate_deterministic_mock_embedding(t) for t in texts]
+            return results, "mock-embedding-3072"
+
         active_key = self.api_key
-        hf_url = os.getenv("HF_EMBEDDING_URL")
-        hf_token = os.getenv("HF_API_KEY")
+        hf_url = self.hf_embedding_url
+        hf_token = self.hf_api_key
 
         # Check if HF Space is explicitly requested as primary
         if preferred_model in ("hf-space-tei", "huggingface") and hf_url:
             try:
                 vectors = await self.call_hf_tei_api(texts, hf_url, hf_token)
+                if session:
+                    try:
+                        await self.record_usage(session, "hf-space-tei", len(texts))
+                    except Exception:
+                        pass
                 return vectors, "hf-space-tei"
             except Exception as e:
                 logger.warning(f"HF Space primary request failed ({e}), falling back to Gemini...")
 
-        if use_mock or not active_key or active_key.startswith("mock_"):
+        if not active_key or active_key.startswith("mock_"):
+            if hf_url and not (active_key and active_key.startswith("mock_")):
+                try:
+                    logger.info(f"No Gemini API key; using Hugging Face Space TEI at {hf_url}...")
+                    vectors = await self.call_hf_tei_api(texts, hf_url, hf_token)
+                    return vectors, "hf-space-tei"
+                except Exception as hf_err:
+                    logger.warning(f"HF Space TEI failed ({hf_err}), using deterministic mock embeddings.")
             logger.info("Using deterministic mock embeddings (mock mode or no API key)")
             results = [generate_deterministic_mock_embedding(t) for t in texts]
             return results, "mock-embedding-3072"
@@ -425,6 +660,15 @@ class EmbeddingService:
                         )
                         actual_model_used = "mock-fallback"
                 else:
+                    if hf_url:
+                        try:
+                            logger.info(f"Gemini error ({exc}); failing over to HF Space TEI at {hf_url}...")
+                            hf_vecs = await self.call_hf_tei_api(batch, hf_url, hf_token)
+                            all_vectors.extend(hf_vecs)
+                            actual_model_used = "hf-space-tei"
+                            continue
+                        except Exception as hf_err:
+                            logger.error(f"HF Space TEI also failed: {hf_err}")
                     logger.error(
                         f"Error in batch embedding: {exc}. Using deterministic mock fallback."
                     )
@@ -459,26 +703,23 @@ class EmbeddingService:
 
         event_ids = [e.id for e in events]
         # Query existing embeddings to prevent redundant API calls
-        stmt = select(EventEmbedding.event_id).where(
+        stmt = select(EventEmbedding).where(
             EventEmbedding.event_id.in_(event_ids)
         )
-        existing_ids: Set[str] = set((await session.execute(stmt)).scalars().all())
+        existing_records = list((await session.execute(stmt)).scalars().all())
+        existing_by_id: Dict[str, EventEmbedding] = {r.event_id: r for r in existing_records}
 
-        pending_events = [e for e in events if e.id not in existing_ids]
+        pending_events = [e for e in events if e.id not in existing_by_id]
         if not pending_events:
             logger.info(
                 f"All {len(events)} events already have cached embeddings. Skipping API calls."
             )
-            # Return existing embeddings
-            stmt_all = select(EventEmbedding).where(
-                EventEmbedding.event_id.in_(event_ids)
-            )
-            return list((await session.execute(stmt_all)).scalars().all())
+            return existing_records
 
         logger.info(
             f"Embedding {len(pending_events)} new events (out of {len(events)} requested)..."
         )
-        texts = [build_embedding_document(e) for e in pending_events]
+        texts = [build_semantic_embedding_text(e) for e in pending_events]
 
         vectors, model_name = await self.generate_embeddings_batch(
             texts=texts, use_mock=use_mock, session=session
@@ -519,7 +760,7 @@ class EmbeddingService:
             return [(0.0, 0.0)], None
 
         pca = PCA(n_components=2, random_state=42)
-        arr = np.array(vectors, dtype=np.float32)
+        arr = _homogenize_vectors(vectors)
         # Handle zero or constant vectors
         if np.all(arr == arr[0]):
             pts = np.zeros((n, 2), dtype=np.float32)
@@ -549,14 +790,19 @@ class EmbeddingService:
         vectors: List[List[float]],
         clusters: List[Dict[str, Any]],
         node_metrics: List[Dict[str, Any]],
-        min_distance: float = 8.5,
+        min_distance: float = 7.8,
     ) -> List[Tuple[float, float]]:
         """
-        Compute intuitive 2D coordinates arranged by thematic cluster galaxies:
-        - Main clusters are distributed radially across the radar chart.
-        - Intra-cluster nodes orbit their cluster centroid using phyllotaxis packing.
-        - Outliers orbit in the peripheral zone.
-        - Strict collision relaxation ensures no two nodes ever overlap.
+        Compute intuitive 2D coordinates arranged as a Core-to-Periphery Intelligence Radar:
+        - Distance from center encodes Story Gravity & Multi-Source Consensus:
+          * High-impact, highly corroborated galaxies sit in the Inner Core (r ~ 16-28).
+          * Developing story clusters orbit in the Middle Band (r ~ 38-56).
+          * Isolated / uncorroborated outliers sit on the Outer Perimeter Ring (r ~ 81).
+        - Angular position around the radar preserves 2D PCA semantic neighborhood so
+          related topics sit adjacent to one another.
+        - Circle-packing repulsion between cluster discs guarantees galaxies never overlap.
+        - Intra-cluster nodes place the central Medoid/Lead report at the galaxy core and
+          group corroborated neighbors together by semantic angle.
         """
         n = len(vectors)
         if n == 0:
@@ -564,59 +810,206 @@ class EmbeddingService:
         if n == 1:
             return [(0.0, 0.0)]
 
+        arr = _homogenize_vectors(vectors)
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-8
+        norm_arr = arr / norms
+
+        # Compute 2D PCA directions for semantic angular placement
+        pca_pts = np.zeros((n, 2), dtype=np.float32)
+        if n >= 2 and not np.all(norm_arr == norm_arr[0]):
+            try:
+                pca = PCA(n_components=2, random_state=42)
+                pca_pts = pca.fit_transform(norm_arr).astype(np.float32)
+            except Exception:
+                pass
+
         cluster_by_idx = [m.get("cluster_id", 0) for m in node_metrics]
         main_clusters = [c for c in clusters if c["id"] > 0 and c["size"] >= 2]
         k_clusters = len(main_clusters)
+
+        # Estimate visual radius for each main cluster based on member count
+        est_radii: Dict[int, float] = {}
+        for c in main_clusters:
+            cid = c["id"]
+            est_radii[cid] = float(8.5 + math.sqrt(max(2, c["size"])) * 3.1)
+
         cluster_centers: Dict[int, np.ndarray] = {}
 
         if k_clusters == 1:
             cluster_centers[main_clusters[0]["id"]] = np.array([0.0, 0.0], dtype=np.float32)
         elif k_clusters == 2:
-            cluster_centers[main_clusters[0]["id"]] = np.array([-44.0, 0.0], dtype=np.float32)
-            cluster_centers[main_clusters[1]["id"]] = np.array([44.0, 0.0], dtype=np.float32)
+            cluster_centers[main_clusters[0]["id"]] = np.array([-32.0, 0.0], dtype=np.float32)
+            cluster_centers[main_clusters[1]["id"]] = np.array([32.0, 0.0], dtype=np.float32)
         elif k_clusters > 2:
-            radius = min(58.0, 38.0 + k_clusters * 2.5)
-            for idx, c in enumerate(main_clusters):
-                angle = (2.0 * np.pi * idx / k_clusters) - (np.pi / 2.0)
-                cluster_centers[c["id"]] = np.array([
-                    radius * np.cos(angle),
-                    radius * np.sin(angle)
-                ], dtype=np.float32)
+            # Sort clusters by their semantic PCA angle so related galaxies sit near each other
+            cluster_angles: List[Tuple[float, Dict[str, Any]]] = []
+            for c in main_clusters:
+                cid = c["id"]
+                c_indices = [i for i in range(n) if cluster_by_idx[i] == cid]
+                if c_indices:
+                    mean_pca = np.mean(pca_pts[c_indices], axis=0)
+                    raw_angle = float(math.atan2(float(mean_pca[1]), float(mean_pca[0])))
+                else:
+                    raw_angle = 0.0
+                cluster_angles.append((raw_angle, c))
+
+            # C#1 (highest gravity/consensus cluster) anchors the Inner Core when k_clusters >= 4
+            core_cluster = main_clusters[0]
+            core_cid = core_cluster["id"]
+            use_central_core = k_clusters >= 4 and core_cluster["size"] <= 28
+
+            if use_central_core:
+                cluster_centers[core_cid] = np.array([0.0, 0.0], dtype=np.float32)
+                orbit_clusters = [item for item in cluster_angles if item[1]["id"] != core_cid]
+            else:
+                orbit_clusters = list(cluster_angles)
+
+            orbit_clusters.sort(key=lambda x: x[0])
+            num_orbit = len(orbit_clusters)
+            # Allocate angular sectors proportional to each cluster's estimated radius
+            weights = [est_radii[item[1]["id"]] + 6.0 for item in orbit_clusters]
+            total_weight = sum(weights) or 1.0
+
+            cum_angle = -math.pi / 2.0
+            for idx_o, (_, c) in enumerate(orbit_clusters):
+                cid = c["id"]
+                sector = 2.0 * math.pi * (weights[idx_o] / total_weight)
+                angle = cum_angle + sector * 0.5
+                cum_angle += sector
+
+                # Radial distance reflects consensus/trust: higher trust -> closer to core
+                avg_trust = float(c.get("avg_trust", 70.0))
+                trust_factor = max(0.0, min(1.0, (90.0 - avg_trust) / 45.0))
+                if use_central_core:
+                    min_orbit = est_radii[core_cid] + est_radii[cid] + 9.0
+                    base_r = max(min_orbit, 42.0 + trust_factor * 14.0)
+                else:
+                    base_r = 34.0 + trust_factor * 18.0 + (4.0 if idx_o % 2 == 1 else -3.0)
+
+                base_r = min(base_r, 68.0 - est_radii[cid] * 0.5)
+                cluster_centers[cid] = np.array(
+                    [base_r * math.cos(angle), base_r * math.sin(angle)],
+                    dtype=np.float32,
+                )
+
+            # Circle-packing relaxation so cluster discs NEVER overlap
+            cids = [c["id"] for c in main_clusters]
+            for _ in range(70):
+                moved = False
+                for i_c in range(len(cids)):
+                    for j_c in range(i_c + 1, len(cids)):
+                        id_a, id_b = cids[i_c], cids[j_c]
+                        diff = cluster_centers[id_a] - cluster_centers[id_b]
+                        dist = float(np.linalg.norm(diff))
+                        min_sep = est_radii[id_a] + est_radii[id_b] + 7.5
+                        if dist < min_sep:
+                            moved = True
+                            if dist < 1e-4:
+                                u = np.array([1.0, 0.0], dtype=np.float32)
+                            else:
+                                u = diff / dist
+                            push = (min_sep - dist) * 0.52
+                            if use_central_core and id_a == core_cid:
+                                cluster_centers[id_b] -= u * (push * 1.6)
+                                cluster_centers[id_a] += u * (push * 0.2)
+                            elif use_central_core and id_b == core_cid:
+                                cluster_centers[id_a] += u * (push * 1.6)
+                                cluster_centers[id_b] -= u * (push * 0.2)
+                            else:
+                                cluster_centers[id_a] += u * push
+                                cluster_centers[id_b] -= u * push
+
+                # Keep all cluster outer edges well inside the Perimeter Outlier Ring (r=81)
+                for cid in cids:
+                    c_norm = float(np.linalg.norm(cluster_centers[cid]))
+                    max_allowed_center = max(12.0, 71.0 - est_radii[cid])
+                    if c_norm > max_allowed_center and c_norm > 1e-4:
+                        cluster_centers[cid] = cluster_centers[cid] * (max_allowed_center / c_norm)
+                if not moved:
+                    break
 
         coords = np.zeros((n, 2), dtype=np.float32)
-        cluster_item_count: Dict[int, int] = {}
         outlier_indices: List[int] = []
 
+        # Intra-cluster node placement: Lead/Medoid at center, corroborated nodes ordered by centrality
+        for c in main_clusters:
+            cid = c["id"]
+            if cid not in cluster_centers:
+                continue
+            c_center = cluster_centers[cid]
+            c_indices = [i for i in range(n) if cluster_by_idx[i] == cid]
+            if not c_indices:
+                continue
+
+            # Sort members so Lead node is rank 0 (at center), then by centrality & trust score
+            c_indices.sort(
+                key=lambda idx: (
+                    1 if node_metrics[idx].get("is_cluster_lead") else 0,
+                    node_metrics[idx].get("centrality", 0.0),
+                    node_metrics[idx].get("trustworthiness_score", 50),
+                ),
+                reverse=True,
+            )
+
+            # Compute local semantic angles relative to cluster mean PCA
+            c_pca_mean = np.mean(pca_pts[c_indices], axis=0)
+            for rank, node_idx in enumerate(c_indices):
+                if rank == 0:
+                    coords[node_idx] = c_center.copy()
+                else:
+                    r_offset = math.sqrt(rank) * 3.8
+                    local_vec = pca_pts[node_idx] - c_pca_mean
+                    if float(np.linalg.norm(local_vec)) > 1e-4:
+                        pca_angle = math.atan2(float(local_vec[1]), float(local_vec[0]))
+                        # Blend semantic PCA angle with golden-angle spread to group similar neighbors without stacking
+                        golden_angle = rank * 2.39996323
+                        angle = math.atan2(
+                            0.45 * math.sin(pca_angle) + 0.55 * math.sin(golden_angle),
+                            0.45 * math.cos(pca_angle) + 0.55 * math.cos(golden_angle),
+                        )
+                    else:
+                        angle = rank * 2.39996323
+                    coords[node_idx] = c_center + np.array(
+                        [r_offset * math.cos(angle), r_offset * math.sin(angle)],
+                        dtype=np.float32,
+                    )
+
         for i in range(n):
-            cid = cluster_by_idx[i]
-            if cid in cluster_centers:
-                c_center = cluster_centers[cid]
-                rank = cluster_item_count.get(cid, 0)
-                cluster_item_count[cid] = rank + 1
-                r_offset = np.sqrt(rank) * 4.2
-                angle = rank * 2.39996323  # golden angle
-                coords[i] = c_center + np.array([
-                    r_offset * np.cos(angle),
-                    r_offset * np.sin(angle)
-                ], dtype=np.float32)
-            else:
+            if cluster_by_idx[i] not in cluster_centers:
                 outlier_indices.append(i)
 
+        # Place uncorroborated outliers on the Outer Perimeter Ring (r = 81.0) sorted by semantic angle
         n_outliers = len(outlier_indices)
         if n_outliers > 0:
-            orbit_r = 78.0
+            orbit_r = 81.0
+            outlier_indices.sort(
+                key=lambda idx: math.atan2(float(pca_pts[idx][1]), float(pca_pts[idx][0]))
+            )
             for out_rank, i in enumerate(outlier_indices):
-                angle = (2.0 * np.pi * out_rank / n_outliers) - (np.pi / 4.0)
-                coords[i] = np.array([
-                    orbit_r * np.cos(angle),
-                    orbit_r * np.sin(angle)
-                ], dtype=np.float32)
+                sem_angle = math.atan2(float(pca_pts[i][1]), float(pca_pts[i][0]))
+                even_angle = (2.0 * math.pi * out_rank / n_outliers) - (math.pi / 2.0)
+                angle = math.atan2(
+                    0.35 * math.sin(sem_angle) + 0.65 * math.sin(even_angle),
+                    0.35 * math.cos(sem_angle) + 0.65 * math.cos(even_angle),
+                )
+                coords[i] = np.array(
+                    [orbit_r * math.cos(angle), orbit_r * math.sin(angle)],
+                    dtype=np.float32,
+                )
 
         # Apply strict collision avoidance relaxation
-        resolved = resolve_node_collisions(coords, min_dist=min_distance, max_iter=45, bounds=86.0)
+        resolved = resolve_node_collisions(coords, min_dist=min_distance, max_iter=50, bounds=86.0)
 
         # Update cluster centroids and radii in the cluster objects
         for c in clusters:
+            if c["id"] == 0:
+                c["center_x"] = 0.0
+                c["center_y"] = 0.0
+                c["radius"] = 81.0
+                c["is_perimeter"] = True
+                continue
+
             c_nodes = [resolved[i] for i in range(n) if cluster_by_idx[i] == c["id"]]
             if c_nodes:
                 c_arr = np.array(c_nodes)
@@ -625,11 +1018,11 @@ class EmbeddingService:
                 c["center_x"] = round(cx, 2)
                 c["center_y"] = round(cy, 2)
                 dists = [float(np.linalg.norm(pt - np.array([cx, cy]))) for pt in c_arr]
-                c["radius"] = round(max(dists) + 8.0, 2) if dists else 15.0
+                c["radius"] = round(max(dists) + 6.5, 2) if dists else 14.0
             else:
                 c["center_x"] = 0.0
                 c["center_y"] = 0.0
-                c["radius"] = 15.0
+                c["radius"] = 14.0
 
         return [(round(float(x), 2), round(float(y), 2)) for x, y in resolved]
 
@@ -640,59 +1033,58 @@ class EmbeddingService:
         similarity_threshold: Optional[float] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Compute pairwise cosine similarity, clustering, and intelligence trustworthiness metrics.
-        Dynamically calibrates thresholds based on embedding distribution (dense neural vs sparse mock).
+        Compute pairwise context-calibrated similarity, agglomerative story clustering,
+        and intelligence trustworthiness metrics.
+         Combines neural cosine similarity with temporal proximity and shared entity/location anchors.
         Returns:
             - node_trust_metrics: List of dicts with trust scores, labels, nearest neighbors, etc.
             - edges: List of high-similarity link edges between reports within same story clusters
-            - clusters: List of topical clusters with labels and centroids
+            - clusters: List of coherent topical story clusters ordered by gravity
         """
         n = len(events)
         if n == 0:
             return [], [], []
 
-        arr = np.array(embeddings, dtype=np.float32)
-        # Normalize vectors for cosine similarity computation
+        arr = _homogenize_vectors(embeddings)
         norms = np.linalg.norm(arr, axis=1, keepdims=True)
         norms[norms == 0] = 1e-8
         norm_arr = arr / norms
 
-        # Cosine similarity matrix: N x N
-        sim_matrix = np.dot(norm_arr, norm_arr.T)
+        # Raw cosine similarity matrix: N x N
+        raw_sim_matrix = np.dot(norm_arr, norm_arr.T)
+
+        # Apply temporal & entity context adjustments so unrelated stories don't falsely corroborate
+        sim_matrix = raw_sim_matrix.copy()
+        for i in range(n):
+            for j in range(i + 1, n):
+                bonus = _compute_pairwise_context_bonus(events[i], events[j])
+                adj_sim = float(np.clip(raw_sim_matrix[i, j] + bonus, 0.0, 1.0))
+                sim_matrix[i, j] = adj_sim
+                sim_matrix[j, i] = adj_sim
 
         # 1. Determine baseline similarity distribution to auto-calibrate thresholds
-        off_diag_sims = sim_matrix[~np.eye(n, dtype=bool)] if n > 1 else np.array([0.0])
+        off_diag_sims = raw_sim_matrix[~np.eye(n, dtype=bool)] if n > 1 else np.array([0.0])
         p50 = float(np.percentile(off_diag_sims, 50)) if len(off_diag_sims) > 0 else 0.0
 
         if similarity_threshold is not None:
             corrob_threshold = similarity_threshold
+            cluster_threshold = max(0.22, similarity_threshold - 0.04)
             verified_threshold = max(0.25, similarity_threshold - 0.04)
             outlier_threshold = max(0.15, similarity_threshold - 0.16)
         elif p50 > 0.50:
-            # Dense neural embeddings (Gemini 3072d / HF TEI) where background similarity is ~0.60-0.68
-            corrob_threshold = 0.76
-            verified_threshold = 0.73
-            outlier_threshold = 0.58
+            # Dense neural embeddings (Gemini 3072d / HF TEI)
+            corrob_threshold = 0.77
+            cluster_threshold = 0.735
+            verified_threshold = 0.74
+            outlier_threshold = 0.62
         else:
-            # Sparse / bag-of-words / mock embeddings where background similarity is ~0.0-0.25
+            # Sparse / bag-of-words / mock embeddings
             corrob_threshold = 0.38
+            cluster_threshold = 0.31
             verified_threshold = 0.34
             outlier_threshold = 0.20
 
-        # 2. Semantic Clustering via KMeans
-        if n <= 2:
-            cluster_assign = np.zeros(n, dtype=int)
-            K = 1
-        else:
-            # Scale K clusters based on dataset size (between 2 and 8)
-            K = min(8, max(2, int(np.sqrt(n * 0.55))))
-            try:
-                km = KMeans(n_clusters=K, random_state=42, n_init='auto')
-                cluster_assign = km.fit_predict(norm_arr)
-            except Exception:
-                cluster_assign = np.zeros(n, dtype=int)
-                K = 1
-
+        # 2. Compute per-node Trustworthiness & Corroboration first
         node_metrics: List[Dict[str, Any]] = []
         edges: List[Dict[str, Any]] = []
         edge_set: Set[Tuple[int, int]] = set()
@@ -715,8 +1107,8 @@ class EmbeddingService:
             corrob_idx = [j for j, s in similarities_list if s >= corrob_threshold]
             corrob_events = [events[j] for j in corrob_idx]
 
-            unique_sources: Set[str] = set()
-            unique_source_types: Set[str] = set()
+            unique_sources: Set[str] = {ev_i.source_name}
+            unique_source_types: Set[str] = {ev_i.source_type}
             for c_ev in corrob_events:
                 unique_sources.add(c_ev.source_name)
                 unique_source_types.add(c_ev.source_type)
@@ -726,28 +1118,33 @@ class EmbeddingService:
             num_independent_sources = len(independent_sources)
             num_source_types = len(unique_source_types)
 
-            # --- Calibrated Trustworthiness Algorithm ---
+            # --- Granular Calibrated Trustworthiness Algorithm ---
             if max_similarity < outlier_threshold:
-                trust_score = 25
+                ratio = max(0.0, min(1.0, max_similarity / max(outlier_threshold, 0.01)))
+                trust_score = int(round(18 + ratio * 18))
                 trust_label = "Isolated Outlier"
                 verdict = "Lone uncorroborated report. No matching intelligence found across any monitored source."
             elif num_independent_sources == 0 or max_similarity < verified_threshold:
-                trust_score = 45
+                sim_factor = max(0.0, min(1.0, (max_similarity - outlier_threshold) / max(0.05, corrob_threshold - outlier_threshold)))
+                trust_score = min(58, int(round(42 + min(6, same_source_updates * 3) + sim_factor * 10)))
                 trust_label = "Single-Source Unverified"
-                if same_source_updates > 1:
-                    verdict = f"Reported only by {ev_i.source_name} ({same_source_updates} posts on same feed). 0 independent outlets confirming this claim."
+                if same_source_updates >= 1:
+                    verdict = f"Reported only by {ev_i.source_name} ({same_source_updates + 1} related posts on same feed). 0 independent outlets confirming this claim."
                 else:
                     verdict = f"Reported only by {ev_i.source_name}. 0 independent cross-sources confirming this claim yet."
             elif num_independent_sources == 1:
-                trust_score = 70 + min(9, int(max_similarity * 10))
+                diversity_bonus = 4 if num_source_types >= 2 else 0
+                sim_bonus = min(6, int(round(max(0.0, (max_similarity - corrob_threshold) / 0.14) * 6)))
+                trust_score = min(79, 67 + diversity_bonus + sim_bonus)
                 trust_label = "Developing / Verified"
-                other_src = list(independent_sources)[0]
+                other_src = sorted(independent_sources)[0]
                 verdict = f"Developing story confirmed across 2 independent outlets ({ev_i.source_name} and {other_src})."
             else:
-                diversity_bonus = 8 if num_source_types >= 2 else 4
-                trust_score = min(98, 82 + (num_independent_sources * 3) + diversity_bonus)
+                diversity_bonus = 6 if num_source_types >= 2 else 2
+                sim_bonus = min(5, int(round(max(0.0, (max_similarity - corrob_threshold) / 0.14) * 5)))
+                trust_score = min(98, 80 + min(11, (num_independent_sources - 2) * 3) + diversity_bonus + sim_bonus)
                 trust_label = "Highly Corroborated"
-                top_sources = [ev_i.source_name] + list(independent_sources)[:2]
+                top_sources = [ev_i.source_name] + sorted(independent_sources)[:2]
                 verdict = f"Multi-source consensus verified across {len(unique_sources)} independent outlets ({', '.join(top_sources)})."
 
             nearest_items = [
@@ -767,75 +1164,178 @@ class EmbeddingService:
                 "verdict": verdict,
                 "corroboration_count": num_independent_sources,
                 "same_source_updates": same_source_updates,
-                "corroborating_sources": list(unique_sources),
-                "independent_sources": list(independent_sources),
+                "corroborating_sources": sorted(unique_sources),
+                "independent_sources": sorted(independent_sources),
                 "source_diversity_count": len(unique_sources),
                 "nearest_neighbors": nearest_items,
                 "max_similarity": round(max_similarity, 3),
+                "centrality": 0.0,
+                "is_cluster_lead": False,
             })
 
-        # --- Assign Clusters Metadata ---
-        clusters: List[Dict[str, Any]] = []
-        cluster_id_counter = 1
-        outlier_events = []
-
-        for k in range(K):
-            comp_indices = [i for i in range(n) if cluster_assign[i] == k]
-            valid_comp_indices = []
-            for idx in comp_indices:
-                if node_metrics[idx]["trustworthiness_label"] == "Isolated Outlier":
-                    node_metrics[idx]["cluster_id"] = 0
-                    node_metrics[idx]["cluster_label"] = "Isolated Outliers"
-                    outlier_events.append(events[idx])
-                else:
-                    valid_comp_indices.append(idx)
-
-            if valid_comp_indices:
-                comp_events = [events[idx] for idx in valid_comp_indices]
-                sorted_comp = sorted(
-                    comp_events,
-                    key=lambda x: getattr(x, "importance_score", 5) or 5,
-                    reverse=True,
+        # 3. Coherent Story Clustering via Cosine-Threshold Agglomerative Clustering
+        if n <= 1:
+            raw_labels = np.zeros(n, dtype=int)
+        elif n == 2:
+            if sim_matrix[0, 1] >= cluster_threshold:
+                raw_labels = np.zeros(2, dtype=int)
+            else:
+                raw_labels = np.array([0, 1], dtype=int)
+        else:
+            dist_matrix = np.clip(1.0 - (sim_matrix + sim_matrix.T) * 0.5, 0.0, 2.0)
+            np.fill_diagonal(dist_matrix, 0.0)
+            dist_thresh = float(max(0.05, 1.0 - cluster_threshold))
+            try:
+                agg = AgglomerativeClustering(
+                    n_clusters=None,
+                    metric="precomputed",
+                    linkage="average",
+                    distance_threshold=dist_thresh,
                 )
-                raw_title = sorted_comp[0].headline or sorted_comp[0].title
-                # Clean telegram urgent prefixes and emojis
-                clean_title = re.sub(
-                    r"^[\s🔴⭕️🚨⚡️⚠️\*\-\#]+",
-                    "",
-                    raw_title,
-                ).strip()
-                clean_title = re.sub(
-                    r"^(urgent|breaking|عاجل|مهم|update)\s*:\s*",
-                    "",
-                    clean_title,
-                    flags=re.IGNORECASE,
-                ).strip()
-                lead_title = clean_title if len(clean_title) >= 5 else raw_title
-                cluster_label = lead_title[:50] if len(lead_title) > 50 else lead_title
+                raw_labels = agg.fit_predict(dist_matrix)
+            except Exception:
+                K = min(8, max(2, int(np.sqrt(n * 0.55))))
+                km = KMeans(n_clusters=K, random_state=42, n_init="auto")
+                raw_labels = km.fit_predict(norm_arr)
 
-                for idx in valid_comp_indices:
-                    node_metrics[idx]["cluster_id"] = cluster_id_counter
-                    node_metrics[idx]["cluster_label"] = cluster_label
+        # Group non-outlier nodes by discovered cluster label
+        candidate_groups: Dict[int, List[int]] = {}
+        outlier_indices_set: Set[int] = set()
 
-                clusters.append({
-                    "id": cluster_id_counter,
-                    "label": cluster_label,
-                    "size": len(valid_comp_indices),
-                    "center_x": 0.0,
-                    "center_y": 0.0,
-                    "radius": 15.0,
-                    "event_ids": [e.id for e in comp_events],
-                })
-                cluster_id_counter += 1
+        for idx in range(n):
+            if node_metrics[idx]["trustworthiness_label"] == "Isolated Outlier":
+                outlier_indices_set.add(idx)
+            else:
+                lbl = int(raw_labels[idx])
+                candidate_groups.setdefault(lbl, []).append(idx)
+
+        # Filter to true multi-report story clusters (size >= 2 where members actually connect)
+        valid_groups: List[List[int]] = []
+        for lbl, members in candidate_groups.items():
+            if len(members) < 2:
+                outlier_indices_set.update(members)
+            else:
+                # Prune any stray node whose max similarity to other cluster members is below outlier_threshold
+                coherent_members = []
+                for idx in members:
+                    max_in_group = max(
+                        (float(sim_matrix[idx, other]) for other in members if other != idx),
+                        default=0.0,
+                    )
+                    if max_in_group >= outlier_threshold:
+                        coherent_members.append(idx)
+                    else:
+                        outlier_indices_set.add(idx)
+
+                if len(coherent_members) >= 2:
+                    valid_groups.append(coherent_members)
+                else:
+                    outlier_indices_set.update(coherent_members)
+
+        # Cap at top 8 primary story galaxies ranked by gravity (size * consensus * importance)
+        def _group_gravity(group_idxs: List[int]) -> float:
+            sz = len(group_idxs)
+            avg_t = sum(node_metrics[i]["trustworthiness_score"] for i in group_idxs) / sz
+            avg_imp = sum((getattr(events[i], "importance_score", 5) or 5) for i in group_idxs) / sz
+            return sz * (0.55 + 0.45 * (avg_t / 100.0)) * (0.65 + 0.35 * (avg_imp / 10.0))
+
+        valid_groups.sort(key=_group_gravity, reverse=True)
+        if len(valid_groups) > 8:
+            primary_groups = valid_groups[:8]
+            overflow_groups = valid_groups[8:]
+            # Merge overflow groups into the closest primary group if sufficiently related, else perimeter
+            primary_centroids = [
+                np.mean(norm_arr[g], axis=0) / (np.linalg.norm(np.mean(norm_arr[g], axis=0)) + 1e-8)
+                for g in primary_groups
+            ]
+            for ov_g in overflow_groups:
+                ov_vec = np.mean(norm_arr[ov_g], axis=0)
+                ov_vec = ov_vec / (np.linalg.norm(ov_vec) + 1e-8)
+                sims_to_prim = [float(np.dot(ov_vec, pc)) for pc in primary_centroids]
+                best_k = int(np.argmax(sims_to_prim))
+                if sims_to_prim[best_k] >= outlier_threshold:
+                    primary_groups[best_k].extend(ov_g)
+                else:
+                    outlier_indices_set.update(ov_g)
+            valid_groups = primary_groups
+
+        # --- Build Final Clusters Metadata & Select Medoid Headlines ---
+        clusters: List[Dict[str, Any]] = []
+        for cluster_id_counter, comp_indices in enumerate(valid_groups, start=1):
+            # Compute intra-cluster centrality for each member to find the true Medoid
+            best_lead_idx = comp_indices[0]
+            best_lead_score = -1.0
+
+            for idx in comp_indices:
+                if len(comp_indices) > 1:
+                    centrality = sum(
+                        float(sim_matrix[idx, other]) for other in comp_indices if other != idx
+                    ) / (len(comp_indices) - 1)
+                else:
+                    centrality = 1.0
+                node_metrics[idx]["centrality"] = round(centrality, 3)
+
+                imp = float(getattr(events[idx], "importance_score", 5) or 5) / 10.0
+                trust = float(node_metrics[idx]["trustworthiness_score"]) / 100.0
+                lead_score = centrality * 0.55 + imp * 0.25 + trust * 0.20
+                if lead_score > best_lead_score:
+                    best_lead_score = lead_score
+                    best_lead_idx = idx
+
+            node_metrics[best_lead_idx]["is_cluster_lead"] = True
+            lead_event = events[best_lead_idx]
+            raw_title = lead_event.headline or lead_event.title
+            cluster_label = truncate_at_word_boundary(raw_title, max_len=44)
+
+            avg_trust = int(
+                round(
+                    sum(node_metrics[idx]["trustworthiness_score"] for idx in comp_indices)
+                    / len(comp_indices)
+                )
+            )
+            avg_imp = round(
+                sum((getattr(events[idx], "importance_score", 5) or 5) for idx in comp_indices)
+                / len(comp_indices),
+                1,
+            )
+
+            for idx in comp_indices:
+                node_metrics[idx]["cluster_id"] = cluster_id_counter
+                node_metrics[idx]["cluster_label"] = cluster_label
+
+            clusters.append({
+                "id": cluster_id_counter,
+                "label": cluster_label,
+                "size": len(comp_indices),
+                "center_x": 0.0,
+                "center_y": 0.0,
+                "radius": 15.0,
+                "avg_trust": avg_trust,
+                "avg_importance": avg_imp,
+                "lead_event_id": lead_event.id,
+                "event_ids": [events[idx].id for idx in comp_indices],
+            })
+
+        outlier_events = [events[idx] for idx in sorted(outlier_indices_set)]
+        for idx in outlier_indices_set:
+            node_metrics[idx]["cluster_id"] = 0
+            node_metrics[idx]["cluster_label"] = "Uncorroborated Perimeter"
 
         if outlier_events:
             clusters.append({
                 "id": 0,
-                "label": "Isolated Outliers",
+                "label": "Uncorroborated Perimeter",
                 "size": len(outlier_events),
                 "center_x": 0.0,
-                "center_y": 74.0,
-                "radius": 22.0,
+                "center_y": 0.0,
+                "radius": 81.0,
+                "is_perimeter": True,
+                "avg_trust": int(
+                    round(
+                        sum(node_metrics[idx]["trustworthiness_score"] for idx in outlier_indices_set)
+                        / len(outlier_indices_set)
+                    )
+                ),
                 "event_ids": [e.id for e in outlier_events],
             })
 
@@ -854,7 +1354,7 @@ class EmbeddingService:
                     continue
                 score = float(sim_matrix[i, j])
                 c_j = node_metrics[j].get("cluster_id")
-                if score >= corrob_threshold and (c_i == c_j or score >= 0.82):
+                if score >= corrob_threshold and (c_i == c_j or score >= 0.84):
                     sims_in_cluster.append((j, score))
 
             sims_in_cluster.sort(key=lambda x: x[1], reverse=True)
@@ -866,6 +1366,7 @@ class EmbeddingService:
                         "source": ev_i.id,
                         "target": events[j].id,
                         "similarity": round(score, 3),
+                        "intra_cluster": c_i == node_metrics[j].get("cluster_id"),
                     })
 
         return node_metrics, edges, clusters
@@ -886,7 +1387,7 @@ class EmbeddingService:
         """
         query = select(Event).order_by(Event.published_at.desc())
 
-        if theme_id is not None:
+        if theme_id is not None and str(theme_id).lower() != "all":
             if str(theme_id).isdigit():
                 query = query.where(Event.theme_id == int(theme_id))
             else:
@@ -937,7 +1438,7 @@ class EmbeddingService:
         if len(vectors) > 1:
             try:
                 pca = PCA(n_components=2, random_state=42)
-                pca.fit(np.array(vectors, dtype=np.float32))
+                pca.fit(_homogenize_vectors(vectors))
                 self.last_pca_model = pca
             except Exception:
                 self.last_pca_model = None
@@ -956,7 +1457,6 @@ class EmbeddingService:
             rec.cluster_id = m.get("cluster_id")
             rec.cluster_label = m.get("cluster_label")
 
-            # Calculate cluster centroid
             nodes.append({
                 "id": ev.id,
                 "event_id": ev.id,
@@ -973,12 +1473,16 @@ class EmbeddingService:
                 "y": y,
                 "cluster_id": m.get("cluster_id"),
                 "cluster_label": m.get("cluster_label"),
+                "is_cluster_lead": bool(m.get("is_cluster_lead", False)),
+                "centrality": m.get("centrality", 0.0),
                 "trustworthiness": {
                     "score": m["trustworthiness_score"],
                     "label": m["trustworthiness_label"],
                     "verdict": m["verdict"],
                     "corroboration_count": m["corroboration_count"],
                     "corroborating_sources": m["corroborating_sources"],
+                    "independent_sources": m["independent_sources"],
+                    "same_source_updates": m["same_source_updates"],
                     "source_diversity": m["source_diversity_count"],
                 },
                 "nearest_neighbors": m["nearest_neighbors"],
@@ -986,8 +1490,13 @@ class EmbeddingService:
 
         await session.commit()
 
-        # Compute cluster centroids
+        # Compute cluster centroids for main galaxies (do not overwrite Perimeter ring id=0)
         for c in clusters:
+            if c["id"] == 0 or c.get("is_perimeter"):
+                c["center_x"] = 0.0
+                c["center_y"] = 0.0
+                c["radius"] = 81.0
+                continue
             c_nodes = [n for n in nodes if n["cluster_id"] == c["id"]]
             if c_nodes:
                 c["center_x"] = round(sum(n["x"] for n in c_nodes) / len(c_nodes), 2)

@@ -19,6 +19,7 @@ import {
   Info,
   CheckCircle2,
   AlertTriangle,
+  ExternalLink,
 } from 'lucide-react';
 import {
   EmbeddingsMapData,
@@ -720,19 +721,37 @@ export function RelevanceMap({
         <div className="flex items-center space-x-2 flex-wrap gap-y-2">
           {/* Quota Counter Pill */}
           <div
-            title="Daily Gemini Embedding API Quotas (1K RPD each, batched)"
+            title="Daily Gemini Embedding API Quotas (1K RPD each, batched) — Click to view Rate Limits"
             className="hidden lg:flex items-center space-x-2 px-2.5 py-1 rounded-md bg-surface-card border border-white/5 text-[10px] font-mono text-zinc-300"
           >
             <Cpu className="w-3 h-3 text-accent-cyan" />
-            <span>
-              Gemini 1: <strong className="text-zinc-100">{m1Count}</strong>/1K
-            </span>
+            <a
+              href="https://aistudio.google.com/rate-limit"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open Google AI Studio Rate Limits"
+              className="inline-flex items-center space-x-1.5 hover:text-accent-cyan transition-colors"
+            >
+              <span>
+                Gemini 1: <strong className="text-zinc-100">{m1Count}</strong>/1K
+              </span>
+              <span className="text-zinc-600">|</span>
+              <span>
+                Gemini 2: <strong className="text-zinc-100">{m2Count}</strong>/1K
+              </span>
+              <ExternalLink className="w-2.5 h-2.5 text-accent-cyan" />
+            </a>
             <span className="text-zinc-600">|</span>
-            <span>
-              Gemini 2: <strong className="text-zinc-100">{m2Count}</strong>/1K
-            </span>
-            <span className="text-zinc-600">|</span>
-            <span className="text-emerald-400 font-semibold">HF TEI: Unlimited</span>
+            <a
+              href="https://huggingface.co/settings/billing"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open Hugging Face Rate Limits & Billing"
+              className="inline-flex items-center space-x-1 text-emerald-400 hover:text-emerald-300 font-semibold transition-colors"
+            >
+              <span>HF TEI: Unlimited</span>
+              <ExternalLink className="w-2.5 h-2.5" />
+            </a>
           </div>
 
           {/* Backfill Button */}
