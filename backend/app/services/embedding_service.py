@@ -830,19 +830,94 @@ class EmbeddingService:
         main_clusters = [c for c in clusters if c["id"] > 0 and c["size"] >= 2]
         k_clusters = len(main_clusters)
 
-        # Estimate visual radius for each main cluster based on member count
-        est_radii: Dict[int, float] = {}
+        # Step 1: Compute compact local node offsets within each cluster first so we know exact cluster radii
+        local_cluster_offsets: Dict[int, Dict[int, np.ndarray]] = {}
+        true_radii: Dict[int, float] = {}
+
         for c in main_clusters:
             cid = c["id"]
-            est_radii[cid] = float(8.5 + math.sqrt(max(2, c["size"])) * 3.1)
+            c_indices = [i for i in range(n) if cluster_by_idx[i] == cid]
+            if not c_indices:
+                true_radii[cid] = 9.0
+                local_cluster_offsets[cid] = {}
+                continue
+
+            # Sort members so Lead node is rank 0 (at center), then by centrality & trust score
+            c_indices.sort(
+                key=lambda idx: (
+                    1 if node_metrics[idx].get("is_cluster_lead") else 0,
+                    node_metrics[idx].get("centrality", 0.0),
+                    node_metrics[idx].get("trustworthiness_score", 50),
+                ),
+                reverse=True,
+            )
+
+            c_pca_mean = np.mean(pca_pts[c_indices], axis=0)
+            local_pts = np.zeros((len(c_indices), 2), dtype=np.float32)
+
+            for rank, node_idx in enumerate(c_indices):
+                if rank == 0:
+                    local_pts[rank] = np.array([0.0, 0.0], dtype=np.float32)
+                else:
+                    r_offset = math.sqrt(rank) * 2.45
+                    local_vec = pca_pts[node_idx] - c_pca_mean
+                    if float(np.linalg.norm(local_vec)) > 1e-4:
+                        pca_angle = math.atan2(float(local_vec[1]), float(local_vec[0]))
+                        golden_angle = rank * 2.39996323
+                        angle = math.atan2(
+                            0.40 * math.sin(pca_angle) + 0.60 * math.sin(golden_angle),
+                            0.40 * math.cos(pca_angle) + 0.60 * math.cos(golden_angle),
+                        )
+                    else:
+                        angle = rank * 2.39996323
+                    local_pts[rank] = np.array(
+                        [r_offset * math.cos(angle), r_offset * math.sin(angle)],
+                        dtype=np.float32,
+                    )
+
+            # Resolve intra-cluster node collisions locally while keeping Lead node (index 0) anchored near (0,0)
+            for _ in range(40):
+                moved_local = False
+                for i_l in range(len(c_indices)):
+                    for j_l in range(i_l + 1, len(c_indices)):
+                        diff = local_pts[i_l] - local_pts[j_l]
+                        dist = float(np.linalg.norm(diff))
+                        if dist < 4.3:
+                            moved_local = True
+                            u = np.array([1.0, 0.0], dtype=np.float32) if dist < 1e-4 else diff / dist
+                            push = (4.3 - dist) * 0.52
+                            if i_l == 0:
+                                local_pts[j_l] -= u * (push * 1.8)
+                            else:
+                                local_pts[i_l] += u * push
+                                local_pts[j_l] -= u * push
+                if not moved_local:
+                    break
+
+            max_d = max((float(np.linalg.norm(pt)) for pt in local_pts), default=3.0)
+            true_radii[cid] = float(max(7.5, max_d + 3.6))
+            local_cluster_offsets[cid] = {
+                c_indices[rank]: local_pts[rank] for rank in range(len(c_indices))
+            }
+
+        # If total cluster areas are very large, uniformly scale down local offsets so all discs fit cleanly inside r<=74
+        total_area = sum(math.pi * (r + 2.0) ** 2 for r in true_radii.values())
+        max_packing_area = math.pi * (64.0 ** 2) * 0.56
+        if total_area > max_packing_area and total_area > 0:
+            shrink = max(0.62, math.sqrt(max_packing_area / total_area))
+            for cid in list(true_radii.keys()):
+                true_radii[cid] = max(6.5, true_radii[cid] * shrink)
+                for n_idx in local_cluster_offsets[cid]:
+                    local_cluster_offsets[cid][n_idx] = local_cluster_offsets[cid][n_idx] * shrink
 
         cluster_centers: Dict[int, np.ndarray] = {}
 
         if k_clusters == 1:
             cluster_centers[main_clusters[0]["id"]] = np.array([0.0, 0.0], dtype=np.float32)
         elif k_clusters == 2:
-            cluster_centers[main_clusters[0]["id"]] = np.array([-32.0, 0.0], dtype=np.float32)
-            cluster_centers[main_clusters[1]["id"]] = np.array([32.0, 0.0], dtype=np.float32)
+            sep = max(28.0, (true_radii[main_clusters[0]["id"]] + true_radii[main_clusters[1]["id"]]) * 0.7)
+            cluster_centers[main_clusters[0]["id"]] = np.array([-sep, 0.0], dtype=np.float32)
+            cluster_centers[main_clusters[1]["id"]] = np.array([sep, 0.0], dtype=np.float32)
         elif k_clusters > 2:
             # Sort clusters by their semantic PCA angle so related galaxies sit near each other
             cluster_angles: List[Tuple[float, Dict[str, Any]]] = []
@@ -856,21 +931,14 @@ class EmbeddingService:
                     raw_angle = 0.0
                 cluster_angles.append((raw_angle, c))
 
-            # C#1 (highest gravity/consensus cluster) anchors the Inner Core when k_clusters >= 4
+            # C#1 (highest gravity/consensus cluster) ALWAYS anchors the Inner Core when k_clusters >= 3
             core_cluster = main_clusters[0]
             core_cid = core_cluster["id"]
-            use_central_core = k_clusters >= 4 and core_cluster["size"] <= 28
-
-            if use_central_core:
-                cluster_centers[core_cid] = np.array([0.0, 0.0], dtype=np.float32)
-                orbit_clusters = [item for item in cluster_angles if item[1]["id"] != core_cid]
-            else:
-                orbit_clusters = list(cluster_angles)
+            cluster_centers[core_cid] = np.array([0.0, 0.0], dtype=np.float32)
+            orbit_clusters = [item for item in cluster_angles if item[1]["id"] != core_cid]
 
             orbit_clusters.sort(key=lambda x: x[0])
-            num_orbit = len(orbit_clusters)
-            # Allocate angular sectors proportional to each cluster's estimated radius
-            weights = [est_radii[item[1]["id"]] + 6.0 for item in orbit_clusters]
+            weights = [true_radii[item[1]["id"]] + 4.0 for item in orbit_clusters]
             total_weight = sum(weights) or 1.0
 
             cum_angle = -math.pi / 2.0
@@ -880,52 +948,53 @@ class EmbeddingService:
                 angle = cum_angle + sector * 0.5
                 cum_angle += sector
 
-                # Radial distance reflects consensus/trust: higher trust -> closer to core
                 avg_trust = float(c.get("avg_trust", 70.0))
                 trust_factor = max(0.0, min(1.0, (90.0 - avg_trust) / 45.0))
-                if use_central_core:
-                    min_orbit = est_radii[core_cid] + est_radii[cid] + 9.0
-                    base_r = max(min_orbit, 42.0 + trust_factor * 14.0)
-                else:
-                    base_r = 34.0 + trust_factor * 18.0 + (4.0 if idx_o % 2 == 1 else -3.0)
-
-                base_r = min(base_r, 68.0 - est_radii[cid] * 0.5)
+                min_orbit = true_radii[core_cid] + true_radii[cid] + 5.0
+                base_r = max(min_orbit, 38.0 + trust_factor * 12.0 + (3.0 if idx_o % 2 == 1 else -2.0))
+                base_r = min(base_r, 73.0 - true_radii[cid])
                 cluster_centers[cid] = np.array(
                     [base_r * math.cos(angle), base_r * math.sin(angle)],
                     dtype=np.float32,
                 )
 
-            # Circle-packing relaxation so cluster discs NEVER overlap
+            # Strict circle-packing relaxation using exact true_radii so galaxy circles NEVER overlap
             cids = [c["id"] for c in main_clusters]
-            for _ in range(70):
+            for _ in range(140):
                 moved = False
                 for i_c in range(len(cids)):
                     for j_c in range(i_c + 1, len(cids)):
                         id_a, id_b = cids[i_c], cids[j_c]
                         diff = cluster_centers[id_a] - cluster_centers[id_b]
                         dist = float(np.linalg.norm(diff))
-                        min_sep = est_radii[id_a] + est_radii[id_b] + 7.5
+                        min_sep = true_radii[id_a] + true_radii[id_b] + 3.2
                         if dist < min_sep:
                             moved = True
                             if dist < 1e-4:
                                 u = np.array([1.0, 0.0], dtype=np.float32)
                             else:
                                 u = diff / dist
-                            push = (min_sep - dist) * 0.52
-                            if use_central_core and id_a == core_cid:
-                                cluster_centers[id_b] -= u * (push * 1.6)
-                                cluster_centers[id_a] += u * (push * 0.2)
-                            elif use_central_core and id_b == core_cid:
-                                cluster_centers[id_a] += u * (push * 1.6)
-                                cluster_centers[id_b] -= u * (push * 0.2)
+                            push = (min_sep - dist) * 0.55
+                            if id_a == core_cid:
+                                cluster_centers[id_b] -= u * (push * 1.85)
+                                cluster_centers[id_a] += u * (push * 0.15)
+                            elif id_b == core_cid:
+                                cluster_centers[id_a] += u * (push * 1.85)
+                                cluster_centers[id_b] -= u * (push * 0.15)
                             else:
                                 cluster_centers[id_a] += u * push
                                 cluster_centers[id_b] -= u * push
 
-                # Keep all cluster outer edges well inside the Perimeter Outlier Ring (r=81)
+                # Keep C#1 anchored near the core and all orbit cluster outer edges inside r <= 75
+                core_norm = float(np.linalg.norm(cluster_centers[core_cid]))
+                if core_norm > 6.0:
+                    cluster_centers[core_cid] = cluster_centers[core_cid] * (6.0 / core_norm)
+
                 for cid in cids:
+                    if cid == core_cid:
+                        continue
                     c_norm = float(np.linalg.norm(cluster_centers[cid]))
-                    max_allowed_center = max(12.0, 71.0 - est_radii[cid])
+                    max_allowed_center = max(18.0, 74.5 - true_radii[cid])
                     if c_norm > max_allowed_center and c_norm > 1e-4:
                         cluster_centers[cid] = cluster_centers[cid] * (max_allowed_center / c_norm)
                 if not moved:
@@ -934,48 +1003,14 @@ class EmbeddingService:
         coords = np.zeros((n, 2), dtype=np.float32)
         outlier_indices: List[int] = []
 
-        # Intra-cluster node placement: Lead/Medoid at center, corroborated nodes ordered by centrality
+        # Combine exact cluster centers with pre-resolved local offsets
         for c in main_clusters:
             cid = c["id"]
             if cid not in cluster_centers:
                 continue
             c_center = cluster_centers[cid]
-            c_indices = [i for i in range(n) if cluster_by_idx[i] == cid]
-            if not c_indices:
-                continue
-
-            # Sort members so Lead node is rank 0 (at center), then by centrality & trust score
-            c_indices.sort(
-                key=lambda idx: (
-                    1 if node_metrics[idx].get("is_cluster_lead") else 0,
-                    node_metrics[idx].get("centrality", 0.0),
-                    node_metrics[idx].get("trustworthiness_score", 50),
-                ),
-                reverse=True,
-            )
-
-            # Compute local semantic angles relative to cluster mean PCA
-            c_pca_mean = np.mean(pca_pts[c_indices], axis=0)
-            for rank, node_idx in enumerate(c_indices):
-                if rank == 0:
-                    coords[node_idx] = c_center.copy()
-                else:
-                    r_offset = math.sqrt(rank) * 3.8
-                    local_vec = pca_pts[node_idx] - c_pca_mean
-                    if float(np.linalg.norm(local_vec)) > 1e-4:
-                        pca_angle = math.atan2(float(local_vec[1]), float(local_vec[0]))
-                        # Blend semantic PCA angle with golden-angle spread to group similar neighbors without stacking
-                        golden_angle = rank * 2.39996323
-                        angle = math.atan2(
-                            0.45 * math.sin(pca_angle) + 0.55 * math.sin(golden_angle),
-                            0.45 * math.cos(pca_angle) + 0.55 * math.cos(golden_angle),
-                        )
-                    else:
-                        angle = rank * 2.39996323
-                    coords[node_idx] = c_center + np.array(
-                        [r_offset * math.cos(angle), r_offset * math.sin(angle)],
-                        dtype=np.float32,
-                    )
+            for node_idx, offset_vec in local_cluster_offsets.get(cid, {}).items():
+                coords[node_idx] = c_center + offset_vec
 
         for i in range(n):
             if cluster_by_idx[i] not in cluster_centers:
@@ -992,18 +1027,15 @@ class EmbeddingService:
                 sem_angle = math.atan2(float(pca_pts[i][1]), float(pca_pts[i][0]))
                 even_angle = (2.0 * math.pi * out_rank / n_outliers) - (math.pi / 2.0)
                 angle = math.atan2(
-                    0.35 * math.sin(sem_angle) + 0.65 * math.sin(even_angle),
-                    0.35 * math.cos(sem_angle) + 0.65 * math.cos(even_angle),
+                    0.25 * math.sin(sem_angle) + 0.75 * math.sin(even_angle),
+                    0.25 * math.cos(sem_angle) + 0.75 * math.cos(even_angle),
                 )
                 coords[i] = np.array(
                     [orbit_r * math.cos(angle), orbit_r * math.sin(angle)],
                     dtype=np.float32,
                 )
 
-        # Apply strict collision avoidance relaxation
-        resolved = resolve_node_collisions(coords, min_dist=min_distance, max_iter=50, bounds=86.0)
-
-        # Update cluster centroids and radii in the cluster objects
+        # Update cluster centroids and exact radii in the cluster objects
         for c in clusters:
             if c["id"] == 0:
                 c["center_x"] = 0.0
@@ -1012,21 +1044,19 @@ class EmbeddingService:
                 c["is_perimeter"] = True
                 continue
 
-            c_nodes = [resolved[i] for i in range(n) if cluster_by_idx[i] == c["id"]]
-            if c_nodes:
-                c_arr = np.array(c_nodes)
-                cx = float(np.mean(c_arr[:, 0]))
-                cy = float(np.mean(c_arr[:, 1]))
+            cid = c["id"]
+            if cid in cluster_centers:
+                cx = float(cluster_centers[cid][0])
+                cy = float(cluster_centers[cid][1])
                 c["center_x"] = round(cx, 2)
                 c["center_y"] = round(cy, 2)
-                dists = [float(np.linalg.norm(pt - np.array([cx, cy]))) for pt in c_arr]
-                c["radius"] = round(max(dists) + 6.5, 2) if dists else 14.0
+                c["radius"] = round(float(true_radii.get(cid, 12.0)), 2)
             else:
                 c["center_x"] = 0.0
                 c["center_y"] = 0.0
-                c["radius"] = 14.0
+                c["radius"] = 12.0
 
-        return [(round(float(x), 2), round(float(y), 2)) for x, y in resolved]
+        return [(round(float(x), 2), round(float(y), 2)) for x, y in coords]
 
     def compute_trustworthiness_and_corroboration(
         self,
@@ -1075,10 +1105,10 @@ class EmbeddingService:
             outlier_threshold = max(0.15, similarity_threshold - 0.16)
         elif p50 > 0.50:
             # Dense neural embeddings (Gemini 3072d / HF TEI)
-            corrob_threshold = 0.77
-            cluster_threshold = 0.735
-            verified_threshold = 0.74
-            outlier_threshold = 0.62
+            corrob_threshold = 0.775
+            cluster_threshold = 0.768
+            verified_threshold = 0.745
+            outlier_threshold = 0.63
         else:
             # Sparse / bag-of-words / mock embeddings
             corrob_threshold = 0.38
@@ -1211,13 +1241,12 @@ class EmbeddingService:
                 lbl = int(raw_labels[idx])
                 candidate_groups.setdefault(lbl, []).append(idx)
 
-        # Filter to true multi-report story clusters (size >= 2 where members actually connect)
+        # Filter to true multi-report story clusters (size >= 2) and split any oversized bucket (> 20 nodes)
         valid_groups: List[List[int]] = []
         for lbl, members in candidate_groups.items():
             if len(members) < 2:
                 outlier_indices_set.update(members)
             else:
-                # Prune any stray node whose max similarity to other cluster members is below outlier_threshold
                 coherent_members = []
                 for idx in members:
                     max_in_group = max(
@@ -1229,12 +1258,28 @@ class EmbeddingService:
                     else:
                         outlier_indices_set.add(idx)
 
-                if len(coherent_members) >= 2:
+                if len(coherent_members) > 20:
+                    # Sub-divide oversized generic clusters into tighter sub-stories
+                    sub_k = max(2, int(math.ceil(len(coherent_members) / 14.0)))
+                    try:
+                        sub_km = KMeans(n_clusters=sub_k, random_state=42, n_init="auto")
+                        sub_lbls = sub_km.fit_predict(norm_arr[coherent_members])
+                        sub_buckets: Dict[int, List[int]] = {}
+                        for pos_i, s_lbl in enumerate(sub_lbls):
+                            sub_buckets.setdefault(int(s_lbl), []).append(coherent_members[pos_i])
+                        for sb in sub_buckets.values():
+                            if len(sb) >= 2:
+                                valid_groups.append(sb)
+                            else:
+                                outlier_indices_set.update(sb)
+                    except Exception:
+                        valid_groups.append(coherent_members)
+                elif len(coherent_members) >= 2:
                     valid_groups.append(coherent_members)
                 else:
                     outlier_indices_set.update(coherent_members)
 
-        # Cap at top 8 primary story galaxies ranked by gravity (size * consensus * importance)
+        # Cap at top 9 primary story galaxies ranked by gravity; do NOT force-merge unrelated overflow clusters
         def _group_gravity(group_idxs: List[int]) -> float:
             sz = len(group_idxs)
             avg_t = sum(node_metrics[i]["trustworthiness_score"] for i in group_idxs) / sz
@@ -1242,10 +1287,9 @@ class EmbeddingService:
             return sz * (0.55 + 0.45 * (avg_t / 100.0)) * (0.65 + 0.35 * (avg_imp / 10.0))
 
         valid_groups.sort(key=_group_gravity, reverse=True)
-        if len(valid_groups) > 8:
-            primary_groups = valid_groups[:8]
-            overflow_groups = valid_groups[8:]
-            # Merge overflow groups into the closest primary group if sufficiently related, else perimeter
+        if len(valid_groups) > 9:
+            primary_groups = valid_groups[:9]
+            overflow_groups = valid_groups[9:]
             primary_centroids = [
                 np.mean(norm_arr[g], axis=0) / (np.linalg.norm(np.mean(norm_arr[g], axis=0)) + 1e-8)
                 for g in primary_groups
@@ -1255,11 +1299,13 @@ class EmbeddingService:
                 ov_vec = ov_vec / (np.linalg.norm(ov_vec) + 1e-8)
                 sims_to_prim = [float(np.dot(ov_vec, pc)) for pc in primary_centroids]
                 best_k = int(np.argmax(sims_to_prim))
-                if sims_to_prim[best_k] >= outlier_threshold:
+                # Only merge into a primary cluster if genuinely same story AND won't bloat past 20 nodes
+                if sims_to_prim[best_k] >= cluster_threshold and len(primary_groups[best_k]) + len(ov_g) <= 20:
                     primary_groups[best_k].extend(ov_g)
                 else:
                     outlier_indices_set.update(ov_g)
             valid_groups = primary_groups
+            valid_groups.sort(key=_group_gravity, reverse=True)
 
         # --- Build Final Clusters Metadata & Select Medoid Headlines ---
         clusters: List[Dict[str, Any]] = []

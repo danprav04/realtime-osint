@@ -54,8 +54,13 @@ class TelegramBotService:
         rate_limiting_enabled: bool = True,
     ):
         settings = get_settings()
-        self.bot_token = bot_token or settings.TELEGRAM_BOT_TOKEN
-        self.chat_id = chat_id or settings.TELEGRAM_CHAT_ID
+        is_pytest = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+        if is_pytest:
+            self.bot_token = bot_token
+            self.chat_id = chat_id
+        else:
+            self.bot_token = bot_token or settings.TELEGRAM_BOT_TOKEN
+            self.chat_id = chat_id or settings.TELEGRAM_CHAT_ID
         self.redis_bus = redis_bus or get_redis_bus()
         self.rate_limit_seconds = rate_limit_seconds
         self.rate_limiting_enabled = rate_limiting_enabled
@@ -65,6 +70,7 @@ class TelegramBotService:
         self._dedup_cache: Dict[str, float] = {}  # In-memory fallback dedup store (key -> expiry_time)
         self._is_running: bool = False
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._retry_lock: asyncio.Lock = asyncio.Lock()
         self.simulate_error: Optional[str] = None
 
     @property
@@ -96,7 +102,7 @@ class TelegramBotService:
 
     def _get_dedup_hash(self, payload: TelegramAlertPayload) -> str:
         """Compute SHA-256 hash for 24h deduplication."""
-        identifier = payload.source_url or payload.event_id or payload.title
+        identifier = (payload.source_url or "").strip() or payload.event_id or payload.title
         return hashlib.sha256(identifier.strip().encode("utf-8")).hexdigest()
 
     async def check_and_mark_dedup(self, payload: TelegramAlertPayload) -> bool:
@@ -130,6 +136,17 @@ class TelegramBotService:
 
         self._dedup_cache[key] = now + 86400.0  # 24 hours TTL
         return True
+
+    async def _unmark_dedup(self, payload: TelegramAlertPayload) -> None:
+        """Remove dedup mark when an alert was only throttled by rate-limit cooldown so it can be retried."""
+        h = self._get_dedup_hash(payload)
+        key = f"alert:dedup:{h}"
+        self._dedup_cache.pop(key, None)
+        if self.redis_bus and self.redis_bus.is_connected and self.redis_bus._client:
+            try:
+                await self.redis_bus._client.delete(key)
+            except Exception:
+                pass
 
     def is_rate_limited(self, payload: TelegramAlertPayload) -> bool:
         """
@@ -197,6 +214,30 @@ class TelegramBotService:
                         discovered_id = str(msg["chat"]["id"])
                         logger.info(f"Auto-discovered Telegram chat_id: {discovered_id}")
                         self.chat_id = discovered_id
+                        os.environ["TELEGRAM_CHAT_ID"] = discovered_id
+                        try:
+                            from sqlalchemy.orm.attributes import flag_modified
+                            session_factory = get_session_factory()
+                            async with session_factory() as session:
+                                res = await session.execute(
+                                    select(SystemSettings).where(SystemSettings.key == "api_keys")
+                                )
+                                existing = res.scalars().first()
+                                if existing and isinstance(existing.value_json, dict):
+                                    updated = dict(existing.value_json)
+                                    updated["telegram_chat_id"] = discovered_id
+                                    existing.value_json = updated
+                                    flag_modified(existing, "value_json")
+                                else:
+                                    session.add(
+                                        SystemSettings(
+                                            key="api_keys",
+                                            value_json={"telegram_chat_id": discovered_id},
+                                        )
+                                    )
+                                await session.commit()
+                        except Exception as db_exc:
+                            logger.debug(f"Could not persist discovered chat_id to DB: {db_exc}")
                         return discovered_id
         except Exception as exc:
             logger.debug(f"Auto-discover Telegram chat_id attempt: {exc}")
@@ -227,6 +268,7 @@ class TelegramBotService:
 
         # 3. Check rate limiting (with score=10 bypass)
         if self.is_rate_limited(payload):
+            await self._unmark_dedup(payload)
             logger.info(
                 f"Throttled alert for event {payload.event_id} (cooldown: {self.rate_limit_seconds}s)"
             )
@@ -238,11 +280,13 @@ class TelegramBotService:
         # 4. Format message text
         formatted_text = self.format_message(payload)
 
-        # 5. Check credentials
-        # 5. Check credentials
+        # 5. Check credentials (attempt auto-discovery if token is present but chat_id is missing outside pytest)
+        if self.bot_token and not self.chat_id and not os.environ.get("PYTEST_CURRENT_TEST"):
+            await self.auto_discover_chat_id()
+
         if not self.bot_token or not self.chat_id:
-            logger.debug(
-                "Telegram bot operating in simulated local alert mode (unconfigured credentials)."
+            logger.warning(
+                "Telegram bot operating in simulated local alert mode (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)."
             )
             # In testing or development without live credentials, deliver to in-memory log
             self.last_sent_timestamp = time.time()
