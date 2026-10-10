@@ -116,10 +116,12 @@ def truncate_at_word_boundary(text: str, max_len: int = 44) -> str:
     if len(cleaned) <= max_len:
         return cleaned
 
-    cut = cleaned[:max_len].rstrip()
-    last_space = cut.rfind(" ")
-    if last_space >= int(max_len * 0.55):
-        cut = cut[:last_space].rstrip(" ,;:-–—")
+    cut = cleaned[:max_len]
+    if not cleaned[max_len].isspace():
+        last_space = cut.rfind(" ")
+        if last_space >= int(max_len * 0.55):
+            cut = cut[:last_space]
+    cut = cut.rstrip(" ,;:-–—")
     return cut + "…"
 
 
@@ -1386,27 +1388,69 @@ class EmbeddingService:
         computes Galaxy 2D coordinates & trustworthiness, and saves projections.
         """
         query = select(Event).order_by(Event.published_at.desc())
+        target_theme: Optional[Theme] = None
 
         if theme_id is not None and str(theme_id).lower() != "all":
-            if str(theme_id).isdigit():
+            from backend.app.api.themes import find_theme
+            target_theme = await find_theme(session, str(theme_id))
+            if target_theme:
+                query = query.where(Event.theme_id == target_theme.id)
+            elif str(theme_id).isdigit():
                 query = query.where(Event.theme_id == int(theme_id))
-            else:
-                t_stmt = select(Theme).where(
-                    (Theme.slug == theme_id) | (Theme.name.ilike(f"%{theme_id}%"))
-                )
-                t_res = (await session.execute(t_stmt)).scalars().first()
-                if t_res:
-                    query = query.where(Event.theme_id == t_res.id)
 
         if time_range_hours:
             cutoff = utc_now() - timedelta(hours=time_range_hours)
             query = query.where(Event.published_at >= cutoff)
 
         if min_score:
-            query = query.where(Event.importance_score >= min_score)
+            if min_score <= 4:
+                # Exclude explicitly low-scored noise (1-3) while preserving unanalyzed live events
+                query = query.where(
+                    (Event.importance_score >= min_score) | (Event.importance_score.is_(None))
+                )
+            else:
+                query = query.where(Event.importance_score >= min_score)
 
-        query = query.limit(limit)
-        events: List[Event] = list((await session.execute(query)).scalars().all())
+        # Fetch slightly larger pool if we need to filter off-theme articles in Python
+        fetch_limit = limit * 2 if (target_theme or min_score) else limit
+        events: List[Event] = list((await session.execute(query.limit(fetch_limit))).scalars().all())
+
+        # If target_theme was not explicitly passed, check if all events belong to a single theme
+        if target_theme is None and events and min_score and min_score >= 4:
+            first_tid = events[0].theme_id
+            if first_tid:
+                target_theme = (
+                    await session.execute(select(Theme).where(Theme.id == first_tid))
+                ).scalars().first()
+
+        # Filter out off-theme conflict noise (e.g., Russia-Ukraine stories inside US-Iran conflict feed)
+        if target_theme and (min_score or (theme_id and str(theme_id).lower() != "all")):
+            t_name = (target_theme.name or "").lower()
+            if "iran" in t_name or "middle east" in t_name or "hormuz" in t_name:
+                mideast_anchors = (
+                    "iran", "iranian", "tehran", "irgc", "israel", "israeli", "idf",
+                    "hezbollah", "lebanon", "beirut", "houthi", "yemen", "sanaa", "taiz",
+                    "red sea", "hormuz", "persian gulf", "gaza", "hamas", "syria",
+                    "damascus", "iraq", "baghdad", "centcom", "pentagon", "middle east",
+                    "khamenei", "pezeshkian", "netanyahu", "natantz", "fordow", "nuclear",
+                )
+                off_theme_ukraine_russia = (
+                    "zelensky", "zelenskyy", "ukraine", "ukrainian", "kyiv", "kharkiv",
+                    "donbas", "crimea", "zaporizhzhia", "kremlin", "putin", "moscow",
+                )
+                filtered_events: List[Event] = []
+                for ev in events:
+                    hl_lower = f"{ev.headline or ''} {ev.title or ''}".lower()
+                    full_lower = f"{hl_lower} {ev.summary or ''} {ev.raw_text or ''}".lower()
+                    has_off_theme_hl = any(w in hl_lower for w in off_theme_ukraine_russia)
+                    has_mideast_anchor = any(a in full_lower for a in mideast_anchors)
+                    if has_off_theme_hl and not has_mideast_anchor:
+                        continue
+                    filtered_events.append(ev)
+                if filtered_events:
+                    events = filtered_events
+
+        events = events[:limit]
 
         if not events:
             return {

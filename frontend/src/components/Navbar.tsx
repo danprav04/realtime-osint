@@ -16,6 +16,7 @@ import {
   Gauge,
   ExternalLink,
   ChevronDown,
+  Sparkles,
 } from 'lucide-react';
 import { useSocketConnection } from '@/lib/socket';
 import { getActiveTheme, getSettings, getAIPipelineSettings, getSources } from '@/lib/api';
@@ -82,6 +83,7 @@ export function Navbar() {
 
   const navItems = [
     { href: '/', label: 'Live Feed', icon: Radio },
+    { href: '/summary', label: 'AI Summary', icon: Sparkles },
     { href: '/map', label: 'Relevance Map', icon: Compass },
     { href: '/trends', label: 'Trends & Analytics', icon: BarChart3 },
     { href: '/settings', label: 'Settings', icon: Sliders },

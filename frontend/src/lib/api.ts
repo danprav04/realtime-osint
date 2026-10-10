@@ -8,6 +8,7 @@ import type {
   PizzaMeterData,
   EmbeddingsMapData,
   EmbeddingStatus,
+  SituationSummaryData,
 } from './types';
 
 const DEFAULT_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -244,3 +245,40 @@ export async function reprojectEmbeddingsMap(): Promise<{
 export async function getEmbeddingStatus(): Promise<EmbeddingStatus> {
   return fetchApi<EmbeddingStatus>('/api/embeddings/status');
 }
+
+// AI Situational Summary
+export async function getSituationSummary(params?: {
+  theme_id?: string;
+  time_range?: string;
+  force_refresh?: boolean;
+  limit?: number;
+}): Promise<SituationSummaryData> {
+  const query = new URLSearchParams();
+  if (params) {
+    if (params.theme_id) query.set('theme_id', params.theme_id);
+    if (params.time_range) query.set('time_range', params.time_range);
+    if (params.force_refresh) query.set('force_refresh', 'true');
+    if (params.limit) query.set('limit', params.limit.toString());
+  }
+  const queryString = query.toString();
+  return fetchApi<SituationSummaryData>(`/api/summary${queryString ? `?${queryString}` : ''}`);
+}
+
+export async function generateSituationSummary(params?: {
+  theme_id?: string;
+  time_range?: string;
+  limit?: number;
+}): Promise<SituationSummaryData> {
+  const query = new URLSearchParams();
+  if (params) {
+    if (params.theme_id) query.set('theme_id', params.theme_id);
+    if (params.time_range) query.set('time_range', params.time_range);
+    if (params.limit) query.set('limit', params.limit.toString());
+  }
+  const queryString = query.toString();
+  return fetchApi<SituationSummaryData>(
+    `/api/summary/generate${queryString ? `?${queryString}` : ''}`,
+    { method: 'POST' }
+  );
+}
+

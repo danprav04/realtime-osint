@@ -326,6 +326,21 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
             </span>
             <ExternalLink className="w-3 h-3 text-accent-cyan" />
           </a>
+
+          <a
+            href="https://huggingface.co/spaces/danprav/osint-embeddings-tei"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open Hugging Face TEI Embeddings Space (Unlimited 24/7 Semantic Map Embeddings)"
+            className="inline-flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised text-zinc-200 hover:text-accent-cyan hairline-border transition-colors pressable"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)]" />
+            <span className="font-medium">HF Space TEI</span>
+            <span className="text-[10px] font-mono text-zinc-400 hidden md:inline">
+              (Unlimited Embeddings)
+            </span>
+            <ExternalLink className="w-3 h-3 text-accent-cyan" />
+          </a>
         </div>
       </div>
 

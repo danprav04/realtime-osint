@@ -19,6 +19,8 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
     initialSettings?.api_keys || {
       gemini_api_key: '',
       groq_api_key: '',
+      hf_embedding_url: 'https://danprav-osint-embeddings-tei.hf.space',
+      hf_api_key: '',
       telegram_bot_token: '',
       telegram_chat_id: '',
       telegram_api_id: '',

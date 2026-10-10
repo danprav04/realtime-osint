@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   ExternalLink,
+  Tag,
 } from 'lucide-react';
 import {
   EmbeddingsMapData,
@@ -31,6 +32,25 @@ import { cn } from '@/lib/utils';
 import { EventInspector } from './EventInspector';
 
 type ColorMode = 'trust' | 'source' | 'score';
+
+function truncateWords(text: string, maxLen: number): string {
+  const cleaned = (text || '').trim().replace(/\s+/g, ' ');
+  if (cleaned.length <= maxLen) return cleaned;
+  const cut = cleaned.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(' ');
+  if (lastSpace >= Math.floor(maxLen * 0.55)) {
+    return `${cut.slice(0, lastSpace).replace(/[,:;.\-–—]+$/, '')}…`;
+  }
+  return `${cut.replace(/[,:;.\-–—]+$/, '')}…`;
+}
+
+interface PillBox {
+  id: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
 
 interface RelevanceMapProps {
   data: EmbeddingsMapData;
@@ -57,9 +77,11 @@ export function RelevanceMap({
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const animFrameIdRef = useRef<number | null>(null);
+  const clusterPillBoxesRef = useRef<PillBox[]>([]);
 
   // Reactive UI state
   const [colorMode, setColorMode] = useState<ColorMode>('trust');
+  const [showKeyHeadlines, setShowKeyHeadlines] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNode, setHoveredNode] = useState<MapNode | null>(null);
@@ -151,6 +173,13 @@ export function RelevanceMap({
     return () => observer.disconnect();
   }, []);
 
+  // Node radius helper for clear visual hierarchy across scores 1-10 and cluster leads
+  const getNodeBaseRadius = useCallback((node: MapNode) => {
+    const score = Math.max(1, Math.min(10, node.importance_score || 5));
+    const scaled = 3.6 + Math.pow(score / 10, 1.35) * 5.6;
+    return node.is_cluster_lead ? scaled + 1.1 : scaled;
+  }, []);
+
   // Main 60 FPS Canvas Draw Routine
   const renderCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -174,116 +203,281 @@ export function RelevanceMap({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
+    const occupiedLabelRects: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+    const newPillBoxes: PillBox[] = [];
+
+    const rectsOverlap = (
+      a: { x1: number; y1: number; x2: number; y2: number },
+      b: { x1: number; y1: number; x2: number; y2: number },
+      pad = 4
+    ) => {
+      return !(
+        a.x2 + pad < b.x1 ||
+        a.x1 - pad > b.x2 ||
+        a.y2 + pad < b.y1 ||
+        a.y1 - pad > b.y2
+      );
+    };
+
     // -------------------------------------------------------------
-    // Layer 1: Radar Background Grid & Range Rings
+    // Layer 1: Core-to-Periphery Consensus Radar Grid & Zone Rings
     // -------------------------------------------------------------
     ctx.save();
-    ctx.strokeStyle = 'rgba(113, 113, 122, 0.18)';
+
+    // Subtle radial core glow to anchor high-consensus center
+    const coreGlowRadius = 48 * baseScale * currentScale;
+    const coreGrad = ctx.createRadialGradient(
+      centerX,
+      centerY,
+      2,
+      centerX,
+      centerY,
+      coreGlowRadius
+    );
+    coreGrad.addColorStop(0, 'rgba(16, 185, 129, 0.055)');
+    coreGrad.addColorStop(0.55, 'rgba(6, 182, 212, 0.025)');
+    coreGrad.addColorStop(1, 'rgba(6, 182, 212, 0)');
+    ctx.fillStyle = coreGrad;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, coreGlowRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    const radarZones = [
+      { r: 22, label: 'CORE CONSENSUS', stroke: 'rgba(16, 185, 129, 0.20)', text: 'rgba(52, 211, 153, 0.45)' },
+      { r: 46, label: 'CORROBORATED ORBIT', stroke: 'rgba(6, 182, 212, 0.18)', text: 'rgba(34, 211, 238, 0.42)' },
+      { r: 68, label: 'DEVELOPING', stroke: 'rgba(161, 161, 170, 0.16)', text: 'rgba(161, 161, 170, 0.38)' },
+      { r: 82, label: 'UNVERIFIED PERIMETER', stroke: 'rgba(244, 63, 94, 0.22)', text: 'rgba(251, 113, 133, 0.45)' },
+    ];
+
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 4]);
-
-    const radarRadii = [25, 50, 75, 95];
-    radarRadii.forEach((r) => {
-      const screenR = r * baseScale * currentScale;
+    radarZones.forEach((zone) => {
+      const screenR = zone.r * baseScale * currentScale;
+      ctx.strokeStyle = zone.stroke;
       ctx.beginPath();
       ctx.arc(centerX, centerY, screenR, 0, Math.PI * 2);
       ctx.stroke();
     });
 
-    // Crosshairs
+    // Subtle radar crosshairs
+    ctx.strokeStyle = 'rgba(113, 113, 122, 0.12)';
     ctx.beginPath();
-    ctx.moveTo(centerX - 100 * baseScale * currentScale, centerY);
-    ctx.lineTo(centerX + 100 * baseScale * currentScale, centerY);
-    ctx.moveTo(centerX, centerY - 100 * baseScale * currentScale);
-    ctx.lineTo(centerX, centerY + 100 * baseScale * currentScale);
+    ctx.moveTo(centerX - 92 * baseScale * currentScale, centerY);
+    ctx.lineTo(centerX + 92 * baseScale * currentScale, centerY);
+    ctx.moveTo(centerX, centerY - 92 * baseScale * currentScale);
+    ctx.lineTo(centerX, centerY + 92 * baseScale * currentScale);
     ctx.stroke();
 
-    // Range markers
+    // Zone labels placed along top-left diagonal (-135 deg) so they stay clear of horizontal pills
     ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(161, 161, 170, 0.35)';
-    ctx.font = '9px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('25%', centerX + 26 * baseScale * currentScale, centerY - 4);
-    ctx.fillText('50%', centerX + 51 * baseScale * currentScale, centerY - 4);
-    ctx.fillText('75%', centerX + 76 * baseScale * currentScale, centerY - 4);
-    ctx.fillText('Perimeter', centerX + 96 * baseScale * currentScale, centerY - 4);
+    ctx.font = '600 8.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textAlign = 'center';
+    radarZones.forEach((zone) => {
+      const screenR = zone.r * baseScale * currentScale;
+      if (screenR < 28) return;
+      ctx.fillStyle = zone.text;
+      ctx.fillText(zone.label, centerX, centerY - screenR + 10);
+    });
     ctx.restore();
 
     // -------------------------------------------------------------
-    // Layer 2: Topical Cluster Constellations & Badges
+    // Layer 2: Topical Cluster Constellations & Non-Occluding Badges
     // -------------------------------------------------------------
+    const screenClusters: Array<{
+      cluster: MapCluster;
+      scX: number;
+      scY: number;
+      scRadius: number;
+    }> = [];
+
     data.clusters.forEach((cluster) => {
       if (cluster.center_x === undefined || cluster.center_y === undefined) return;
       if (selectedClusterFilter !== 'all' && cluster.id !== selectedClusterFilter) return;
 
+      // Special rendering for cluster.id === 0 (Uncorroborated Perimeter ring)
+      if (cluster.id === 0 || cluster.is_perimeter) {
+        const perimR = 81 * baseScale * currentScale;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, perimR, 0, Math.PI * 2);
+        ctx.strokeStyle =
+          selectedClusterFilter === 0
+            ? 'rgba(244, 63, 94, 0.55)'
+            : 'rgba(244, 63, 94, 0.24)';
+        ctx.lineWidth = selectedClusterFilter === 0 ? 1.8 : 1.1;
+        ctx.setLineDash([5, 5]);
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+
       const scX = toScreenX(cluster.center_x);
       const scY = toScreenY(cluster.center_y);
-      const rawRadius = cluster.radius || Math.max(14, cluster.size * 3.2);
-      const scRadius = Math.max(20, rawRadius * baseScale * currentScale);
+      const rawRadius = cluster.radius || Math.max(12, cluster.size * 2.8);
+      const scRadius = Math.max(22, rawRadius * baseScale * currentScale);
+      screenClusters.push({ cluster, scX, scY, scRadius });
+
+      const avgTrust = cluster.avg_trust ?? 65;
+      const fillRgba =
+        avgTrust >= 75
+          ? 'rgba(16, 185, 129, 0.045)'
+          : avgTrust >= 58
+          ? 'rgba(6, 182, 212, 0.04)'
+          : 'rgba(245, 158, 11, 0.04)';
+      const strokeRgba =
+        avgTrust >= 75
+          ? 'rgba(16, 185, 129, 0.32)'
+          : avgTrust >= 58
+          ? 'rgba(6, 182, 212, 0.28)'
+          : 'rgba(245, 158, 11, 0.28)';
 
       // Celestial cluster disc
       ctx.save();
       ctx.beginPath();
       ctx.arc(scX, scY, scRadius, 0, Math.PI * 2);
-      ctx.fillStyle = cluster.id === 0 ? 'rgba(244, 63, 94, 0.02)' : 'rgba(6, 182, 212, 0.035)';
+      ctx.fillStyle = fillRgba;
       ctx.fill();
 
-      ctx.strokeStyle = cluster.id === 0 ? 'rgba(244, 63, 94, 0.25)' : 'rgba(6, 182, 212, 0.25)';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = strokeRgba;
+      ctx.lineWidth = 1.15;
       ctx.setLineDash([4, 4]);
       ctx.stroke();
+      ctx.restore();
+    });
 
-      // Cluster label pill - positioned radially outward so it never occludes nodes
-      const maxChars = 32;
-      const cleanLabel = cluster.label.length > maxChars ? `${cluster.label.slice(0, maxChars)}…` : cluster.label;
-      const labelText =
-        cluster.id === 0
-          ? `Outliers (${cluster.size})`
-          : `C#${cluster.id}: ${cleanLabel} (${cluster.size})`;
+    // Render Cluster Label Pills with Bounding-Box-Aware Radial Clearance
+    screenClusters.forEach(({ cluster, scX, scY, scRadius }) => {
+      ctx.save();
+      const cleanLabel = truncateWords(cluster.label, 30);
+      const labelText = `C#${cluster.id}: ${cleanLabel} (${cluster.size})`;
 
       ctx.font = '600 11px system-ui, -apple-system, sans-serif';
       ctx.textAlign = 'center';
       const textWidth = ctx.measureText(labelText).width;
+      const pillW = textWidth + 26;
+      const pillH = 22;
+      const halfW = pillW / 2;
+      const halfH = pillH / 2;
 
-      // Radially project outward from canvas center to prevent overlapping nodes
+      // Determine outward radial direction from map center (or straight up for core cluster)
       const dx = scX - centerX;
       const dy = scY - centerY;
       const distFromCenter = Math.hypot(dx, dy);
-      let pillX = scX;
-      let pillY = scY - scRadius - 14;
 
-      if (distFromCenter > 1.0) {
-        const uX = dx / distFromCenter;
-        const uY = dy / distFromCenter;
-        pillX = scX + uX * (scRadius + 18);
-        pillY = scY + uY * (scRadius + 18);
+      let baseAngle = -Math.PI / 2;
+      if (distFromCenter > 14) {
+        baseAngle = Math.atan2(dy, dx);
+      }
+
+      // Try candidate angles around baseAngle to avoid overlapping any cluster disc or existing pill
+      const angleOffsets = [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, Math.PI];
+      let chosenX = scX;
+      let chosenY = scY - scRadius - halfH - 8;
+      let chosenRect = {
+        x1: chosenX - halfW,
+        y1: chosenY - halfH,
+        x2: chosenX + halfW,
+        y2: chosenY + halfH,
+      };
+
+      for (const offset of angleOffsets) {
+        const ang = baseAngle + offset;
+        const uX = Math.cos(ang);
+        const uY = Math.sin(ang);
+        // Exact distance from rectangle center to its edge along (uX, uY)
+        const rectClearance = Math.abs(uX) * halfW + Math.abs(uY) * halfH;
+        const candX = scX + uX * (scRadius + rectClearance + 7);
+        const candY = scY + uY * (scRadius + rectClearance + 7);
+        const candRect = {
+          x1: candX - halfW,
+          y1: candY - halfH,
+          x2: candX + halfW,
+          y2: candY + halfH,
+        };
+
+        // Check collision with other pills
+        const hitsPill = occupiedLabelRects.some((r) => rectsOverlap(candRect, r, 4));
+        if (hitsPill) continue;
+
+        // Check collision with other cluster discs
+        const hitsOtherDisc = screenClusters.some((other) => {
+          if (other.cluster.id === cluster.id) return false;
+          const nearestX = Math.max(candRect.x1, Math.min(other.scX, candRect.x2));
+          const nearestY = Math.max(candRect.y1, Math.min(other.scY, candRect.y2));
+          const d = Math.hypot(nearestX - other.scX, nearestY - other.scY);
+          return d < other.scRadius - 2;
+        });
+
+        if (!hitsOtherDisc) {
+          chosenX = candX;
+          chosenY = candY;
+          chosenRect = candRect;
+          break;
+        }
+      }
+
+      occupiedLabelRects.push(chosenRect);
+      newPillBoxes.push({
+        id: cluster.id,
+        x1: chosenRect.x1,
+        y1: chosenRect.y1,
+        x2: chosenRect.x2,
+        y2: chosenRect.y2,
+      });
+
+      const avgTrust = cluster.avg_trust ?? 65;
+      const borderColor =
+        avgTrust >= 75
+          ? 'rgba(16, 185, 129, 0.6)'
+          : avgTrust >= 58
+          ? 'rgba(6, 182, 212, 0.55)'
+          : 'rgba(245, 158, 11, 0.55)';
+      const pipColor =
+        avgTrust >= 75 ? '#10b981' : avgTrust >= 58 ? '#06b6d4' : '#f59e0b';
+      const textColor =
+        avgTrust >= 75 ? '#d1fae5' : avgTrust >= 58 ? '#e0f2fe' : '#fef3c7';
+
+      // Subtle leader tick from cluster rim to pill
+      const dirX = chosenX - scX;
+      const dirY = chosenY - scY;
+      const dirLen = Math.hypot(dirX, dirY);
+      if (dirLen > scRadius + 4) {
+        ctx.beginPath();
+        ctx.moveTo(scX + (dirX / dirLen) * scRadius, scY + (dirY / dirLen) * scRadius);
+        ctx.lineTo(chosenX, chosenY);
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 0.9;
+        ctx.setLineDash([2, 2]);
+        ctx.stroke();
       }
 
       // Pill background
       ctx.fillStyle = 'rgba(9, 9, 11, 0.92)';
       ctx.beginPath();
-      ctx.roundRect(pillX - textWidth / 2 - 12, pillY - 11, textWidth + 24, 22, 6);
+      ctx.roundRect(chosenRect.x1, chosenRect.y1, pillW, pillH, 6);
       ctx.fill();
 
-      ctx.strokeStyle = cluster.id === 0 ? 'rgba(244, 63, 94, 0.55)' : 'rgba(6, 182, 212, 0.55)';
+      ctx.strokeStyle = borderColor;
       ctx.lineWidth = 1.2;
       ctx.setLineDash([]);
       ctx.stroke();
 
-      // Small glowing pip
+      // Status pip
       ctx.beginPath();
-      ctx.arc(pillX - textWidth / 2 - 4, pillY, 3, 0, Math.PI * 2);
-      ctx.fillStyle = cluster.id === 0 ? '#f43f5e' : '#06b6d4';
+      ctx.arc(chosenX - textWidth / 2 - 4, chosenY, 3, 0, Math.PI * 2);
+      ctx.fillStyle = pipColor;
       ctx.fill();
 
       // Pill text
-      ctx.fillStyle = cluster.id === 0 ? '#fda4af' : '#e0f2fe';
-      ctx.fillText(labelText, pillX + 4, pillY + 3.5);
+      ctx.fillStyle = textColor;
+      ctx.fillText(labelText, chosenX + 4, chosenY + 3.5);
       ctx.restore();
     });
 
+    clusterPillBoxesRef.current = newPillBoxes;
+
     // -------------------------------------------------------------
-    // Layer 3: Semantic Similarity Edges
+    // Layer 3: Curved Intra-Cluster & Highlighted Semantic Edges
     // -------------------------------------------------------------
     const nodeMap = new Map<string, MapNode>();
     data.nodes.forEach((n) => nodeMap.set(n.id, n));
@@ -292,34 +486,74 @@ export function RelevanceMap({
       const src = nodeMap.get(edge.source);
       const tgt = nodeMap.get(edge.target);
       if (!src || !tgt) return;
+      if (
+        selectedClusterFilter !== 'all' &&
+        src.cluster_id !== selectedClusterFilter &&
+        tgt.cluster_id !== selectedClusterFilter
+      ) {
+        return;
+      }
 
       const isConnectedToSelected =
         selectedNodeId === src.id || selectedNodeId === tgt.id;
       const isConnectedToHovered =
         hoveredNode?.id === src.id || hoveredNode?.id === tgt.id;
       const isHighlighted = isConnectedToSelected || isConnectedToHovered;
+      const isIntraCluster =
+        edge.intra_cluster !== undefined
+          ? edge.intra_cluster
+          : (src.cluster_id ?? 0) > 0 && src.cluster_id === tgt.cluster_id;
+
+      // Declutter default view: hide cross-cluster edges unless hovered or selected
+      if (!isIntraCluster && !isHighlighted) {
+        return;
+      }
+
+      const x1 = toScreenX(src.x);
+      const y1 = toScreenY(src.y);
+      const x2 = toScreenX(tgt.x);
+      const y2 = toScreenY(tgt.y);
+
+      const midX = (x1 + x2) / 2;
+      const midY = (y1 + y2) / 2;
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      // Gentle curve offset perpendicular to the segment
+      const ctrlX = midX - dy * 0.12;
+      const ctrlY = midY + dx * 0.12;
 
       ctx.save();
       ctx.beginPath();
-      ctx.moveTo(toScreenX(src.x), toScreenY(src.y));
-      ctx.lineTo(toScreenX(tgt.x), toScreenY(tgt.y));
+      ctx.moveTo(x1, y1);
+      ctx.quadraticCurveTo(ctrlX, ctrlY, x2, y2);
 
       if (isHighlighted) {
         ctx.strokeStyle = '#06b6d4';
-        ctx.lineWidth = 1.6;
+        ctx.lineWidth = 1.75;
         ctx.setLineDash([]);
       } else {
-        ctx.strokeStyle = 'rgba(113, 113, 122, 0.22)';
-        ctx.lineWidth = 0.8;
-        ctx.setLineDash(edge.similarity > 0.75 ? [] : [2, 2]);
+        const simAlpha = Math.min(0.42, Math.max(0.14, (edge.similarity - 0.72) * 1.4));
+        ctx.strokeStyle = `rgba(148, 163, 184, ${simAlpha.toFixed(2)})`;
+        ctx.lineWidth = edge.similarity >= 0.85 ? 1.25 : 0.85;
+        ctx.setLineDash(edge.similarity >= 0.78 ? [] : [2, 2]);
       }
       ctx.stroke();
       ctx.restore();
     });
 
     // -------------------------------------------------------------
-    // Layer 4: Intelligence Data Nodes
+    // Layer 4: Intelligence Data Nodes & Key Headline Callouts
     // -------------------------------------------------------------
+    const visibleNodes: Array<{
+      node: MapNode;
+      scX: number;
+      scY: number;
+      radius: number;
+      isSelected: boolean;
+      isHovered: boolean;
+      isDimmed: boolean;
+    }> = [];
+
     data.nodes.forEach((node) => {
       if (selectedClusterFilter !== 'all' && node.cluster_id !== selectedClusterFilter) {
         return;
@@ -332,9 +566,11 @@ export function RelevanceMap({
 
       const scX = toScreenX(node.x);
       const scY = toScreenY(node.y);
-      const baseRadius = 4.5 + Math.min((node.importance_score || 5) * 0.35, 3.5);
+      const baseRadius = getNodeBaseRadius(node);
       const radius = isHovered ? baseRadius + 2.5 : isSelected ? baseRadius + 1.5 : baseRadius;
       const fillColor = getNodeFill(node);
+
+      visibleNodes.push({ node, scX, scY, radius, isSelected, isHovered, isDimmed });
 
       ctx.save();
       ctx.globalAlpha = isDimmed ? 0.15 : 1.0;
@@ -342,17 +578,17 @@ export function RelevanceMap({
       // Halo ring for High-Trust Corroborated Reports (>= 80%)
       if (node.trustworthiness.score >= 80 && !isDimmed) {
         ctx.beginPath();
-        ctx.arc(scX, scY, radius + 4, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(16, 185, 129, 0.2)';
+        ctx.arc(scX, scY, radius + 4.2, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.22)';
         ctx.fill();
       }
 
-      // Outer animated reticle for selected node
+      // Outer reticle for selected node
       if (isSelected) {
         ctx.beginPath();
         ctx.arc(scX, scY, radius + 6, 0, Math.PI * 2);
         ctx.strokeStyle = '#06b6d4';
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.6;
         ctx.stroke();
 
         // Target ticks
@@ -361,7 +597,7 @@ export function RelevanceMap({
         ctx.lineTo(scX + radius + 10, scY);
         ctx.moveTo(scX, scY - radius - 10);
         ctx.lineTo(scX, scY + radius + 10);
-        ctx.strokeStyle = 'rgba(6, 182, 212, 0.4)';
+        ctx.strokeStyle = 'rgba(6, 182, 212, 0.45)';
         ctx.lineWidth = 0.8;
         ctx.stroke();
       }
@@ -371,7 +607,7 @@ export function RelevanceMap({
         ctx.beginPath();
         ctx.arc(scX, scY, radius + 3, 0, Math.PI * 2);
         ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth = 1.3;
         ctx.stroke();
       }
 
@@ -380,30 +616,103 @@ export function RelevanceMap({
       ctx.arc(scX, scY, radius, 0, Math.PI * 2);
       ctx.fillStyle = fillColor;
       ctx.fill();
-      ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(0, 0, 0, 0.6)';
+      ctx.lineWidth = node.is_cluster_lead ? 1.5 : 1.0;
+      ctx.strokeStyle = isSelected
+        ? '#ffffff'
+        : node.is_cluster_lead
+        ? 'rgba(255, 255, 255, 0.85)'
+        : 'rgba(0, 0, 0, 0.65)';
       ctx.stroke();
 
-      // Node title label when hovered, selected, or when zoomed into galaxy
-      if (!isDimmed && (isHovered || isSelected || (currentScale >= 1.35 && (node.importance_score || 5) >= 7))) {
-        const rawTitle = node.headline || node.title;
-        const shortTitle = rawTitle.length > 26 ? `${rawTitle.slice(0, 26)}…` : rawTitle;
-        ctx.font = '500 9.5px system-ui, sans-serif';
-        const tWidth = ctx.measureText(shortTitle).width;
-        const lx = scX + radius + 5;
-        const ly = scY + 3;
-
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
+      // Lead story anchor core dot inside medoid node
+      if (node.is_cluster_lead && (node.cluster_id ?? 0) > 0) {
         ctx.beginPath();
-        ctx.roundRect(lx - 4, ly - 10, tWidth + 8, 14, 3);
+        ctx.arc(scX, scY, Math.max(1.8, radius * 0.32), 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
         ctx.fill();
-        ctx.strokeStyle = isHovered || isSelected ? 'rgba(6, 182, 212, 0.7)' : 'rgba(255, 255, 255, 0.15)';
-        ctx.lineWidth = 0.8;
-        ctx.stroke();
-
-        ctx.fillStyle = isHovered || isSelected ? '#ffffff' : '#cbd5e1';
-        ctx.fillText(shortTitle, lx, ly);
       }
 
+      ctx.restore();
+    });
+
+    // Pass 2 of Layer 4: Collision-checked node callout labels (hovered/selected first, then lead stories, then zoomed high-priority)
+    const labelCandidates = visibleNodes
+      .filter(({ node, isHovered, isSelected, isDimmed }) => {
+        if (isDimmed) return false;
+        if (isHovered || isSelected) return true;
+        if (showKeyHeadlines && node.is_cluster_lead && (node.cluster_id ?? 0) > 0) return true;
+        if (currentScale >= 1.3 && (node.importance_score || 5) >= 7) return true;
+        return false;
+      })
+      .sort((a, b) => {
+        const priA = (a.isHovered ? 1000 : 0) + (a.isSelected ? 500 : 0) + (a.node.is_cluster_lead ? 100 : 0) + (a.node.importance_score || 5);
+        const priB = (b.isHovered ? 1000 : 0) + (b.isSelected ? 500 : 0) + (b.node.is_cluster_lead ? 100 : 0) + (b.node.importance_score || 5);
+        return priB - priA;
+      });
+
+    labelCandidates.forEach(({ node, scX, scY, radius, isHovered, isSelected }) => {
+      const rawTitle = node.headline || node.title;
+      const shortTitle = truncateWords(rawTitle, isHovered || isSelected ? 42 : 30);
+
+      ctx.save();
+      ctx.font =
+        node.is_cluster_lead || isHovered || isSelected
+          ? '600 9.5px system-ui, -apple-system, sans-serif'
+          : '500 9px system-ui, -apple-system, sans-serif';
+      const tWidth = ctx.measureText(shortTitle).width;
+      const boxW = tWidth + 10;
+      const boxH = 15;
+
+      // Try placing right, left, below, or above the node
+      const placements = [
+        { x1: scX + radius + 5, y1: scY - boxH / 2 },
+        { x1: scX - radius - 5 - boxW, y1: scY - boxH / 2 },
+        { x1: scX - boxW / 2, y1: scY + radius + 5 },
+        { x1: scX - boxW / 2, y1: scY - radius - 5 - boxH },
+      ];
+
+      let chosenPlacement: { x1: number; y1: number; x2: number; y2: number } | null = null;
+      for (const p of placements) {
+        const rect = { x1: p.x1, y1: p.y1, x2: p.x1 + boxW, y2: p.y1 + boxH };
+        const overlaps = occupiedLabelRects.some((r) => rectsOverlap(rect, r, 2));
+        if (!overlaps || isHovered || isSelected) {
+          chosenPlacement = rect;
+          break;
+        }
+      }
+
+      if (!chosenPlacement) {
+        ctx.restore();
+        return;
+      }
+
+      occupiedLabelRects.push(chosenPlacement);
+
+      ctx.fillStyle =
+        isHovered || isSelected
+          ? 'rgba(9, 9, 11, 0.95)'
+          : 'rgba(15, 23, 42, 0.88)';
+      ctx.beginPath();
+      ctx.roundRect(chosenPlacement.x1, chosenPlacement.y1, boxW, boxH, 3.5);
+      ctx.fill();
+
+      ctx.strokeStyle =
+        isHovered || isSelected
+          ? 'rgba(6, 182, 212, 0.8)'
+          : node.is_cluster_lead
+          ? 'rgba(56, 189, 248, 0.4)'
+          : 'rgba(255, 255, 255, 0.14)';
+      ctx.lineWidth = 0.85;
+      ctx.stroke();
+
+      ctx.textAlign = 'left';
+      ctx.fillStyle =
+        isHovered || isSelected
+          ? '#ffffff'
+          : node.is_cluster_lead
+          ? '#f1f5f9'
+          : '#cbd5e1';
+      ctx.fillText(shortTitle, chosenPlacement.x1 + 5, chosenPlacement.y1 + 10.5);
       ctx.restore();
     });
   }, [
@@ -415,7 +724,9 @@ export function RelevanceMap({
     selectedNodeId,
     hoveredNode,
     searchMatches,
+    showKeyHeadlines,
     getNodeFill,
+    getNodeBaseRadius,
   ]);
 
   // Request redraw whenever reactive props change
@@ -444,7 +755,7 @@ export function RelevanceMap({
 
         const scX = centerX + node.x * baseScale * currentScale;
         const scY = centerY + node.y * baseScale * currentScale;
-        const radius = 6.0 + Math.min((node.importance_score || 5) * 0.35, 3.5);
+        const radius = getNodeBaseRadius(node) + 2;
 
         const dx = screenX - scX;
         const dy = screenY - scY;
@@ -454,8 +765,18 @@ export function RelevanceMap({
       }
       return null;
     },
-    [data.nodes, dimensions, selectedClusterFilter]
+    [data.nodes, dimensions, selectedClusterFilter, getNodeBaseRadius]
   );
+
+  // Hit-test for clickable cluster pills on the canvas
+  const getClusterPillAtScreenPos = useCallback((screenX: number, screenY: number): number | null => {
+    for (const box of clusterPillBoxesRef.current) {
+      if (screenX >= box.x1 && screenX <= box.x2 && screenY >= box.y1 && screenY <= box.y2) {
+        return box.id;
+      }
+    }
+    return null;
+  }, []);
 
   // Mouse pan drag handlers (100% 60 FPS - updates refs and calls rAF)
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -468,6 +789,12 @@ export function RelevanceMap({
 
     if (hitNode) {
       setSelectedNodeId(hitNode.id);
+      return;
+    }
+
+    const hitClusterPill = getClusterPillAtScreenPos(clickX, clickY);
+    if (hitClusterPill !== null) {
+      handleJumpToCluster(hitClusterPill);
       return;
     }
 
@@ -505,8 +832,9 @@ export function RelevanceMap({
         setTooltipPos({ x: mouseX, y: mouseY });
       }
     }
+    const hitPill = hitNode ? null : getClusterPillAtScreenPos(mouseX, mouseY);
     if (canvasRef.current) {
-      canvasRef.current.style.cursor = hitNode ? 'pointer' : 'grab';
+      canvasRef.current.style.cursor = hitNode || hitPill !== null ? 'pointer' : 'grab';
     }
   };
 
@@ -622,6 +950,13 @@ export function RelevanceMap({
       return;
     }
 
+    if (clusterId === 0) {
+      scaleRef.current = 0.96;
+      offsetRef.current = { x: 0, y: 0 };
+      renderCanvas();
+      return;
+    }
+
     const cluster = data.clusters.find((c) => c.id === clusterId);
     if (cluster && cluster.center_x !== undefined && cluster.center_y !== undefined) {
       const baseScale = Math.min(dimensions.width, dimensions.height) / 220;
@@ -715,6 +1050,21 @@ export function RelevanceMap({
               <span>Priority</span>
             </button>
           </div>
+
+          {/* Key Headlines Callouts Toggle */}
+          <button
+            onClick={() => setShowKeyHeadlines((prev) => !prev)}
+            className={cn(
+              'flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors',
+              showKeyHeadlines
+                ? 'bg-accent-cyan/15 text-accent-cyan border-accent-cyan/30'
+                : 'bg-surface-card text-zinc-400 hover:text-zinc-200 border-white/5'
+            )}
+            title="Show or hide lead story headline callouts on the map at default zoom"
+          >
+            <Tag className="w-3 h-3" />
+            <span>Key Headlines</span>
+          </button>
         </div>
 
         {/* Right: Quota Monitor & Actions */}
@@ -817,14 +1167,19 @@ export function RelevanceMap({
             <button
               key={`cluster-nav-${c.id}`}
               onClick={() => handleJumpToCluster(c.id)}
+              title={c.id === 0 ? 'Single-source uncorroborated reports on the outer perimeter' : c.label}
               className={cn(
                 'px-2 py-0.5 rounded text-[11px] font-medium whitespace-nowrap transition-colors',
                 selectedClusterFilter === c.id
                   ? 'bg-accent-cyan/20 text-accent-cyan border border-accent-cyan/30'
+                  : c.id === 0
+                  ? 'bg-rose-950/30 text-rose-300/90 hover:text-rose-200 border border-rose-500/20'
                   : 'bg-surface-card text-zinc-400 hover:text-zinc-200 border border-white/5'
               )}
             >
-              {c.id === 0 ? 'Outliers' : `C#${c.id}: ${c.label.slice(0, 20)}`} ({c.size})
+              {c.id === 0
+                ? `Perimeter (${c.size})`
+                : `C#${c.id}: ${truncateWords(c.label, 22)} (${c.size})`}
             </button>
           ))}
         </div>
@@ -1024,7 +1379,7 @@ export function RelevanceMap({
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-zinc-100">Relevance Map & Trustworthiness Guide</h3>
-                  <p className="text-xs text-zinc-400">How to interpret semantic clusters, corroboration links, and trust ratings</p>
+                  <p className="text-xs text-zinc-400">How to interpret the Core-to-Periphery Consensus Radar, story galaxies, and trust ratings</p>
                 </div>
               </div>
               <button
@@ -1042,19 +1397,23 @@ export function RelevanceMap({
               <div className="space-y-2">
                 <h4 className="flex items-center space-x-2 text-sm font-semibold text-zinc-100">
                   <span className="w-2 h-2 rounded-full bg-accent-cyan" />
-                  <span>1. What is this Map Showing?</span>
+                  <span>1. Core-to-Periphery Consensus Radar</span>
                 </h4>
                 <p className="leading-relaxed text-zinc-300">
-                  This map is a <strong>topological projection of incoming intelligence dispatches</strong>. Each report is embedded into a high-dimensional vector capturing its content, named entities, timestamp, and geopolitical context.
+                  This map combines <strong>semantic similarity</strong> (angle) with <strong>multi-source consensus</strong> (radial distance from center):
                 </p>
                 <div className="p-3 rounded-lg bg-surface-card border border-white/5 space-y-1.5">
                   <div className="flex items-start space-x-2">
-                    <CheckCircle2 className="w-4 h-4 text-accent-cyan mt-0.5 shrink-0" />
-                    <span><strong>Proximity = Semantic Affinity:</strong> Reports discussing the exact same incident, battlefield action, or diplomatic resolution naturally gravitate close together.</span>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
+                    <span><strong>Center = Core Consensus:</strong> The most heavily corroborated, high-priority story galaxy anchors the inner core (`C#1`), surrounded by secondary corroborated story galaxies in the middle orbit.</span>
                   </div>
                   <div className="flex items-start space-x-2">
                     <CheckCircle2 className="w-4 h-4 text-accent-cyan mt-0.5 shrink-0" />
-                    <span><strong>Distance = Topical Disconnect:</strong> A statement from Geneva and a drone strike in the Red Sea land far apart in distinct regions.</span>
+                    <span><strong>Angle = Semantic Affinity:</strong> Story galaxies discussing related geopolitical fronts or topics sit at similar compass angles.</span>
+                  </div>
+                  <div className="flex items-start space-x-2">
+                    <CheckCircle2 className="w-4 h-4 text-rose-400 mt-0.5 shrink-0" />
+                    <span><strong>Outer Ring = Unverified Perimeter:</strong> Single-source or isolated dispatches without cross-outlet corroboration sit on the outer perimeter ring until confirmed.</span>
                   </div>
                 </div>
               </div>
@@ -1063,17 +1422,17 @@ export function RelevanceMap({
               <div className="space-y-2">
                 <h4 className="flex items-center space-x-2 text-sm font-semibold text-zinc-100">
                   <span className="w-2 h-2 rounded-full bg-purple-400" />
-                  <span>2. Topic Galaxies (Constellations)</span>
+                  <span>2. Topic Galaxies &amp; Lead Anchor Nodes</span>
                 </h4>
                 <p className="leading-relaxed text-zinc-300">
-                  Reports are grouped into <strong>thematic story clusters</strong> (e.g., flight cancellations, border shelling, international sanctions).
+                  Reports are grouped into <strong>coherent story galaxies</strong> using cosine-distance threshold clustering so only genuinely related reports share a galaxy.
                 </p>
                 <div className="p-3 rounded-lg bg-surface-card border border-white/5 space-y-2">
                   <p>
-                    Use the <strong>Galaxies bar</strong> at the top to navigate between breaking events. Clicking any pill (e.g. <span className="font-mono text-accent-cyan bg-accent-cyan/10 px-1 py-0.5 rounded">C#1: Riyadh Flights</span>) instantly flies the camera directly into that story cluster.
+                    Click any pill in the <strong>Galaxies bar</strong> or <strong>directly on the map canvas</strong> to fly the camera into that story cluster.
                   </p>
                   <p className="text-zinc-400">
-                    The <strong>Perimeter Ring (Outliers)</strong> on the outer boundary holds single-source or isolated reports that do not yet belong to any verified multi-source story thread.
+                    Inside each galaxy, the <strong>Medoid Lead Node</strong> (marked with a bright white center dot) sits at the center of the cluster and displays its headline when <strong>Key Headlines</strong> is active.
                   </p>
                 </div>
               </div>
@@ -1085,7 +1444,7 @@ export function RelevanceMap({
                   <span>3. Corroboration Edges (Connecting Lines)</span>
                 </h4>
                 <p className="leading-relaxed text-zinc-300">
-                  Subtle glowing lines only connect reports that <strong>directly corroborate each other</strong> (cosine similarity &ge; 0.76).
+                  Curved lines connect reports within a galaxy that <strong>directly corroborate each other</strong> across semantic content, entities, and time window. Cross-cluster links appear on hover or selection.
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <div className="p-2.5 rounded-lg bg-surface-card border border-white/5 space-y-1">
@@ -1106,7 +1465,7 @@ export function RelevanceMap({
                   <span>4. Trustworthiness Calibration</span>
                 </h4>
                 <p className="leading-relaxed text-zinc-300">
-                  Trust is dynamically calibrated based on multi-source cross-verification and domain reputation:
+                  Trust is dynamically calibrated based on independent outlet count, semantic &amp; temporal corroboration, and domain reputation:
                 </p>
                 <div className="grid grid-cols-2 gap-2 text-[11px]">
                   <div className="flex items-start space-x-2 p-2 rounded-lg bg-surface-card border border-emerald-500/20">
@@ -1144,12 +1503,12 @@ export function RelevanceMap({
               <div className="space-y-2">
                 <h4 className="flex items-center space-x-2 text-sm font-semibold text-zinc-100">
                   <span className="w-2 h-2 rounded-full bg-sky-400" />
-                  <span>5. Navigation & Shortcuts</span>
+                  <span>5. Navigation &amp; Shortcuts</span>
                 </h4>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
                   <div className="p-2 rounded-lg bg-surface-card border border-white/5">
-                    <span className="font-mono font-bold text-accent-cyan">Click Node</span>
-                    <p className="text-[10px] text-zinc-400 mt-0.5">Open Event Inspector Drawer</p>
+                    <span className="font-mono font-bold text-accent-cyan">Click Node / Pill</span>
+                    <p className="text-[10px] text-zinc-400 mt-0.5">Inspect report or zoom into galaxy</p>
                   </div>
                   <div className="p-2 rounded-lg bg-surface-card border border-white/5">
                     <span className="font-mono font-bold text-accent-cyan">Drag</span>
@@ -1160,8 +1519,8 @@ export function RelevanceMap({
                     <p className="text-[10px] text-zinc-400 mt-0.5">Zoom in / out at cursor</p>
                   </div>
                   <div className="p-2 rounded-lg bg-surface-card border border-white/5">
-                    <span className="font-mono font-bold text-accent-cyan">Search Box</span>
-                    <p className="text-[10px] text-zinc-400 mt-0.5">Instant keyword illumination</p>
+                    <span className="font-mono font-bold text-accent-cyan">Key Headlines</span>
+                    <p className="text-[10px] text-zinc-400 mt-0.5">Toggle lead titles on map</p>
                   </div>
                 </div>
               </div>
@@ -1170,7 +1529,7 @@ export function RelevanceMap({
             {/* Modal Footer */}
             <div className="p-4 hairline-t bg-canvas-base/80 flex items-center justify-between">
               <span className="text-[11px] text-zinc-500">
-                Powered by Gemini 3072d Embedding Vectors &amp; Adaptive KMeans Clustering
+                Powered by Gemini 3072d Embeddings &amp; Cosine-Threshold Agglomerative Clustering
               </span>
               <button
                 onClick={() => setShowGuide(false)}

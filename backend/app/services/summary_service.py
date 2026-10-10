@@ -921,8 +921,8 @@ class SituationSummaryService:
             f"- Critical Flash Alerts (Score >= {alert_threshold}): {telemetry['critical_alerts_count']} (Max Score: {telemetry['max_importance_score']}/10, Avg Score: {telemetry['avg_importance_score']}/10)",
             f"- Ingestion Velocity: {telemetry['velocity_status']} ({telemetry['events_last_6h']} events in last 6h vs {telemetry['events_prev_18h']} in prior 18h)",
             f"- Source Mix: {telemetry['source_breakdown']}",
-            f"- Top Entities: {', '.join(e['name'] + f' ({e[\"count\"]})' for e in telemetry['top_entities'][:10])}",
-            f"- Top Locations: {', '.join(l['name'] + f' ({l[\"count\"]})' for l in telemetry['top_locations'][:6])}",
+            f"- Top Entities: {', '.join(str(e['name']) + ' (' + str(e['count']) + ')' for e in telemetry['top_entities'][:10])}",
+            f"- Top Locations: {', '.join(str(l['name']) + ' (' + str(l['count']) + ')' for l in telemetry['top_locations'][:6])}",
         ])
 
         pizza = telemetry.get("pizza_meter")

@@ -285,12 +285,12 @@ export const PROVIDER_RATE_LIMITS: ProviderRateLimitInfo[] = [
     name: 'Hugging Face TEI',
     shortName: 'HF TEI',
     category: 'ai',
-    rateLimitUrl: 'https://huggingface.co/settings/billing',
-    usageUrl: 'https://huggingface.co/spaces',
+    rateLimitUrl: 'https://huggingface.co/spaces/danprav/osint-embeddings-tei',
+    usageUrl: 'https://danprav-osint-embeddings-tei.hf.space',
     docsUrl: 'https://huggingface.co/docs/hub/rate-limits',
-    quotaSummary: 'Unlimited (Self-Hosted)',
+    quotaSummary: 'Unlimited • 384d MiniLM',
     keyFields: ['hf_api_key', 'hf_embedding_url'],
-    description: 'Hugging Face Spaces embedding server and Hub rate limits',
+    description: 'Self-hosted Hugging Face Space TEI embeddings server (danprav/osint-embeddings-tei)',
   },
 ];
 

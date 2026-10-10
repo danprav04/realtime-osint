@@ -198,6 +198,8 @@ export interface MapNode {
   y: number;
   cluster_id?: number | null;
   cluster_label?: string | null;
+  is_cluster_lead?: boolean;
+  centrality?: number;
   trustworthiness: MapTrustworthiness;
   nearest_neighbors: MapNeighbor[];
 }
@@ -206,6 +208,7 @@ export interface MapEdge {
   source: string;
   target: string;
   similarity: number;
+  intra_cluster?: boolean;
 }
 
 export interface MapCluster {
@@ -215,6 +218,10 @@ export interface MapCluster {
   center_x: number;
   center_y: number;
   radius?: number;
+  avg_trust?: number;
+  avg_importance?: number;
+  lead_event_id?: string;
+  is_perimeter?: boolean;
   event_ids?: string[];
 }
 
@@ -252,3 +259,101 @@ export interface EmbeddingStatus {
   hf_space_configured: boolean;
   quota_tracker?: QuotaTracker;
 }
+
+export interface SummaryCitationEvent {
+  id: string;
+  title: string;
+  headline: string;
+  summary: string;
+  raw_text: string;
+  translated_text?: string | null;
+  source_name: string;
+  source_type: string;
+  source_url?: string | null;
+  importance_score: number;
+  score_rationale?: string | null;
+  published_at: string;
+  ingested_at: string;
+  entities_json?: string[];
+  location_json?: { name?: string; country?: string; lat?: number; lon?: number } | null;
+  cluster_id?: number | null;
+  cluster_label?: string | null;
+  trustworthiness_score: number;
+  trustworthiness_label: string;
+  corroboration_count: number;
+  corroborating_sources?: string[];
+}
+
+export interface SummaryClusterBreakdown {
+  cluster_id: number;
+  label: string;
+  title: string;
+  executive_summary: string;
+  operational_implication: string;
+  threat_level: 'low' | 'medium' | 'high' | 'critical';
+  report_count: number;
+  avg_importance_score: number;
+  max_importance_score: number;
+  avg_trustworthiness_score: number;
+  trustworthiness_label: string;
+  independent_sources: string[];
+  source_types: string[];
+  top_entities: string[];
+  center_x?: number;
+  center_y?: number;
+  events: SummaryCitationEvent[];
+}
+
+export interface SummaryKeyDevelopment {
+  bullet: string;
+  event_id?: string | null;
+  headline?: string | null;
+  importance_score?: number | null;
+  source_name?: string | null;
+  trustworthiness_label?: string | null;
+  trustworthiness_score?: number | null;
+}
+
+export interface SituationSummaryData {
+  id: string;
+  generated_at: string;
+  cached: boolean;
+  theme_id: string;
+  theme_name: string;
+  time_range: string;
+  active_ai_model: string;
+  active_embedding_model: string;
+  threat_trajectory: 'Escalating' | 'Elevated' | 'Stable' | 'De-escalating' | 'Volatile';
+  threat_level_score: number;
+  executive_bluf: string;
+  strategic_assessment: string;
+  key_developments: SummaryKeyDevelopment[];
+  clusters: SummaryClusterBreakdown[];
+  unverified_outliers: {
+    assessment: string;
+    events: SummaryCitationEvent[];
+  };
+  watchlist_indicators: string[];
+  telemetry: {
+    total_events: number;
+    embedded_events: number;
+    embedding_coverage_pct: number;
+    corroborated_reports_count: number;
+    corroboration_rate_pct: number;
+    cross_source_edges_count: number;
+    total_clusters: number;
+    isolated_outliers_count: number;
+    critical_alerts_count: number;
+    avg_importance_score: number;
+    max_importance_score: number;
+    velocity_status: 'Surge' | 'Elevated' | 'Normal' | 'Quiet';
+    events_last_6h: number;
+    events_prev_18h: number;
+    source_breakdown: Record<string, number>;
+    top_entities: Array<{ name: string; count: number }>;
+    top_locations: Array<{ name: string; count: number }>;
+    top_categories: Array<{ name: string; count: number }>;
+    pizza_meter?: PizzaMeterData | null;
+  };
+}
+

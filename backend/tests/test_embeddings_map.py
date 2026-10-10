@@ -19,8 +19,10 @@ from backend.app.main import create_app
 from backend.app.services.embedding_service import (
     EmbeddingService,
     build_embedding_document,
+    build_semantic_embedding_text,
     generate_deterministic_mock_embedding,
     get_embedding_service,
+    truncate_at_word_boundary,
 )
 
 
@@ -279,3 +281,146 @@ async def test_failover_gemini_1_to_gemini_2_and_hf_tei(monkeypatch):
     assert call_log == ["gemini-embedding-001", "gemini-embedding-2"]
     assert len(vectors) == 1
     assert len(vectors[0]) == 3072
+
+
+def test_truncate_at_word_boundary_no_cut_words():
+    """Verify cluster labels never truncate in the middle of a word."""
+    raw = "Trump claims gas prices are dropping after diplomatic talks"
+    truncated = truncate_at_word_boundary(raw, max_len=24)
+    assert truncated == "Trump claims gas prices…"
+    assert not truncated.endswith("pri…")
+
+    short = "Riyadh Airport Flights"
+    assert truncate_at_word_boundary(short, max_len=28) == "Riyadh Airport Flights"
+
+
+def test_semantic_embedding_text_strips_boilerplate():
+    """Verify semantic embedding text omits timestamp, source handle, and domain boilerplate."""
+    now = datetime(2026, 10, 9, 14, 30, tzinfo=timezone.utc)
+    ev = Event(
+        id="sem-1",
+        theme_id=1,
+        source_type="telegram",
+        source_name="@IntelChannel",
+        external_id="sem-ext-1",
+        title="Ballistic missile launch detected near Tabriz",
+        headline="Ballistic Missile Launch Near Tabriz",
+        raw_text="Multiple witnesses report missile launch from northwestern Iran.",
+        summary="Ballistic missile launch reported near Tabriz in northwestern Iran.",
+        location_json={"name": "Tabriz", "lat": 38.08, "lon": 46.29},
+        entities_json=["IRGC", "Tabriz"],
+        published_at=now,
+    )
+    sem_text = build_semantic_embedding_text(ev)
+    assert "Ballistic Missile Launch Near Tabriz" in sem_text
+    assert "IRGC, Tabriz" in sem_text
+    assert "Timestamp:" not in sem_text
+    assert "Source:" not in sem_text
+    assert "Domain:" not in sem_text
+
+
+def test_galaxy_coordinates_non_overlapping_and_perimeter():
+    """Verify story galaxies never overlap and cluster 0 stays on the outer perimeter."""
+    import math
+    service = EmbeddingService()
+
+    # Create 3 distinct corroborated clusters + 1 outlier
+    topics = [
+        ("Hormuz naval tanker boarded by IRGC speedboats", "@NavalWatch", "telegram"),
+        ("Hormuz naval tanker boarded by IRGC forces", "Reuters", "newsapi"),
+        ("Hormuz naval tanker boarded near Persian Gulf", "AP News", "rss"),
+        ("Natanz centrifuge facility power outage reported", "BBC", "rss"),
+        ("Natanz centrifuge nuclear site power grid incident", "Al Jazeera", "newsapi"),
+        ("Natanz centrifuge facility blackout confirmed", "@OSINTDefender", "telegram"),
+        ("Riyadh airport flights suspended amid airspace alert", "Arab News", "rss"),
+        ("Riyadh airport flights grounded following drone alert", "Reuters", "newsapi"),
+        ("Unconfirmed rumor of minor cyber outage in municipal water utility", "RedditUser", "reddit"),
+    ]
+
+    events = [
+        Event(
+            id=f"g-{idx}",
+            theme_id=1,
+            source_type=src_type,
+            source_name=src_name,
+            external_id=f"g-ext-{idx}",
+            title=text,
+            headline=text,
+            raw_text=text,
+            importance_score=7,
+            published_at=utc_now(),
+        )
+        for idx, (text, src_name, src_type) in enumerate(topics)
+    ]
+    vectors = [generate_deterministic_mock_embedding(build_semantic_embedding_text(e)) for e in events]
+    node_metrics, edges, clusters = service.compute_trustworthiness_and_corroboration(events, vectors)
+    final_coords = service.compute_galaxy_coordinates(vectors, clusters, node_metrics)
+
+    assert len(final_coords) == len(events)
+
+    story_clusters = [c for c in clusters if c["id"] > 0]
+    assert len(story_clusters) >= 2
+
+    # Check that no two story cluster circles overlap
+    for i in range(len(story_clusters)):
+        for j in range(i + 1, len(story_clusters)):
+            c1, c2 = story_clusters[i], story_clusters[j]
+            dist = math.hypot(c1["center_x"] - c2["center_x"], c1["center_y"] - c2["center_y"])
+            assert dist >= (c1["radius"] + c2["radius"] - 0.5)
+
+    # Check that each story cluster has exactly one lead node
+    for c in story_clusters:
+        leads = [m for m in node_metrics if m["cluster_id"] == c["id"] and m.get("is_cluster_lead")]
+        assert len(leads) == 1
+
+
+@pytest.mark.asyncio
+async def test_theme_slug_matching_and_off_theme_filtering(async_test_session):
+    """Verify hyphenated theme slug matches 'US-Iran conflict' and filters Ukraine/Russia noise."""
+    theme = Theme(
+        id=1,
+        name="US-Iran conflict",
+        scoring_prompt="US-Iran conflict intelligence",
+        keywords=["iran", "hormuz"],
+        entities=["IRGC", "CENTCOM"],
+    )
+    async_test_session.add(theme)
+
+    on_theme_event = Event(
+        id="ev-iran-1",
+        theme_id=1,
+        source_type="rss",
+        source_name="Reuters",
+        external_id="iran-1",
+        title="IRGC naval vessels conduct live-fire drill near Strait of Hormuz",
+        headline="IRGC Naval Drill Near Strait of Hormuz",
+        raw_text="Iranian naval units conducted exercises near the Strait of Hormuz.",
+        importance_score=8,
+        published_at=utc_now(),
+    )
+    off_theme_ukraine_event = Event(
+        id="ev-ukr-1",
+        theme_id=1,
+        source_type="rss",
+        source_name="Pravda",
+        external_id="ukr-1",
+        title="Zelensky meets military commanders in Kyiv to discuss Donetsk frontline",
+        headline="Zelensky Reviews Donetsk Frontline in Kyiv",
+        raw_text="Ukrainian President Zelensky visited Kyiv command center regarding Russian offensive.",
+        importance_score=7,
+        published_at=utc_now(),
+    )
+    async_test_session.add_all([on_theme_event, off_theme_ukraine_event])
+    await async_test_session.commit()
+
+    service = EmbeddingService()
+    map_data = await service.get_relevance_map_data(
+        async_test_session,
+        theme_id="us-iran-conflict",
+        min_score=4,
+    )
+
+    node_ids = [n["id"] for n in map_data["nodes"]]
+    assert "ev-iran-1" in node_ids
+    assert "ev-ukr-1" not in node_ids
+

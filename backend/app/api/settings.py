@@ -133,6 +133,7 @@ async def get_system_settings(
         "newsapi_key": os.environ.get("NEWSAPI_KEY"),
         "reddit_client_id": os.environ.get("REDDIT_CLIENT_ID"),
         "reddit_client_secret": os.environ.get("REDDIT_CLIENT_SECRET"),
+        "hf_embedding_url": app_settings.HF_EMBEDDING_URL or os.environ.get("HF_EMBEDDING_URL"),
         "hf_api_key": app_settings.HF_API_KEY or os.environ.get("HF_API_KEY"),
     }
     effective_keys = {}
@@ -146,7 +147,9 @@ async def get_system_settings(
 
     masked_keys = {}
     for k, v in effective_keys.items():
-        if v and len(str(v)) > 4:
+        if k == "hf_embedding_url" and v:
+            masked_keys[k] = str(v)
+        elif v and len(str(v)) > 4:
             masked_keys[k] = f"***{str(v)[-4:]}"
         elif v or k in (raw_keys if isinstance(raw_keys, dict) else {}):
             masked_keys[k] = "***"
@@ -186,16 +189,22 @@ async def update_system_settings(
 ) -> Dict[str, Any]:
     """Update system settings (API keys, threshold, intervals, lookback, pizza meter) and notify workers."""
     if "api_keys" in payload:
+        from sqlalchemy.orm.attributes import flag_modified
         res = await session.execute(
             select(SystemSettings).where(SystemSettings.key == "api_keys")
         )
         existing = res.scalars().first()
-        current_keys = existing.value_json if existing else {}
+        current_keys = dict(existing.value_json) if existing and existing.value_json else {}
         for k, v in payload["api_keys"].items():
             if v and not str(v).startswith("***"):
                 current_keys[k] = v
+                if k == "hf_embedding_url":
+                    os.environ["HF_EMBEDDING_URL"] = str(v).strip()
+                elif k == "hf_api_key":
+                    os.environ["HF_API_KEY"] = str(v).strip()
         if existing:
             existing.value_json = current_keys
+            flag_modified(existing, "value_json")
         else:
             session.add(SystemSettings(key="api_keys", value_json=current_keys))
 
