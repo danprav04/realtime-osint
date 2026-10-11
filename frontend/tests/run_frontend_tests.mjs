@@ -114,10 +114,10 @@ test('PizzaMeter - Validates PizzaMeterData structure, hourly calibration, and t
   const samplePizzaData = {
     status: 'NOMINAL',
     level: 1,
-    score: 18,
+    score: 74,
     trend: 'stable',
-    baseline_multiplier: 1.05,
-    description: 'Baseline order activity in Pentagon & Arlington DoD corridor (in line with normal hourly baseline).',
+    baseline_multiplier: 1.0,
+    description: 'Baseline order activity across 6 Pentagon & Arlington DoD corridor pizzerias (in line with normal 19:00 EDT baseline).',
     monitored_region: 'Arlington / Pentagon DoD Corridor, VA',
     last_updated: new Date().toISOString(),
     enabled: true,
@@ -125,32 +125,56 @@ test('PizzaMeter - Validates PizzaMeterData structure, hourly calibration, and t
     arlington_hour: 19,
     locations: [
       {
-        name: "Domino's Pizza (Pentagon City)",
-        address: '1100 S Joyce St, Arlington, VA',
+        name: "Domino's Pizza (Pentagon Closest)",
+        address: '2602 Columbia Pike, Arlington, VA',
         busyness: 78,
         normal_busyness: 82,
+        status: 'Normal',
+        distance: '1.7 mi from Pentagon',
+      },
+      {
+        name: "Papa John's (Columbia Pike)",
+        address: '3205 Columbia Pike, Arlington, VA',
+        busyness: 78,
+        normal_busyness: 78,
+        status: 'Normal',
+        distance: '2.1 mi from Pentagon',
+      },
+      {
+        name: 'Extreme Pizza (Pentagon City)',
+        address: '1419 S Fern St, Arlington, VA',
+        busyness: 76,
+        normal_busyness: 76,
         status: 'Normal',
         distance: '0.8 mi from Pentagon',
       },
       {
-        name: "Papa John's (Columbia Pike)",
-        address: '2901 Columbia Pike, Arlington, VA',
+        name: 'We, The Pizza (Crystal City)',
+        address: '2100 Crystal Dr, Arlington, VA',
         busyness: 80,
-        normal_busyness: 78,
+        normal_busyness: 80,
         status: 'Normal',
         distance: '1.2 mi from Pentagon',
       },
       {
-        name: "Pizza Hut (Arlington)",
-        address: '3100 Clarendon Blvd, Arlington, VA',
-        busyness: 72,
-        normal_busyness: 74,
+        name: 'District Pizza Palace',
+        address: '2325 S Eads St, Arlington, VA',
+        busyness: 66,
+        normal_busyness: 66,
         status: 'Normal',
-        distance: '1.5 mi from Pentagon',
+        distance: '1.3 mi from Pentagon',
+      },
+      {
+        name: 'Pizzato Pizza',
+        address: '3001 Washington Blvd, Arlington, VA',
+        busyness: 68,
+        normal_busyness: 68,
+        status: 'Normal',
+        distance: '1.9 mi from Pentagon',
       },
     ],
     history: [
-      { timestamp: new Date().toISOString(), score: 78 },
+      { timestamp: new Date().toISOString(), score: 74 },
     ],
   };
 
@@ -158,7 +182,7 @@ test('PizzaMeter - Validates PizzaMeterData structure, hourly calibration, and t
   assert.equal(samplePizzaData.level, 1);
   assert.equal(samplePizzaData.enabled, true);
   assert.equal(samplePizzaData.hourly_calibrated, true);
-  assert.equal(samplePizzaData.locations.length, 3);
+  assert.equal(samplePizzaData.locations.length, 6);
   assert.equal(samplePizzaData.locations[0].normal_busyness, 82);
   // During 7 PM dinner rush, 78% busy with normal 82% is correctly classified as Normal, not a spike!
   assert.equal(samplePizzaData.locations[0].status, 'Normal');
@@ -179,12 +203,12 @@ test('PizzaMeter - Validates PizzaMeterData structure, hourly calibration, and t
     baseline_multiplier: 10.5,
     locations: [
       {
-        name: "Domino's Pizza (Pentagon City)",
-        address: '1100 S Joyce St, Arlington, VA',
+        name: "Domino's Pizza (Pentagon Closest)",
+        address: '2602 Columbia Pike, Arlington, VA',
         busyness: 84,
-        normal_busyness: 5,
+        normal_busyness: 6,
         status: 'Spike',
-        distance: '0.8 mi from Pentagon',
+        distance: '1.7 mi from Pentagon',
       },
     ],
   };

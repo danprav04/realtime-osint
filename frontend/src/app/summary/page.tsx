@@ -32,11 +32,13 @@ import {
   SummaryCitationEvent,
   SummaryClusterBreakdown,
   NormalizedEvent,
+  PizzaMeterData,
   Theme,
 } from '@/lib/types';
 import {
   getSituationSummary,
   generateSituationSummary,
+  getPizzaMeter,
   getThemes,
 } from '@/lib/api';
 import { useRealtimeFeed, useSocketConnection } from '@/lib/socket';
@@ -140,6 +142,7 @@ function citationToNormalizedEvent(cit: SummaryCitationEvent, themeId: string): 
 
 export default function AISummaryPage() {
   const [summary, setSummary] = useState<SituationSummaryData | null>(null);
+  const [livePizzaMeter, setLivePizzaMeter] = useState<PizzaMeterData | null | undefined>(undefined);
   const [themes, setThemes] = useState<Theme[]>([]);
   const [selectedTheme, setSelectedTheme] = useState<string>('active');
   const [timeRange, setTimeRange] = useState<string>('all');
@@ -165,14 +168,18 @@ export default function AISummaryPage() {
 
       try {
         const themeParam = selectedTheme === 'active' ? undefined : selectedTheme;
-        const [summaryRes, themesRes] = await Promise.all([
+        const [summaryRes, themesRes, pizzaRes] = await Promise.all([
           forceRefresh
             ? generateSituationSummary({ theme_id: themeParam, time_range: timeRange })
             : getSituationSummary({ theme_id: themeParam, time_range: timeRange }),
           getThemes().catch(() => []),
+          getPizzaMeter().catch(() => undefined),
         ]);
 
         setSummary(summaryRes);
+        if (pizzaRes !== undefined) {
+          setLivePizzaMeter(pizzaRes);
+        }
         setNewEventsCount(0);
         if (themesRes && themesRes.length > 0) {
           setThemes(themesRes);
@@ -272,7 +279,12 @@ export default function AISummaryPage() {
   };
 
   const trajStyle = getTrajectoryStyles(summary?.threat_trajectory);
-  const pizza = summary?.telemetry?.pizza_meter;
+  const pizza =
+    livePizzaMeter !== undefined
+      ? livePizzaMeter?.enabled === false
+        ? null
+        : livePizzaMeter
+      : summary?.telemetry?.pizza_meter;
 
   return (
     <div className="space-y-5">

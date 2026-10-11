@@ -52,17 +52,21 @@ osint.db
 .env.*
 !.env.example
 
-# Next.js / Node.js
+# Next.js / Node.js / TypeScript
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Agent internal work directory
+# Agent & internal work files
+.agent/
 .agents/
+ORIGINAL_REQUEST.md
+scratch_*.py
 
 # IDE & OS files
 .vscode/

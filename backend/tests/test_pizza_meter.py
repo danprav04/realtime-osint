@@ -64,13 +64,16 @@ async def test_pizza_meter_get_nominal_success():
         assert len(data["description"]) > 0
         assert "last_updated" in data
 
-        # Location checks: 3 Arlington defense corridor spots
+        # Location checks: 6 real PizzINT Arlington / Pentagon defense corridor spots
         locations = data["locations"]
-        assert len(locations) == 3
+        assert len(locations) == 6
         names = [loc["name"] for loc in locations]
         assert any("Domino" in name for name in names)
         assert any("Papa John" in name for name in names)
-        assert any("Pizza Hut" in name for name in names)
+        assert any("Extreme Pizza" in name for name in names)
+        assert any("We, The Pizza" in name for name in names)
+        assert any("District Pizza" in name for name in names)
+        assert any("Pizzato" in name for name in names)
 
         for loc in locations:
             assert 0 <= loc["busyness"] <= 100
@@ -136,31 +139,40 @@ async def test_pizza_meter_hourly_calibration():
 
     # 1. Verification of unit calibration logic
     # At 7:00 PM (hour 19 - Dinner Peak): Normal business is ~82%
-    norm_19 = get_hourly_normal("Domino's Pizza (Pentagon City)", 19)
+    norm_19 = get_hourly_normal("Domino's Pizza (Pentagon Closest)", 19)
     assert norm_19 >= 75
     # An 80% busyness at 7:00 PM is normal dinner rush, NOT a crisis spike!
     status_dinner = evaluate_location_status(busyness=80, normal_busyness=norm_19)
     assert status_dinner == "Normal", "80% busy during dinner rush should be classified as Normal"
 
-    # At 2:00 AM (hour 2 - Late Night): Normal business is ~5%
-    norm_2 = get_hourly_normal("Domino's Pizza (Pentagon City)", 2)
+    # At 2:00 AM (hour 2 - Late Night): Normal business is <=10%
+    norm_2 = get_hourly_normal("Domino's Pizza (Pentagon Closest)", 2)
     assert norm_2 <= 10
     # A 45% busyness at 2:00 AM is an abnormal 5x+ delivery surge -> Spike!
     status_late_night = evaluate_location_status(busyness=45, normal_busyness=norm_2)
     assert status_late_night == "Spike", "45% busy at 2:00 AM should be classified as Spike"
 
-    # 2. Verification of location generation with hourly baseline
+    # 2. Verification of location generation with hourly baseline across 6 outlets
     locs_dinner = _get_base_locations(score=75, hour=19)
+    assert len(locs_dinner) == 6
     dominos_dinner = next(l for l in locs_dinner if "Domino" in l["name"])
     assert dominos_dinner["normal_busyness"] >= 75
     assert dominos_dinner["status"] == "Normal"
 
     locs_late = _get_base_locations(score=85, hour=2)
+    assert len(locs_late) == 6
     dominos_late = next(l for l in locs_late if "Domino" in l["name"])
     assert dominos_late["normal_busyness"] <= 10
     assert dominos_late["status"] == "Spike"
 
-    # 3. Full API response assertions for hourly calibration metadata
+    # 3. Verify true mathematical multiplier consistency (no fabricated 2.5x floor at hour 17)
+    calc_17 = await calculate_pizza_meter_status(hour_override=17)
+    avg_cur = sum(l["busyness"] for l in calc_17["locations"]) / len(calc_17["locations"])
+    avg_nrm = sum(l["normal_busyness"] for l in calc_17["locations"]) / len(calc_17["locations"])
+    expected_ratio = round(max(1.0 if abs(avg_cur - avg_nrm) < 2 else 0.5, avg_cur / max(avg_nrm, 8.0)), 2)
+    assert abs(calc_17["baseline_multiplier"] - expected_ratio) <= 0.05
+
+    # 4. Full API response assertions for hourly calibration metadata
     settings = get_settings()
     api_key = settings.API_KEY
     transport = ASGITransport(app=app)
@@ -170,6 +182,7 @@ async def test_pizza_meter_hourly_calibration():
         data = res.json()
         assert data["hourly_calibrated"] is True
         assert 0 <= data["arlington_hour"] <= 23
+        assert len(data["locations"]) == 6
         for loc in data["locations"]:
             assert "normal_busyness" in loc
             assert 0 <= loc["normal_busyness"] <= 100

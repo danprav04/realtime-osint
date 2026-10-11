@@ -391,6 +391,15 @@ class SituationSummaryService:
             payload = dict(entry.get("payload", {}))
             if payload:
                 payload["cached"] = True
+                if isinstance(payload.get("telemetry"), dict):
+                    try:
+                        pizza_res = await calculate_pizza_meter_status(session)
+                        payload["telemetry"] = dict(payload["telemetry"])
+                        payload["telemetry"]["pizza_meter"] = (
+                            pizza_res if (pizza_res and pizza_res.get("enabled", True)) else None
+                        )
+                    except Exception as p_err:
+                        logger.debug(f"Live pizza meter refresh in cached summary skipped: {p_err}")
                 return payload
         except Exception as exc:
             logger.debug(f"Summary cache lookup skipped: {exc}")
