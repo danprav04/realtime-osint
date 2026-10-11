@@ -25,7 +25,7 @@ class GroqProvider(BaseAIProvider):
         api_key: Optional[str] = None,
         default_model: str = "qwen/qwen3.8-27b",
         timeout_seconds: float = 25.0,
-        max_retries: int = 3,
+        max_retries: int = 4,
         base_backoff_sec: float = 1.0,
         jitter_sec: float = 0.5,
     ):
@@ -38,7 +38,8 @@ class GroqProvider(BaseAIProvider):
             jitter_sec=jitter_sec,
         )
         # Safe pacing for Groq free tier (30 RPM limit = 2.0s minimum gap)
-        self.min_interval_sec = 1.5
+        self.min_interval_sec = 2.1
+        self.max_rpm = 28
 
     @property
     def provider_name(self) -> str:
@@ -72,11 +73,17 @@ class GroqProvider(BaseAIProvider):
 
         messages.append({"role": "user", "content": user_content})
 
+        # Reasoning models (e.g. openai/gpt-oss-120b, openai/gpt-oss-20b, qwen3) consume max_tokens
+        # for internal reasoning before emitting JSON; 1024 can truncate mid-JSON and cause HTTP 400 json_validate_failed.
+        effective_max_tokens = max_tokens
+        if json_mode and any(tag in model_name.lower() for tag in ("gpt-oss", "qwen", "deepseek")):
+            effective_max_tokens = max(max_tokens, 3072)
+
         payload: Dict[str, Any] = {
             "model": model_name,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": effective_max_tokens,
         }
 
         if json_mode:
@@ -85,7 +92,36 @@ class GroqProvider(BaseAIProvider):
         async def _call() -> httpx.Response:
             return await client.post(GROQ_BASE_URL, json=payload, headers=headers)
 
-        response = await self._execute_with_retry(_call)
+        try:
+            response = await self._execute_with_retry(_call)
+        except httpx.HTTPStatusError as http_err:
+            # If Groq's strict json_object validator rejected generation (HTTP 400 json_validate_failed),
+            # recover on the same model without failing over to another model.
+            if json_mode and http_err.response is not None and http_err.response.status_code == 400:
+                err_body = http_err.response.text or ""
+                if "json_validate_failed" in err_body:
+                    try:
+                        failed_gen = http_err.response.json().get("error", {}).get("failed_generation", "")
+                        if failed_gen and "{" in failed_gen and "}" in failed_gen:
+                            return str(failed_gen)
+                    except Exception:
+                        pass
+                    logger.info(
+                        f"[groq:{model_name}] Retrying on same model without strict json_object wrapper after json_validate_failed..."
+                    )
+                    fallback_payload = dict(payload)
+                    fallback_payload.pop("response_format", None)
+                    fallback_payload["max_tokens"] = max(effective_max_tokens, 3072)
+
+                    async def _call_no_rf() -> httpx.Response:
+                        return await client.post(GROQ_BASE_URL, json=fallback_payload, headers=headers)
+
+                    response = await self._execute_with_retry(_call_no_rf)
+                else:
+                    raise
+            else:
+                raise
+
         res_data = response.json()
 
         self.call_history.append({

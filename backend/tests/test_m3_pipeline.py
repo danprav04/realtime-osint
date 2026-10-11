@@ -782,3 +782,193 @@ async def test_all_fallbacks_exhausted_falls_back_to_heuristics():
     assert analyzed.importance_score == 5
     assert "Fallback assessment" in analyzed.score_rationale
 
+
+def test_classify_rate_limit_minute_vs_daily():
+    """
+    Test 21: Verifies classify_rate_limit_429 distinguishes minute rate limits (RPM/TPM)
+    from daily quota exhaustion (RPD/TPD) across both Gemini and Groq error payloads/headers.
+    """
+    import httpx
+    from backend.app.pipeline.providers.base import classify_rate_limit_429
+
+    req = httpx.Request("POST", "https://example.com")
+
+    # 1. Gemini RPM (minute rate limit, e.g. 20 / 15 RPM with 28s retryDelay)
+    gemini_rpm_body = '''{
+      "error": {
+        "code": 429,
+        "message": "You exceeded your current quota, please check your plan and billing details.",
+        "status": "RESOURCE_EXHAUSTED",
+        "details": [
+          {
+            "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+            "violations": [
+              {
+                "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+                "quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+                "quotaDimensions": {"model": "gemini-3.5-flash-lite"}
+              }
+            ]
+          },
+          {
+            "@type": "type.googleapis.com/google.rpc.RetryInfo",
+            "retryDelay": "28s"
+          }
+        ]
+      }
+    }'''
+    resp_rpm = httpx.Response(429, text=gemini_rpm_body, request=req)
+    is_daily_rpm, wait_rpm, reason_rpm = classify_rate_limit_429(resp_rpm, "gemini")
+    assert is_daily_rpm is False
+    assert wait_rpm == 28.0
+    assert "minute rate limit" in reason_rpm
+
+    # 2. Gemini RPD (daily quota exhausted, 500 / 500 RPD)
+    gemini_rpd_body = '''{
+      "error": {
+        "code": 429,
+        "message": "Quota exceeded for quota metric 'Generate Content API requests per day'",
+        "status": "RESOURCE_EXHAUSTED",
+        "details": [
+          {
+            "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+            "violations": [
+              {
+                "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+              }
+            ]
+          }
+        ]
+      }
+    }'''
+    resp_rpd = httpx.Response(429, text=gemini_rpd_body, request=req)
+    is_daily_rpd, wait_rpd, reason_rpd = classify_rate_limit_429(resp_rpd, "gemini")
+    assert is_daily_rpd is True
+    assert "daily quota exhausted" in reason_rpd
+
+    # 3. Groq TPM / RPM headers (tokens exhausted for the minute, requests for the day still remaining)
+    groq_headers_minute = {
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-remaining-requests": "14200",
+        "x-ratelimit-reset-tokens": "19.5s",
+    }
+    resp_groq = httpx.Response(
+        429,
+        headers=groq_headers_minute,
+        text="Rate limit reached for tokens per minute (TPM)",
+        request=req,
+    )
+    is_daily_groq, wait_groq, reason_groq = classify_rate_limit_429(resp_groq, "groq")
+    assert is_daily_groq is False
+    assert wait_groq == 19.5
+    assert "minute rate limit" in reason_groq
+
+
+@pytest.mark.asyncio
+async def test_minute_rate_limit_waits_and_retries_same_model_no_qwen_switch(monkeypatch):
+    """
+    Test 22: When the primary model (gemini-3.5-flash-lite) hits a per-minute rate limit (RPM),
+    even with a wait > 15s (e.g. 24s), it waits and retries on the SAME model and does NOT
+    switch to qwen/qwen3.8-27b or place the primary model into cooldown.
+    """
+    import httpx
+    from backend.app.pipeline.providers.gemini import GeminiProvider
+
+    slept_durations = []
+
+    async def fast_sleep(seconds):
+        slept_durations.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+
+    gemini_prov = GeminiProvider(api_key="real-test-key", default_model="gemini-3.5-flash-lite")
+    gemini_prov.min_interval_sec = 0.0
+    gemini_prov.max_rpm = 0
+
+    attempt_count = 0
+
+    async def mock_request(self, method, url, **kwargs):
+        nonlocal attempt_count
+        attempt_count += 1
+        req = httpx.Request(method, url)
+        if attempt_count == 1:
+            # First call hits 15 RPM minute limit with 24s RetryInfo
+            rpm_json = '''{
+              "error": {
+                "code": 429,
+                "message": "Resource has been exhausted (e.g. check quota).",
+                "details": [
+                  {
+                    "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                    "violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]
+                  },
+                  {
+                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                    "retryDelay": "24s"
+                  }
+                ]
+              }
+            }'''
+            return httpx.Response(429, text=rpm_json, request=req)
+        # Second call after waiting succeeds!
+        ok_json = '''{
+          "candidates": [{
+            "content": {
+              "parts": [{"text": "{\\"importance_score\\": 8, \\"score_rationale\\": \\"Naval escalation confirmed.\\", \\"priority_level\\": \\"high\\", \\"should_alert\\": true}"}]
+            }
+          }]
+        }'''
+        return httpx.Response(200, text=ok_json, request=req)
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", mock_request)
+
+    orchestrator = PipelineOrchestrator(use_mock=True)
+    # Set extraction to use a different model so only scoring has qwen/qwen3.8-27b as a fallback
+    orchestrator.set_stage_config(
+        "extraction",
+        AIStageConfig(stage_id="extraction", provider="groq", model_name="openai/gpt-oss-20b"),
+    )
+    orchestrator.set_stage_config(
+        "scoring",
+        AIStageConfig(
+            stage_id="scoring",
+            provider="gemini",
+            model_name="gemini-3.5-flash-lite",
+            temperature=0.1,
+            fallbacks=[
+                AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
+            ],
+        ),
+    )
+
+    models_invoked = []
+
+    def mock_get_provider(provider, model_name, api_key=None, temperature=0.2):
+        models_invoked.append(f"{provider}:{model_name}")
+        if provider == "gemini":
+            return gemini_prov
+        return MockAIProvider(provider=provider, api_key="mock-key", default_model=model_name)
+
+    orchestrator._registry.get_provider = mock_get_provider
+
+    event = NormalizedEvent(
+        id="rpm-evt-001",
+        theme_id="1",
+        source_type="rss",
+        source_name="Reuters",
+        external_id="ext-rpm-001",
+        title="IRGC fast attack craft shadow tanker in Hormuz",
+        raw_text="Multiple IRGC naval vessels shadowed a commercial tanker in the Strait of Hormuz.",
+    )
+
+    analyzed = await orchestrator.process_event(event, parallel_stages=False)
+
+    assert analyzed.is_analyzed is True
+    assert analyzed.importance_score == 8
+    # Verify Gemini retried after waiting ~25s and NEVER invoked qwen/qwen3.8-27b for scoring
+    assert attempt_count == 2
+    assert any(d >= 24.0 for d in slept_durations)
+    assert "groq:qwen/qwen3.8-27b" not in models_invoked
+    assert orchestrator.is_model_in_cooldown("gemini", "gemini-3.5-flash-lite") is False
+
+

@@ -365,7 +365,12 @@ class PipelineOrchestrator:
                 settings_list = res.scalars().all()
                 for setting in settings_list:
                     if setting.key == "ai_pipeline_stages" and setting.value_json:
-                        for stage_id, cfg_data in setting.value_json.items():
+                        canonical_keys = {"extraction", "scoring", "summarization", "visuals"}
+                        sorted_items = sorted(
+                            setting.value_json.items(),
+                            key=lambda item: 1 if str(item[0]).lower().strip() in canonical_keys else 0,
+                        )
+                        for stage_id, cfg_data in sorted_items:
                             norm_id = self._normalize_stage_id(stage_id)
                             raw_fallbacks = cfg_data.get("fallbacks")
                             if raw_fallbacks is None and norm_id in self._stage_configs:
@@ -466,6 +471,8 @@ class PipelineOrchestrator:
         """
         Executes a pipeline stage across its primary model and configured fallback chain.
         Automatically catches 429 quota exhaustion, timeouts, and errors, and fails over sequentially.
+        Minute-only rate limits (RPM/TPM) wait for the minute window reset on the same model
+        rather than locking out the primary model or prematurely switching to fallback models.
         """
         stage_cfg = self.get_stage_config(stage_id)
         candidates = [
@@ -535,7 +542,62 @@ class PipelineOrchestrator:
                     or "ratelimit" in err_str
                     or "too many requests" in err_str
                 )
-                if is_rate_limit:
+                is_minute_only = (
+                    is_rate_limit
+                    and any(
+                        k in err_str
+                        for k in (
+                            "minute rate limit",
+                            "perminute",
+                            "per_minute",
+                            "(rpm)",
+                            "(tpm)",
+                            "requests per minute",
+                            "tokens per minute",
+                        )
+                    )
+                    and not any(
+                        k in err_str
+                        for k in (
+                            "daily",
+                            "perday",
+                            "per_day",
+                            "(rpd)",
+                            "(tpd)",
+                            "requests per day",
+                            "tokens per day",
+                        )
+                    )
+                )
+
+                # If the model only hit a per-minute rate limit (RPM/TPM), wait for the minute
+                # window reset and retry the same model before falling back or locking it out.
+                if is_minute_only and not self.use_mock:
+                    try:
+                        now_loop = asyncio.get_event_loop().time()
+                        rl_until = getattr(provider_inst, "_rate_limit_until", 0.0)
+                        recovery_wait = max(4.5, min(30.0, rl_until - now_loop)) if rl_until > now_loop else 5.0
+                        logger.info(
+                            f"[Pipeline Minute Rate Limit] Stage '{stage_id}': Model '{p_name}:{m_name}' "
+                            f"reached minute rate limit ({exc}). Waiting {recovery_wait:.1f}s to retry '{p_name}:{m_name}'..."
+                        )
+                        await asyncio.sleep(recovery_wait)
+                        result = await runner_fn(
+                            provider=provider_inst,
+                            model=m_name,
+                            temperature=t_val,
+                            raise_on_error=True,
+                        )
+                        logger.info(
+                            f"[Pipeline Minute Rate Limit] Stage '{stage_id}': Model '{p_name}:{m_name}' "
+                            f"succeeded after minute rate-limit window reset."
+                        )
+                        return result
+                    except Exception as retry_exc:
+                        exc = retry_exc
+                        err_str = str(exc).lower()
+
+                if is_rate_limit and not is_minute_only:
                     self.mark_model_cooldown(p_name, m_name, duration_sec=60.0)
 
                 if idx < len(candidates) - 1:

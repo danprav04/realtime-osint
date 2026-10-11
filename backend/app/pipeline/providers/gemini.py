@@ -25,7 +25,7 @@ class GeminiProvider(BaseAIProvider):
         api_key: Optional[str] = None,
         default_model: str = "gemini-3.5-flash-lite",
         timeout_seconds: float = 25.0,
-        max_retries: int = 3,
+        max_retries: int = 4,
         base_backoff_sec: float = 1.0,
         jitter_sec: float = 0.5,
     ):
@@ -37,8 +37,13 @@ class GeminiProvider(BaseAIProvider):
             base_backoff_sec=base_backoff_sec,
             jitter_sec=jitter_sec,
         )
-        # Safe pacing for Gemini free tier (15 RPM limit = 4.0s minimum gap)
-        self.min_interval_sec = 3.0
+        # Safe pacing for Gemini free tier (15 RPM limit = 4.0s minimum gap; 30 RPM for gemma-4)
+        if "gemma" in (default_model or "").lower():
+            self.min_interval_sec = 2.1
+            self.max_rpm = 28
+        else:
+            self.min_interval_sec = 4.1
+            self.max_rpm = 14
 
     @property
     def provider_name(self) -> str:

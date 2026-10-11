@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import get_settings
 from backend.app.db.models import Event, EventEmbedding, SystemSettings, Theme, utc_now
+from backend.app.pipeline.providers.base import classify_rate_limit_429
 
 logger = logging.getLogger("osint.services.embedding")
 
@@ -352,6 +353,39 @@ class EmbeddingService:
         self.default_model = DEFAULT_EMBEDDING_MODEL
         self.fallback_model = FALLBACK_EMBEDDING_MODEL
         self.last_pca_model: Optional[PCA] = None
+        self.max_items_per_minute: int = 90  # Safely under 100 RPM limit
+        self._rpm_item_timestamps: Dict[str, List[float]] = {}
+        self._pacing_lock = asyncio.Lock()
+
+    async def _acquire_embedding_pacing_slot(self, model: str, item_count: int) -> None:
+        """
+        Enforce sliding-window item rate limiting (<= 90 items per 60s) so batchEmbedContents
+        never exceeds Gemini's 100 RPM per-item quota.
+        """
+        if self.max_items_per_minute <= 0 or item_count <= 0:
+            return
+        while True:
+            wait_sec = 0.0
+            async with self._pacing_lock:
+                now = time.monotonic()
+                history = self._rpm_item_timestamps.get(model, [])
+                cutoff = now - 60.0
+                history = [ts for ts in history if ts > cutoff]
+                if len(history) + item_count > self.max_items_per_minute and history:
+                    # Wait until enough old items expire from the 60s window
+                    excess = (len(history) + item_count) - self.max_items_per_minute
+                    idx = min(excess - 1, len(history) - 1)
+                    wait_sec = max(0.2, (history[idx] + 60.1) - now)
+                else:
+                    history.extend([now] * item_count)
+                    self._rpm_item_timestamps[model] = history
+                    return
+            if wait_sec > 0:
+                logger.info(
+                    f"[gemini-embeddings] Pacing {model}: {len(history)} items in last 60s "
+                    f"(limit {self.max_items_per_minute}/min). Waiting {wait_sec:.1f}s before batch of {item_count}..."
+                )
+                await asyncio.sleep(wait_sec)
 
     @property
     def api_key(self) -> Optional[str]:
@@ -457,10 +491,15 @@ class EmbeddingService:
         self, texts: List[str], model: str, api_key: str
     ) -> List[List[float]]:
         """
-        Execute a single POST request to Google Gemini's batchEmbedContents endpoint.
+        Execute a POST request to Google Gemini's batchEmbedContents endpoint.
+        Paces within the 100 RPM limit and retries on per-minute 429 limits before failing over.
         Returns list of float vectors (3072d).
         """
-        url = f"{GEMINI_BASE_URL}/{model}:batchEmbedContents?key={api_key}"
+        url = f"{GEMINI_BASE_URL}/{model}:batchEmbedContents"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        }
         payload = {
             "requests": [
                 {
@@ -471,25 +510,48 @@ class EmbeddingService:
             ]
         }
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                raw_embs = data.get("embeddings", [])
-                vectors = [item.get("values", []) for item in raw_embs]
-                if len(vectors) != len(texts):
-                    raise ValueError(
-                        f"Expected {len(texts)} embeddings, received {len(vectors)}"
+        max_minute_retries = 3
+        for attempt in range(max_minute_retries + 1):
+            await self._acquire_embedding_pacing_slot(model, len(texts))
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_embs = data.get("embeddings", [])
+                    vectors = [item.get("values", []) for item in raw_embs]
+                    if len(vectors) != len(texts):
+                        raise ValueError(
+                            f"Expected {len(texts)} embeddings, received {len(vectors)}"
+                        )
+                    return vectors
+                elif resp.status_code == 429:
+                    err_text = resp.text
+                    is_daily, parsed_wait, reason = classify_rate_limit_429(resp, "gemini")
+                    if is_daily:
+                        logger.warning(
+                            f"Gemini Embeddings daily quota (RPD) reached for {model} ({reason}): {err_text[:200]}"
+                        )
+                        raise RuntimeError(f"QUOTA_EXCEEDED: {err_text}")
+                    if attempt < max_minute_retries:
+                        wait_sec = parsed_wait or 0.0
+                        if wait_sec <= 0:
+                            wait_sec = min(15.0 * (attempt + 1), 60.0)
+                        else:
+                            wait_sec = min(wait_sec + 1.0, 65.0)
+                        logger.warning(
+                            f"Gemini Embeddings {reason} for {model} "
+                            f"(attempt {attempt + 1}/{max_minute_retries + 1}). "
+                            f"Waiting {wait_sec:.1f}s to retry on {model}..."
+                        )
+                        await asyncio.sleep(wait_sec)
+                        continue
+                    logger.warning(f"Gemini API rate limit 429 persisted for model {model}: {err_text[:200]}")
+                    raise RuntimeError(f"QUOTA_EXCEEDED: {err_text}")
+                else:
+                    raise RuntimeError(
+                        f"Gemini API error {resp.status_code}: {resp.text[:300]}"
                     )
-                return vectors
-            elif resp.status_code == 429:
-                err_text = resp.text
-                logger.warning(f"Gemini API rate limit 429 for model {model}: {err_text}")
-                raise RuntimeError(f"QUOTA_EXCEEDED: {err_text}")
-            else:
-                raise RuntimeError(
-                    f"Gemini API error {resp.status_code}: {resp.text[:300]}"
-                )
+        raise RuntimeError(f"QUOTA_EXCEEDED: Exhausted retries for {model}")
 
     async def call_hf_tei_api(
         self, texts: List[str], endpoint_url: str, api_key: Optional[str] = None

@@ -4,18 +4,187 @@ backend/app/pipeline/providers/base.py - Base AI Provider Interface & Resilient 
 
 import abc
 import asyncio
+from collections import deque
 import logging
 import random
-from typing import Any, Callable, Coroutine, Dict, Optional
+import re
+from typing import Any, Callable, Coroutine, Deque, Dict, Optional, Tuple
 import httpx
 
 logger = logging.getLogger("osint.ai.provider")
 
 
+def parse_duration_seconds(raw_val: Optional[str]) -> Optional[float]:
+    """
+    Parse duration headers/fields such as '22', '24s', '18.5s', '1m12s', '2h5m', '450ms'
+    into float seconds.
+    """
+    if raw_val is None:
+        return None
+    s = str(raw_val).strip().lower()
+    if not s:
+        return None
+    try:
+        val = float(s)
+        return val if val >= 0 else None
+    except ValueError:
+        pass
+
+    total = 0.0
+    matched = False
+    for amount, unit in re.findall(
+        r"(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)",
+        s,
+    ):
+        val = float(amount)
+        matched = True
+        if unit == "ms":
+            total += val / 1000.0
+        elif unit in ("s", "sec", "secs", "second", "seconds"):
+            total += val
+        elif unit in ("m", "min", "mins", "minute", "minutes"):
+            total += val * 60.0
+        elif unit in ("h", "hr", "hrs", "hour", "hours"):
+            total += val * 3600.0
+    return total if matched else None
+
+
+def classify_rate_limit_429(
+    response: httpx.Response, provider_name: str = ""
+) -> Tuple[bool, Optional[float], str]:
+    """
+    Inspect an HTTP 429 response from Gemini or Groq to distinguish between:
+      - Daily Quota Exhaustion (RPD / TPD): returns (True, retry_delay, reason) -> fail fast to fallback model.
+      - Minute Rate Limit (RPM / TPM): returns (False, retry_delay, reason) -> wait for minute window reset & retry.
+    """
+    headers = response.headers
+    retry_after_hdr = parse_duration_seconds(headers.get("retry-after"))
+    rem_requests = headers.get("x-ratelimit-remaining-requests")
+    rem_tokens = headers.get("x-ratelimit-remaining-tokens")
+    reset_requests_sec = parse_duration_seconds(headers.get("x-ratelimit-reset-requests"))
+    reset_tokens_sec = parse_duration_seconds(headers.get("x-ratelimit-reset-tokens"))
+
+    body_text = ""
+    try:
+        body_text = response.text or ""
+    except Exception:
+        body_text = ""
+    body_lower = body_text.lower()
+
+    quota_ids: list[str] = []
+    retry_info_sec: Optional[float] = None
+    error_message = ""
+
+    try:
+        data = response.json()
+        if isinstance(data, dict):
+            err_obj = data.get("error", {})
+            if isinstance(err_obj, dict):
+                error_message = str(err_obj.get("message", ""))
+                details = err_obj.get("details", [])
+                if isinstance(details, list):
+                    for d in details:
+                        if not isinstance(d, dict):
+                            continue
+                        if "retryDelay" in d:
+                            retry_info_sec = parse_duration_seconds(str(d.get("retryDelay")))
+                        for v in d.get("violations", []) or []:
+                            if isinstance(v, dict):
+                                q_id = str(v.get("quotaId", ""))
+                                q_metric = str(v.get("quotaMetric", ""))
+                                if q_id:
+                                    quota_ids.append(q_id)
+                                if q_metric:
+                                    quota_ids.append(q_metric)
+    except Exception:
+        pass
+
+    quota_joined = " ".join(quota_ids).lower()
+    combined_text = f"{quota_joined} {error_message.lower()} {body_lower}"
+
+    # Extract retry delay mentioned in error message (e.g. "Please retry in 24.5s" or "try again in 12.3s")
+    msg_retry_sec: Optional[float] = None
+    m_retry = re.search(
+        r"(?:retry|try again)\s+in\s+([0-9.]+(?:\s*(?:ms|s|sec|secs|m|min|mins|h|hr|hrs))+)",
+        error_message or body_text,
+        re.IGNORECASE,
+    )
+    if m_retry:
+        msg_retry_sec = parse_duration_seconds(m_retry.group(1))
+
+    # Check explicit minute vs daily indicators
+    has_minute_indicator = any(
+        tok in combined_text
+        for tok in (
+            "perminute",
+            "per_minute",
+            "requests per minute",
+            "tokens per minute",
+            "(rpm)",
+            "(tpm)",
+            "inputtokenspermodelperminute",
+            "generaterequestsperminute",
+        )
+    ) or (rem_tokens is not None and str(rem_tokens).strip() == "0")
+
+    has_daily_indicator = any(
+        tok in combined_text
+        for tok in (
+            "perday",
+            "per_day",
+            "requests per day",
+            "tokens per day",
+            "(rpd)",
+            "(tpd)",
+            "daily quota",
+            "daily limit",
+            "generaterequestsperday",
+            "requestsperday",
+            "tokensperday",
+        )
+    ) or (
+        rem_requests is not None
+        and str(rem_requests).strip() == "0"
+        and not has_minute_indicator
+    )
+
+    # Determine best wait duration
+    retry_delay: Optional[float] = None
+    for candidate in (retry_info_sec, msg_retry_sec, retry_after_hdr):
+        if candidate is not None and candidate > 0:
+            retry_delay = candidate
+            break
+
+    if retry_delay is None:
+        if has_minute_indicator and reset_tokens_sec is not None:
+            retry_delay = reset_tokens_sec
+        elif reset_tokens_sec is not None and (reset_requests_sec is None or reset_tokens_sec <= 90.0):
+            retry_delay = reset_tokens_sec
+        elif reset_requests_sec is not None:
+            retry_delay = reset_requests_sec
+
+    # Classify whether this is a Daily Quota lockout vs a Minute Rate Limit
+    if has_daily_indicator and not has_minute_indicator:
+        is_daily = True
+        reason = f"daily quota exhausted ({', '.join(quota_ids) or error_message[:80] or 'RPD/TPD'})"
+    elif retry_delay is not None and retry_delay > 95.0 and not has_minute_indicator:
+        is_daily = True
+        reason = f"long quota lockout ({retry_delay:.0f}s)"
+    else:
+        is_daily = False
+        reason = (
+            f"minute rate limit ({', '.join(quota_ids) or 'RPM/TPM'}"
+            f"{f', wait {retry_delay:.1f}s' if retry_delay else ''})"
+        )
+
+    return is_daily, retry_delay, reason
+
+
 class BaseAIProvider(abc.ABC):
     """
     Abstract Base Class for AI Providers (Google Gemini & Groq Cloud).
-    Enforces unified async generation, connection pooling, and error classification.
+    Enforces unified async generation, connection pooling, per-minute sliding-window
+    rate limiting, and intelligent RPM vs. RPD error handling.
     """
 
     def __init__(
@@ -34,8 +203,12 @@ class BaseAIProvider(abc.ABC):
         self.base_backoff = base_backoff_sec
         self.jitter = jitter_sec
         self.min_interval_sec: float = 1.0
+        self.max_rpm: int = 0
+        self.max_minute_wait_sec: float = 65.0
         self._pacing_lock = asyncio.Lock()
         self._last_request_time: float = 0.0
+        self._rate_limit_until: float = 0.0
+        self._request_timestamps: Deque[float] = deque()
         self._client: Optional[httpx.AsyncClient] = None
         self.call_history: list[Dict[str, Any]] = []
 
@@ -83,12 +256,62 @@ class BaseAIProvider(abc.ABC):
         """Process structured stage execution returning parsed dictionary."""
         pass
 
+    async def _acquire_pacing_slot(self) -> None:
+        """
+        Enforce per-minute sliding-window RPM limits, active 429 minute-window pauses,
+        and minimum inter-request spacing under a shared async lock.
+        """
+        if self.min_interval_sec <= 0 and self.max_rpm <= 0 and self._rate_limit_until <= 0:
+            return
+
+        async with self._pacing_lock:
+            loop = asyncio.get_event_loop()
+            now = loop.time()
+
+            # 1. Honor any active 429 minute-window reset deadline
+            if now < self._rate_limit_until:
+                wait_rl = self._rate_limit_until - now
+                logger.info(
+                    f"[{self.provider_name}:{self.default_model}] Waiting {wait_rl:.1f}s for active minute rate-limit window reset..."
+                )
+                await asyncio.sleep(wait_rl)
+                now = loop.time()
+
+            # 2. Enforce 60-second sliding-window RPM cap so we never exceed minute rate limits
+            if self.max_rpm > 0:
+                while self._request_timestamps and (now - self._request_timestamps[0]) >= 60.0:
+                    self._request_timestamps.popleft()
+
+                if len(self._request_timestamps) >= self.max_rpm:
+                    window_wait = (self._request_timestamps[0] + 60.2) - now
+                    if window_wait > 0:
+                        logger.info(
+                            f"[{self.provider_name}:{self.default_model}] Reached {self.max_rpm} RPM sliding-window cap; "
+                            f"pacing {window_wait:.1f}s for minute window rollover..."
+                        )
+                        await asyncio.sleep(window_wait)
+                        now = loop.time()
+                    while self._request_timestamps and (now - self._request_timestamps[0]) >= 60.0:
+                        self._request_timestamps.popleft()
+
+            # 3. Enforce minimum spacing between consecutive requests
+            if self.min_interval_sec > 0 and self._last_request_time > 0:
+                elapsed = now - self._last_request_time
+                if elapsed < self.min_interval_sec:
+                    await asyncio.sleep(self.min_interval_sec - elapsed)
+                    now = loop.time()
+
+            self._last_request_time = now
+            if self.max_rpm > 0:
+                self._request_timestamps.append(now)
+
     async def _execute_with_retry(
         self,
         call_fn: Callable[[], Coroutine[Any, Any, httpx.Response]],
     ) -> httpx.Response:
         """
-        Executes HTTP requests with exponential backoff, jitter, and error normalization.
+        Executes HTTP requests with sliding-window RPM pacing, minute-limit recovery,
+        and daily-quota failover classification.
         """
         if not self.api_key or not self.api_key.strip():
             raise PermissionError(
@@ -98,42 +321,66 @@ class BaseAIProvider(abc.ABC):
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
-                # Free-tier rate limit pacing: ensure minimum delay between outbound calls
-                if self.min_interval_sec > 0:
-                    async with self._pacing_lock:
-                        now = asyncio.get_event_loop().time()
-                        elapsed = now - self._last_request_time
-                        if elapsed < self.min_interval_sec:
-                            await asyncio.sleep(self.min_interval_sec - elapsed)
-                        self._last_request_time = asyncio.get_event_loop().time()
+                await self._acquire_pacing_slot()
 
                 response = await call_fn()
 
-                # Status 429: Rate Limit / Quota Exceeded
+                # Status 429: Distinguish Minute Rate Limit (RPM/TPM) vs Daily Quota (RPD/TPD)
                 if response.status_code == 429:
+                    is_daily_quota, retry_delay_sec, reason = classify_rate_limit_429(
+                        response, self.provider_name
+                    )
+
+                    # If daily quota (RPD/TPD) is exhausted, fail fast immediately to trigger fallback model
+                    if is_daily_quota:
+                        logger.warning(
+                            f"[{self.provider_name}:{self.default_model}] Daily quota exhausted ({reason}). "
+                            f"Failing over immediately."
+                        )
+                        if self.provider_name.lower() == "gemini":
+                            raise RuntimeError(
+                                f"Gemini ResourceExhausted: 429 Quota Exceeded ({reason})"
+                            )
+                        else:
+                            raise RuntimeError(
+                                f"Groq RateLimitError: 429 Rate limit reached ({reason})"
+                            )
+
+                    # Otherwise, this is only a per-minute rate limit (RPM/TPM)
                     if attempt == self.max_retries:
                         if self.provider_name.lower() == "gemini":
-                            raise RuntimeError("Gemini ResourceExhausted: 429 Quota Exceeded")
+                            raise RuntimeError(
+                                f"Gemini ResourceExhausted: 429 Quota Exceeded ({reason})"
+                            )
                         else:
-                            raise RuntimeError("Groq RateLimitError: 429 Rate limit reached")
+                            raise RuntimeError(
+                                f"Groq RateLimitError: 429 Rate limit reached ({reason})"
+                            )
 
-                    retry_header = response.headers.get("retry-after")
-                    reset_header = response.headers.get("x-ratelimit-reset-requests") or response.headers.get("x-ratelimit-reset-tokens")
-                    delay = self.base_backoff * (2 ** attempt) + random.uniform(0.1, self.jitter)
-                    if retry_header:
-                        try:
-                            r_val = float(retry_header)
-                            if r_val > 15:
-                                # Long rate limit lockout: fail fast to trigger alternative provider failover immediately
-                                raise RuntimeError(f"{self.provider_name.capitalize()} RateLimitError: 429 lockout ({retry_header}s)")
-                            delay = max(r_val, delay)
-                        except ValueError:
-                            pass
-                    if delay > 15:
-                        raise RuntimeError(f"{self.provider_name.capitalize()} RateLimitError: 429 Rate limit reached (excessive backoff)")
+                    now = asyncio.get_event_loop().time()
+                    if retry_delay_sec is not None and retry_delay_sec > 0:
+                        delay = min(
+                            self.max_minute_wait_sec,
+                            retry_delay_sec + random.uniform(0.4, 1.0),
+                        )
+                    elif self.max_rpm > 0 and self._request_timestamps:
+                        oldest_wait = max(3.0, (self._request_timestamps[0] + 60.5) - now)
+                        delay = min(
+                            self.max_minute_wait_sec,
+                            max(oldest_wait, self.base_backoff * (2 ** attempt)),
+                        )
+                    else:
+                        delay = min(
+                            self.max_minute_wait_sec,
+                            self.base_backoff * (2 ** attempt) + random.uniform(0.1, self.jitter),
+                        )
+
+                    # Coordinate across concurrent workers so all callers wait for the minute window to clear
+                    self._rate_limit_until = max(self._rate_limit_until, now + delay)
 
                     logger.warning(
-                        f"[{self.provider_name}] 429 Rate Limit encountered (reset: {reset_header}). Retrying in {delay:.2f}s "
+                        f"[{self.provider_name}:{self.default_model}] 429 {reason}. "
+                        f"Waiting {delay:.1f}s for minute window reset instead of switching models "
                         f"(attempt {attempt + 1}/{self.max_retries})"
                     )
                     await asyncio.sleep(delay)
@@ -152,6 +399,19 @@ class BaseAIProvider(abc.ABC):
                     raise PermissionError(
                         f"{self.provider_name.capitalize()} API key is invalid or unauthorized (HTTP {response.status_code})"
                     )
+
+                # Proactively pace if Groq reports minute token bucket is nearly empty
+                rem_tok = response.headers.get("x-ratelimit-remaining-tokens")
+                reset_tok = response.headers.get("x-ratelimit-reset-tokens")
+                if rem_tok is not None and reset_tok is not None:
+                    try:
+                        if int(rem_tok) < 400:
+                            rst_sec = parse_duration_seconds(reset_tok)
+                            if rst_sec and 0 < rst_sec <= 30.0:
+                                now_t = asyncio.get_event_loop().time()
+                                self._rate_limit_until = max(self._rate_limit_until, now_t + rst_sec)
+                    except ValueError:
+                        pass
 
                 response.raise_for_status()
                 return response
