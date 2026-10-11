@@ -26,7 +26,14 @@ router = APIRouter(prefix="/api/sources", tags=["Sources"])
 def serialize_source(source: Source) -> Dict[str, Any]:
     """Serialize a Source DB model into expected API schema."""
     cfg = dict(source.config_json) if isinstance(source.config_json, dict) else {}
-    target = cfg.get("target") or cfg.get("url")
+    target = (
+        cfg.get("target")
+        or cfg.get("url")
+        or cfg.get("actor")
+        or cfg.get("feed")
+        or cfg.get("tag")
+        or cfg.get("query")
+    )
     if not target and cfg.get("channels") and isinstance(cfg["channels"], list):
         target = cfg["channels"][0]
     elif not target and cfg.get("subreddits") and isinstance(cfg["subreddits"], list):
@@ -161,12 +168,19 @@ async def create_source(
     target = payload.get("target")
     if target:
         config["target"] = target
-        if source_type == "rss" and "url" not in config:
+        if source_type in ("rss", "mastodon", "seismic", "emsc", "ukmto") and "url" not in config:
             config["url"] = target
         elif source_type == "telegram" and "channels" not in config:
             config["channels"] = [target]
         elif source_type == "reddit" and "subreddits" not in config:
             config["subreddits"] = [target]
+        elif source_type in ("bluesky", "bsky") and "actor" not in config:
+            config["actor"] = target
+
+    if "feed_mode" in payload and payload["feed_mode"]:
+        config["feed_mode"] = payload["feed_mode"]
+    if "mode" in payload and payload["mode"]:
+        config["mode"] = payload["mode"]
 
     if "status" in payload:
         config["status"] = payload["status"]
@@ -246,8 +260,12 @@ async def update_source(
         current_cfg.update(payload["config_json"])
     if "target" in payload:
         current_cfg["target"] = payload["target"]
-        if source.source_type == "rss":
+        if source.source_type in ("rss", "mastodon", "seismic", "emsc", "ukmto"):
             current_cfg["url"] = payload["target"]
+    if "feed_mode" in payload and payload["feed_mode"]:
+        current_cfg["feed_mode"] = payload["feed_mode"]
+    if "mode" in payload and payload["mode"]:
+        current_cfg["mode"] = payload["mode"]
     if "status" in payload:
         current_cfg["status"] = payload["status"]
     if "error_message" in payload:

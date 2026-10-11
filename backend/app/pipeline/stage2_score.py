@@ -47,23 +47,24 @@ TIER3_UNVERIFIED_SOCIAL_KEYWORDS = (
 def classify_source_reliability(source_name: str, source_type: str) -> Tuple[str, str]:
     """
     Classify an ingestion source into a 3-tier intelligence reliability rating:
-      - tier_1_wire_official: Established global wires, official military/nuclear bodies, or direct AIS sensors
-      - tier_2_regional_osint: Standard regional news outlets, RSS feeds, and monitored OSINT channels
-      - tier_3_social_unverified: Social forums (Reddit) and unverified rumor channels
+      - tier_1_wire_official: Established global wires, official military/nuclear bodies, or direct AIS/Seismic/UKMTO sensors
+      - tier_2_regional_osint: Standard regional news outlets, RSS feeds, Bluesky/Mastodon OSINT trackers, and monitored channels
+      - tier_3_social_unverified: Social forums (Reddit comments/posts) and unverified rumor channels
     """
     s_name = (source_name or "").strip().lower()
     s_type = (source_type or "").strip().lower()
 
-    if s_type in ("ais", "maritime_ais"):
-        return "tier_1_wire_official", "Tier 1 — Direct Sensor Telemetry (AIS)"
+    if s_type in ("ais", "maritime_ais", "ukmto", "seismic", "emsc", "geophysical"):
+        return "tier_1_wire_official", f"Tier 1 — Direct Sensor / Maritime Telemetry ({s_type.upper()})"
 
-    if any(k in s_name for k in TIER1_WIRE_AND_OFFICIAL_KEYWORDS) or s_name == "ap":
+    if any(k in s_name for k in TIER1_WIRE_AND_OFFICIAL_KEYWORDS) or s_name == "ap" or "ukmto" in s_name or "emsc" in s_name:
         return "tier_1_wire_official", "Tier 1 — Major Wire / Official Feed"
 
     if s_type == "reddit" or any(k in s_name for k in TIER3_UNVERIFIED_SOCIAL_KEYWORDS):
         return "tier_3_social_unverified", "Tier 3 — Social / Unverified Feed"
 
     return "tier_2_regional_osint", "Tier 2 — Regional OSINT / Media Feed"
+
 
 
 def build_stage2_system_prompt(theme_context: Dict[str, Any]) -> str:
@@ -154,6 +155,18 @@ def build_stage2_context_block(
             sig_type = kin.get("signal_type", "general_intelligence")
             ver_status = kin.get("verification_status", "contextual_update")
             lines.append(f"- Frontline Signal Triangulation: {sig_type} ({ver_status})")
+            if kin.get("is_sonic_boom_only"):
+                lines.append(
+                    "- Sonic Boom Differentiation: Sonic boom tokens detected WITHOUT smoke/impact evidence "
+                    "(de-escalate from explosive impact to aircraft overflight)."
+                )
+            if kin.get("term_burst_active"):
+                b_cnt = kin.get("burst_count", 0)
+                b_tok = ", ".join(kin.get("burst_tokens") or [])
+                lines.append(
+                    f"- Sliding-Window Term Burst Active: {b_cnt} matching ground reports in 60s window "
+                    f"[{b_tok}]"
+                )
 
         corrob_status = scoring_context.get("corroboration_status", "First Report / Unverified")
         corrob_count = scoring_context.get("corroboration_count", 0)
@@ -231,9 +244,10 @@ def calibrate_stage2_result(
     Apply deterministic intelligence tradecraft calibration to Stage 2 output:
     1. Populates multi-dimensional sub-scores (`severity_score`, `novelty_score`, `verification_confidence`, `confidence_score`).
     2. Enforces Same-Source Echo dampening & duplicate alert suppression.
-    3. Caps uncorroborated frontline acoustic chatter ("explosions heard") below the alert threshold.
+    3. Caps uncorroborated frontline acoustic chatter ("explosions heard") below the alert threshold,
+       and de-escalates Sonic Boom overflights (without smoke/impact) to <= 5.
     4. Moderates uncorroborated Tier-3 social media claims.
-    5. Rewards multi-source semantic embedding corroboration with a confidence/score boost.
+    5. Rewards multi-source semantic embedding corroboration or 60s vernacular term bursts.
     """
     ctx = scoring_context or {}
     threshold = int(theme_context.get("alert_threshold", theme_context.get("importance_threshold", 7)))
@@ -242,6 +256,9 @@ def calibrate_stage2_result(
     kin = ctx.get("kinetic_signal") or {}
     sig_type = kin.get("signal_type", "general_intelligence")
     is_kinetic = bool(kin.get("is_kinetic", False))
+    is_sonic_boom_only = bool(kin.get("is_sonic_boom_only", False))
+    term_burst_active = bool(kin.get("term_burst_active", False))
+    burst_count = int(kin.get("burst_count", 0))
     corrob_count = int(ctx.get("corroboration_count", 0))
     corrob_sources = list(ctx.get("corroborating_sources", []))
     is_same_source_echo = bool(ctx.get("is_same_source_echo", False))
@@ -281,8 +298,8 @@ def calibrate_stage2_result(
             conf_level = "high"
             conf_score = max(result.confidence_score or 8, 8)
         elif sig_type == "acoustic_chatter" or src_tier == "tier_3_social_unverified":
-            conf_level = "low"
-            conf_score = min(result.confidence_score or 4, 4)
+            conf_level = "medium" if (term_burst_active and not is_sonic_boom_only) else "low"
+            conf_score = 6 if (term_burst_active and not is_sonic_boom_only) else min(result.confidence_score or 4, 4)
         else:
             conf_level = result.verification_confidence or "medium"
             conf_score = result.confidence_score if result.confidence_score is not None else 7
@@ -295,8 +312,23 @@ def calibrate_stage2_result(
             if note not in notes:
                 notes.append(note)
 
-        # --- Calibration Guardrail 2: Uncorroborated Acoustic Chatter Cap ---
-        elif sig_type == "acoustic_chatter" and not is_kinetic and corrob_count == 0:
+        # --- Calibration Guardrail 2a: Sonic Boom Overflight De-Escalation ---
+        elif is_sonic_boom_only and not is_kinetic:
+            cap = min(5, max(1, threshold - 2))
+            if score > cap:
+                old_score = score
+                score = cap
+                note = (
+                    f"Sonic boom de-escalated ({old_score} -> {score}): supersonic overflight tokens "
+                    f"reported without smoke plume or kinetic impact evidence"
+                )
+                if note not in notes:
+                    notes.append(note)
+            conf_level = "low"
+            conf_score = min(conf_score, 4)
+
+        # --- Calibration Guardrail 2b: Uncorroborated Acoustic Chatter Cap ---
+        elif sig_type == "acoustic_chatter" and not is_kinetic and corrob_count == 0 and not term_burst_active:
             cap = max(1, min(6, threshold - 1))
             if score > cap:
                 old_score = score
@@ -311,7 +343,7 @@ def calibrate_stage2_result(
             conf_score = min(conf_score, 4)
 
         # --- Calibration Guardrail 3: Single-Source Tier-3 Unverified Moderation ---
-        elif src_tier == "tier_3_social_unverified" and corrob_count == 0 and score >= threshold:
+        elif src_tier == "tier_3_social_unverified" and corrob_count == 0 and not term_burst_active and score >= threshold:
             old_score = score
             score = max(1, score - 1)
             note = (
@@ -323,7 +355,7 @@ def calibrate_stage2_result(
             conf_level = "low"
             conf_score = min(conf_score, 4)
 
-        # --- Calibration Guardrail 4: Multi-Source Embedding Corroboration Boost ---
+        # --- Calibration Guardrail 4: Multi-Source Embedding Corroboration & Term Burst Boost ---
         if not is_same_source_echo and corrob_count >= 2 and score >= 4:
             old_score = score
             score = min(10, score + 1)
@@ -343,6 +375,15 @@ def calibrate_stage2_result(
                 notes.append(note)
             conf_level = "high"
             conf_score = max(conf_score, 8)
+        elif not is_same_source_echo and term_burst_active and not is_sonic_boom_only and score >= 4:
+            old_score = score
+            if is_kinetic and score < 10:
+                score = min(10, score + 1)
+            note = f"Vernacular term burst detected ({burst_count} reports in 60s window)"
+            if note not in notes:
+                notes.append(note)
+            conf_level = "high" if is_kinetic else "medium"
+            conf_score = max(conf_score, 8 if is_kinetic else 6)
 
     # Map final calibrated score to priority level
     if score >= 9:

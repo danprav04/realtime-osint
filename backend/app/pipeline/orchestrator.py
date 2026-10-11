@@ -87,6 +87,8 @@ class PipelineOrchestrator:
         self._lock = asyncio.Lock()
         self._reload_subscribed: bool = False
         self._model_cooldowns: Dict[str, float] = {}
+        from backend.app.pipeline.stage0_gatekeeper import Stage0Gatekeeper
+        self._gatekeeper = Stage0Gatekeeper(batch_size=12)
 
         # Seed initial default stage configs
         self._init_default_configs()
@@ -97,6 +99,17 @@ class PipelineOrchestrator:
 
     def _init_default_configs(self) -> None:
         self._stage_configs = {
+            "gatekeeper": AIStageConfig(
+                stage_id="gatekeeper",
+                provider="gemini",
+                model_name="gemma-4-26b-a4b-it",
+                temperature=0.0,
+                fallbacks=[
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.0),
+                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.0),
+                    AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.0),
+                ],
+            ),
             "extraction": AIStageConfig(
                 stage_id="extraction",
                 provider="groq",
@@ -187,6 +200,8 @@ class PipelineOrchestrator:
 
     def _normalize_stage_id(self, stage_id: str) -> str:
         s = str(stage_id).lower().strip()
+        if s in ("gatekeeper", "stage0", "pre_filter", "triage", "pre_pipeline"):
+            return "gatekeeper"
         if "extract" in s:
             return "extraction"
         if "score" in s:
@@ -206,6 +221,10 @@ class PipelineOrchestrator:
     def set_stage_config(self, stage_id: str, config: AIStageConfig) -> None:
         norm = self._normalize_stage_id(stage_id)
         self._stage_configs[norm] = config
+
+    def get_gatekeeper_stats(self) -> Dict[str, Any]:
+        """Return live Stage 0 Pre-Pipeline Gatekeeper telemetry."""
+        return self._gatekeeper.get_stats()
 
     async def start(self) -> None:
         """Start background queue consumers and subscribe to config reload."""
@@ -370,7 +389,7 @@ class PipelineOrchestrator:
                 settings_list = res.scalars().all()
                 for setting in settings_list:
                     if setting.key == "ai_pipeline_stages" and setting.value_json:
-                        canonical_keys = {"extraction", "scoring", "summarization", "visuals"}
+                        canonical_keys = {"gatekeeper", "extraction", "scoring", "summarization", "visuals"}
                         sorted_items = sorted(
                             setting.value_json.items(),
                             key=lambda item: 1 if str(item[0]).lower().strip() in canonical_keys else 0,
@@ -398,6 +417,7 @@ class PipelineOrchestrator:
                                 model_name=cfg_data.get("model_name") or cfg_data.get("model", "gemini-3.5-flash-lite"),
                                 temperature=cfg_data.get("temperature", 0.2),
                                 api_key_override=cfg_data.get("api_key_override"),
+                                enabled=bool(cfg_data.get("enabled", True)),
                                 fallbacks=parsed_fallbacks,
                             )
                     elif setting.key == "api_keys" and setting.value_json:
@@ -618,6 +638,95 @@ class PipelineOrchestrator:
                     )
 
         return fallback_heuristic_fn()
+
+    async def filter_events_batch(
+        self,
+        events: List[NormalizedEvent],
+        force_llm: bool = False,
+    ) -> List[NormalizedEvent]:
+        """
+        Execute Stage 0 Pre-Pipeline Gatekeeper across a batch of newly polled events
+        BEFORE database insertion and BEFORE Stages 1-4:
+          1. Layer 1 Deterministic Triage (siren/sensor fast-pass, deleted/spam/echo fast-drop).
+          2. Layer 2 Micro-Batched High-RPD LLM Triage (up to 12 items/call via gemma-4-26b-a4b-it -> gemma-4-31b-it).
+        Returns the filtered list of relevant NormalizedEvents in original order.
+        """
+        if not events:
+            return []
+
+        from backend.app.pipeline.stage0_gatekeeper import _extract_event_text_and_meta, _heuristic_keep_decision
+
+        first_ev = events[0]
+        theme_id = getattr(first_ev, "theme_id", None) or (first_ev.get("theme_id") if isinstance(first_ev, dict) else "1")
+        theme_ctx = await self._resolve_theme_context(theme_id)
+
+        kept_map: Dict[int, bool] = {}
+        llm_candidates: List[tuple[int, NormalizedEvent]] = []
+
+        for idx, ev in enumerate(events):
+            self._gatekeeper.evaluated_count += 1
+            decision = self._gatekeeper.triage_layer1(ev, theme_ctx)
+            if decision == "fast_pass":
+                kept_map[idx] = True
+                self._gatekeeper.passed_count += 1
+                self._gatekeeper.fast_passed_count += 1
+            elif decision == "fast_drop":
+                kept_map[idx] = False
+                self._gatekeeper.dropped_deterministic_count += 1
+            else:
+                llm_candidates.append((idx, ev))
+
+        self._gatekeeper.last_evaluated_at = datetime.now(timezone.utc).isoformat()
+
+        if llm_candidates:
+            gk_cfg = self.get_stage_config("gatekeeper")
+            has_any_key = bool(
+                self.use_mock
+                or force_llm
+                or getattr(self._registry, "use_mock", False)
+                or resolve_api_key("gemini", gk_cfg.api_key_override, self._db_api_keys)
+                or resolve_api_key("groq", gk_cfg.api_key_override, self._db_api_keys)
+            )
+            b_size = self._gatekeeper.batch_size
+            for start in range(0, len(llm_candidates), b_size):
+                sub_slice = llm_candidates[start : start + b_size]
+                chunk_events = [item[1] for item in sub_slice]
+
+                def chunk_heuristic_fallback(chunk_ref=chunk_events) -> List[int]:
+                    kept_local: List[int] = []
+                    for local_i, c_ev in enumerate(chunk_ref):
+                        c_text, s_type, _, m = _extract_event_text_and_meta(c_ev)
+                        eff_type = "reddit_comment" if m.get("is_comment") else s_type
+                        if _heuristic_keep_decision(c_text, eff_type, theme_ctx):
+                            kept_local.append(local_i)
+                    return kept_local
+
+                if gk_cfg.enabled and has_any_key:
+                    kept_local_indices: List[int] = await self._execute_stage_with_fallbacks(
+                        stage_id="gatekeeper",
+                        runner_fn=lambda chunk_ref=chunk_events, **kw: self._gatekeeper.evaluate_llm_chunk(
+                            chunk=chunk_ref,
+                            theme_context=theme_ctx,
+                            **kw,
+                        ),
+                        fallback_heuristic_fn=chunk_heuristic_fallback,
+                    )
+                else:
+                    kept_local_indices = chunk_heuristic_fallback()
+
+                kept_local_set = set(kept_local_indices)
+                for local_i, (orig_idx, c_ev) in enumerate(sub_slice):
+                    if local_i in kept_local_set:
+                        kept_map[orig_idx] = True
+                        self._gatekeeper.passed_count += 1
+                        c_text, _, _, _ = _extract_event_text_and_meta(c_ev)
+                        if c_text:
+                            self._gatekeeper._recent_texts.append(c_text)
+                    else:
+                        kept_map[orig_idx] = False
+                        self._gatekeeper.dropped_llm_count += 1
+
+        return [ev for idx, ev in enumerate(events) if kept_map.get(idx, False)]
 
     async def _build_scoring_context(
         self,

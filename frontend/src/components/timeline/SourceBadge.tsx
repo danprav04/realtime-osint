@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Rss, Send, Newspaper, MessageSquare, Anchor, Radio } from 'lucide-react';
+import { Rss, Send, Newspaper, MessageSquare, Anchor, Radio, Globe, Activity, ShieldAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface SourceBadgeProps {
@@ -47,6 +47,42 @@ export function SourceBadge({ sourceType, sourceName, showName = true }: SourceB
           textColor: 'text-rose-400',
           bgColor: 'bg-rose-400/10',
           borderColor: 'border-rose-400/20',
+        };
+      case 'bluesky':
+      case 'bsky':
+        return {
+          icon: Globe,
+          label: 'Bluesky',
+          textColor: 'text-blue-400',
+          bgColor: 'bg-blue-400/10',
+          borderColor: 'border-blue-400/20',
+        };
+      case 'mastodon':
+      case 'fediverse':
+        return {
+          icon: Globe,
+          label: 'Mastodon',
+          textColor: 'text-purple-400',
+          bgColor: 'bg-purple-400/10',
+          borderColor: 'border-purple-400/20',
+        };
+      case 'seismic':
+      case 'emsc':
+      case 'geophysical':
+        return {
+          icon: Activity,
+          label: 'EMSC Seismic',
+          textColor: 'text-orange-400',
+          bgColor: 'bg-orange-400/10',
+          borderColor: 'border-orange-400/20',
+        };
+      case 'ukmto':
+        return {
+          icon: ShieldAlert,
+          label: 'UKMTO Maritime',
+          textColor: 'text-teal-400',
+          bgColor: 'bg-teal-400/10',
+          borderColor: 'border-teal-400/20',
         };
       case 'ais':
       case 'maritime_ais':

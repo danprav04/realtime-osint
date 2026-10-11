@@ -81,6 +81,8 @@ class TelegramSourcePlugin(BaseSourcePlugin):
         self._http_client: Optional[httpx.AsyncClient] = None
         self._telethon_client: Optional[Any] = None
         self._mtproto_available: bool = False
+        self._last_etag: Optional[str] = None
+        self._last_modified: Optional[str] = None
 
     @staticmethod
     def _sanitize_channel_name(raw: str) -> str:
@@ -98,7 +100,13 @@ class TelegramSourcePlugin(BaseSourcePlugin):
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                     ),
-                    "Accept-Language": "en-US,en;q=0.9,fa;q=0.8,ar;q=0.7",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9,fa;q=0.8,ar;q=0.7,he;q=0.6",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Upgrade-Insecure-Requests": "1",
                 },
                 follow_redirects=True,
             )
@@ -240,18 +248,32 @@ class TelegramSourcePlugin(BaseSourcePlugin):
         """
         Public web preview scraper for public Telegram channels.
         Fetches https://t.me/s/{channel_name} and extracts message cards.
+        Supports ETag / If-Modified-Since conditional caching.
         """
         url = f"https://t.me/s/{self.channel_name}"
         events: List[NormalizedEvent] = []
 
         try:
             client = await self._get_http_client()
-            response = await client.get(url)
+            req_headers: Dict[str, str] = {}
+            if self._last_etag:
+                req_headers["If-None-Match"] = self._last_etag
+            if self._last_modified:
+                req_headers["If-Modified-Since"] = self._last_modified
+
+            response = await client.get(url, headers=req_headers)
+            if response.status_code == 304:
+                return []
             if response.status_code != 200:
                 self.logger.warning(
                     f"Telegram web preview for '@{self.channel_name}' returned status {response.status_code}"
                 )
                 return []
+            resp_headers = getattr(response, "headers", None) or {}
+            if resp_headers.get("etag"):
+                self._last_etag = resp_headers.get("etag")
+            if resp_headers.get("last-modified"):
+                self._last_modified = resp_headers.get("last-modified")
             html = response.text
         except Exception as exc:
             self.last_error = f"Web preview HTTP error: {exc}"

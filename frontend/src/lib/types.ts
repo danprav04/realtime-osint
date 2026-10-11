@@ -35,7 +35,7 @@ export interface NormalizedEvent {
   id: string;
   theme_id: string;
   source_id?: number | string | null;
-  source_type: 'rss' | 'telegram' | 'newsapi' | 'reddit' | 'ais' | string;
+  source_type: 'rss' | 'telegram' | 'newsapi' | 'reddit' | 'ais' | 'bluesky' | 'mastodon' | 'seismic' | 'ukmto' | string;
   source_name: string;
   source_url?: string | null;
   external_id: string;
@@ -106,7 +106,7 @@ export interface Source {
   id: string;
   theme_id: string;
   name: string;
-  source_type: 'rss' | 'telegram' | 'newsapi' | 'reddit' | 'ais' | string;
+  source_type: 'rss' | 'telegram' | 'newsapi' | 'reddit' | 'ais' | 'bluesky' | 'mastodon' | 'seismic' | 'ukmto' | string;
   target: string;
   config_json: Record<string, any>;
   is_enabled: boolean;
@@ -161,7 +161,22 @@ export interface AIStageConfig {
   fallbacks?: AIFallbackConfig[];
 }
 
+export interface GatekeeperStats {
+  evaluated_count: number;
+  passed_count: number;
+  fast_passed_count: number;
+  dropped_deterministic_count: number;
+  dropped_llm_count: number;
+  total_dropped_count: number;
+  drop_rate_pct: number;
+  batch_calls_count: number;
+  batch_size: number;
+  last_model_used?: string | null;
+  last_evaluated_at?: string | null;
+}
+
 export interface AIPipelineSettings {
+  gatekeeper?: AIStageConfig;
   extraction: AIStageConfig;
   scoring: AIStageConfig;
   summarization: AIStageConfig;
@@ -174,6 +189,7 @@ export interface SystemSettings {
   polling_intervals: Record<string, number>;
   max_lookback_hours?: Record<string, number>;
   pizza_meter_enabled?: boolean;
+  gatekeeper_stats?: GatekeeperStats;
 }
 
 export interface PizzaLocation {

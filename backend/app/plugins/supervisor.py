@@ -9,6 +9,9 @@ from backend.app.db.models import Event, Source, SystemSettings, Theme
 from backend.app.db.session import get_session_factory
 from backend.app.plugins.ais_plugin import AISSourcePlugin
 from backend.app.plugins.base import BaseSourcePlugin, NormalizedEvent
+from backend.app.plugins.bluesky_plugin import BlueskySourcePlugin
+from backend.app.plugins.geophysical_plugin import GeophysicalSourcePlugin
+from backend.app.plugins.mastodon_plugin import MastodonSourcePlugin
 from backend.app.plugins.newsapi_plugin import NewsAPISourcePlugin
 from backend.app.plugins.reddit_plugin import RedditSourcePlugin
 from backend.app.plugins.rss_plugin import RSSSourcePlugin
@@ -46,6 +49,14 @@ def create_plugin_instance(
         return RedditSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled)
     elif st in ("ais", "maritime_ais"):
         return AISSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled)
+    elif st in ("bluesky", "bsky"):
+        return BlueskySourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled)
+    elif st in ("mastodon", "fediverse"):
+        return MastodonSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled)
+    elif st in ("seismic", "emsc", "geophysical"):
+        return GeophysicalSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled, sensor_type="seismic")
+    elif st == "ukmto":
+        return GeophysicalSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled, sensor_type="ukmto")
     else:
         logger.warning(f"Unknown source type '{source_type}', falling back to RSS plugin.")
         return RSSSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled)
@@ -302,18 +313,60 @@ class IngestionSupervisor:
         """List all managed plugin instances."""
         return list(self.plugins.values())
 
+    async def filter_and_dispatch_batch(
+        self, plugin: BaseSourcePlugin, events: List[NormalizedEvent]
+    ) -> List[NormalizedEvent]:
+        """
+        1. Filter polled events by lookback window.
+        2. Deduplicate against already persisted DB events so Stage 0 LLM never re-evaluates old items.
+        3. Run Pre-Pipeline Stage 0 High-RPD Gatekeeper (orchestrator.filter_events_batch) BEFORE DB persistence.
+        4. Persist and broadcast only the surviving events.
+        """
+        fresh_events = [ev for ev in events if plugin.is_event_within_lookback(ev.published_at)]
+        if not fresh_events:
+            return []
+
+        # Pre-check DB duplicates in a single batch query if possible
+        unseen_events: List[NormalizedEvent] = []
+        try:
+            factory = self._get_session_factory()
+            async with factory() as session:
+                ext_ids = [ev.external_id for ev in fresh_events if ev.external_id]
+                if ext_ids:
+                    dup_stmt = select(Event.external_id).where(Event.external_id.in_(ext_ids))
+                    existing_ids = set((await session.execute(dup_stmt)).scalars().all())
+                    unseen_events = [ev for ev in fresh_events if ev.external_id not in existing_ids]
+                else:
+                    unseen_events = fresh_events
+        except Exception:
+            unseen_events = fresh_events
+
+        if not unseen_events:
+            return []
+
+        # Run Pre-Pipeline Stage 0 Gatekeeper before DB persistence and Stages 1-4
+        kept_events = unseen_events
+        if not (plugin.config or {}).get("bypass_gatekeeper", False):
+            try:
+                from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
+                orch = get_pipeline_orchestrator()
+                kept_events = await orch.filter_events_batch(unseen_events)
+            except Exception as gk_err:
+                logger.warning(f"Stage 0 gatekeeper fallback in supervisor for '{plugin.name}': {gk_err}")
+                kept_events = unseen_events
+
+        for event in kept_events:
+            await self.dispatch_and_persist(event)
+
+        return kept_events
+
     async def poll_source_once(self, source_id: Union[int, str]) -> List[NormalizedEvent]:
         """Manually trigger a single poll execution for a given source."""
         plugin = self.get_plugin(source_id)
         if not plugin:
             raise KeyError(f"Source ID '{source_id}' not found.")
         events = await plugin.poll()
-        persisted_events = []
-        for event in events:
-            if plugin.is_event_within_lookback(event.published_at):
-                await self.dispatch_and_persist(event)
-                persisted_events.append(event)
-        return persisted_events
+        return await self.filter_and_dispatch_batch(plugin, events)
 
     async def _run_plugin_worker(self, plugin: BaseSourcePlugin) -> None:
         """
@@ -325,9 +378,7 @@ class IngestionSupervisor:
             while self._running and plugin.is_enabled:
                 try:
                     events = await plugin.poll()
-                    for event in events:
-                        if plugin.is_event_within_lookback(event.published_at):
-                            await self.dispatch_and_persist(event)
+                    await self.filter_and_dispatch_batch(plugin, events)
                     plugin.last_polled_at = datetime.now(timezone.utc)
                     plugin.status = "active"
                     plugin.last_error = None

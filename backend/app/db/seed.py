@@ -39,6 +39,18 @@ DEFAULT_THEME_DATA: Dict[str, Any] = {
         "Arrow 3",
         "Fattah",
         "Al-Asad",
+        "UKMTO",
+        "sonic boom",
+        "انفجار",
+        "غارة",
+        "جدار الصوت",
+        "مسيرات",
+        "صافرات الانذار",
+        "پدافند",
+        "صدای مهیب",
+        "פיצוץ",
+        "אזעקה",
+        "יירוט",
     ],
     "entities": [
         "United States",
@@ -347,8 +359,202 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
         "config_json": {
             "subreddits": ["worldnews", "geopolitics", "OSINT", "CombatFootage"],
             "min_upvotes": 50,
+            "feed_mode": "hot",
         },
         "polling_interval_sec": 600,
+        "is_enabled": True,
+    },
+    # --- Reddit Live Field Chatter (/comments.json & /new.json: Tier 1 Citizen Sensors) ---
+    {
+        "name": "Reddit r/lebanon Live Field Comments",
+        "source_type": "reddit",
+        "config_json": {
+            "target": "lebanon",
+            "subreddits": ["lebanon"],
+            "feed_mode": "comments",
+            "limit": 35,
+        },
+        "polling_interval_sec": 45,
+        "is_enabled": True,
+    },
+    {
+        "name": "Reddit r/Israel Live Field Comments",
+        "source_type": "reddit",
+        "config_json": {
+            "target": "Israel",
+            "subreddits": ["Israel"],
+            "feed_mode": "comments",
+            "limit": 35,
+        },
+        "polling_interval_sec": 45,
+        "is_enabled": True,
+    },
+    {
+        "name": "Reddit r/NewIran Live Field Comments",
+        "source_type": "reddit",
+        "config_json": {
+            "target": "NewIran",
+            "subreddits": ["NewIran"],
+            "feed_mode": "comments",
+            "limit": 35,
+        },
+        "polling_interval_sec": 60,
+        "is_enabled": True,
+    },
+    {
+        "name": "Reddit Regional Ground Reports (/new)",
+        "source_type": "reddit",
+        "config_json": {
+            "target": "lebanon+Israel+NewIran+syriancivilwar+iraq+Yemen+arabs",
+            "subreddits": ["lebanon", "Israel", "NewIran", "syriancivilwar", "iraq", "Yemen", "arabs"],
+            "feed_mode": "new",
+            "limit": 25,
+        },
+        "polling_interval_sec": 90,
+        "is_enabled": True,
+    },
+    {
+        "name": "Reddit OSINT & Defense Megathreads (/new)",
+        "source_type": "reddit",
+        "config_json": {
+            "target": "CredibleDefense+LessCredibleDefence+OSINT+CombatFootage",
+            "subreddits": ["CredibleDefense", "LessCredibleDefence", "OSINT", "CombatFootage"],
+            "feed_mode": "new",
+            "limit": 25,
+        },
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    # --- Additional Catalog Telegram Web Preview Channels (No Account Required) ---
+    {
+        "name": "Abu Ali Express (Arabic/Hebrew Tactical OSINT)",
+        "source_type": "telegram",
+        "config_json": {"target": "@abualiexpress"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Gaza Now Urgent (غزة الآن - عاجل)",
+        "source_type": "telegram",
+        "config_json": {"target": "@GazaNow"},
+        "polling_interval_sec": 90,
+        "is_enabled": True,
+    },
+    {
+        "name": "VahidOnline (Iran Citizen Ground Videos)",
+        "source_type": "telegram",
+        "config_json": {"target": "@VahidOnline"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "1500tasvir (Iran Domestic Field Reports)",
+        "source_type": "telegram",
+        "config_json": {"target": "@tasvir1500"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "BBC Persian Live (بی‌بی‌سی فارسی)",
+        "source_type": "telegram",
+        "config_json": {"target": "@bbcpersian"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    {
+        "name": "Israel Radar (Defense & Airspace Alerts)",
+        "source_type": "telegram",
+        "config_json": {"target": "@IsraelRadar_com"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Intel Slava (Conflict Aggregator)",
+        "source_type": "telegram",
+        "config_json": {"target": "@intelslava"},
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    # --- Bluesky / ATProto Unauthenticated Public XRPC Streams ---
+    {
+        "name": "Bluesky ELINT News (@elintnews.bsky.social)",
+        "source_type": "bluesky",
+        "config_json": {"target": "elintnews.bsky.social", "mode": "author"},
+        "polling_interval_sec": 90,
+        "is_enabled": True,
+    },
+    {
+        "name": "Bluesky OSINT & Conflict Live Search",
+        "source_type": "bluesky",
+        "config_json": {
+            "target": "search:Iran OR Israel OR Beirut OR Tehran OR Houthi OR Hormuz",
+            "mode": "search",
+        },
+        "polling_interval_sec": 90,
+        "is_enabled": True,
+    },
+    # --- Mastodon / Fediverse Unauthenticated Timelines ---
+    {
+        "name": "Mastodon #OSINT Global Stream",
+        "source_type": "mastodon",
+        "config_json": {
+            "target": "https://mastodon.social/api/v1/timelines/tag/OSINT?limit=20",
+            "instance": "mastodon.social",
+        },
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "Mastodon #Iran & #MiddleEast Stream",
+        "source_type": "mastodon",
+        "config_json": {
+            "target": "https://mastodon.social/api/v1/timelines/tag/Iran?limit=20",
+            "instance": "mastodon.social",
+        },
+        "polling_interval_sec": 180,
+        "is_enabled": True,
+    },
+    # --- Specialist Aviation, Radio & Live Conflict RSS ---
+    {
+        "name": "Liveuamap Middle East Tactical Feed",
+        "source_type": "rss",
+        "config_json": {"url": "https://middleeast.liveuamap.com/rss"},
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "PPRuNe Military Aviation Rumour Network",
+        "source_type": "rss",
+        "config_json": {"url": "https://www.pprune.org/external.php?type=RSS2&forumids=14"},
+        "polling_interval_sec": 240,
+        "is_enabled": True,
+    },
+    {
+        "name": "RadioReference HF/MilAir Monitoring Forum",
+        "source_type": "rss",
+        "config_json": {"url": "https://forums.radioreference.com/forums/hf-mw-lw-general-discussion.32/index.rss"},
+        "polling_interval_sec": 300,
+        "is_enabled": True,
+    },
+    # --- Physical & Geophysical Proxy Sensors (EMSC Seismic / LastQuake & UKMTO) ---
+    {
+        "name": "EMSC Middle East Seismic & LastQuake Felt Reports",
+        "source_type": "seismic",
+        "config_json": {
+            "target": "https://www.seismicportal.eu/fdsnws/event/1/query?format=json&minlat=12&maxlat=40&minlon=32&maxlon=64&limit=15",
+            "sensor_type": "seismic",
+        },
+        "polling_interval_sec": 120,
+        "is_enabled": True,
+    },
+    {
+        "name": "UKMTO Red Sea & Persian Gulf Maritime Advisories",
+        "source_type": "ukmto",
+        "config_json": {
+            "target": "https://www.ukmto.org/indian-ocean/recent-incidents",
+            "sensor_type": "ukmto",
+        },
+        "polling_interval_sec": 180,
         "is_enabled": True,
     },
     # --- Strategic Maritime Chokepoint Tracking ---
@@ -378,6 +584,18 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
 
 DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
     "ai_pipeline_stages": {
+        "gatekeeper": {
+            "stage_id": "gatekeeper",
+            "provider": "gemini",
+            "model": "gemma-4-26b-a4b-it",
+            "temperature": 0.0,
+            "enabled": True,
+            "fallbacks": [
+                {"provider": "gemini", "model": "gemma-4-31b-it", "temperature": 0.0},
+                {"provider": "groq", "model": "openai/gpt-oss-20b", "temperature": 0.0},
+                {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.0},
+            ],
+        },
         "extraction_translation": {
             "stage_id": "extraction_translation",
             "provider": "groq",
@@ -445,13 +663,21 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
         "newsapi": 1.0,
         "reddit": 1.0,
         "ais": 1.0,
+        "bluesky": 1.0,
+        "mastodon": 1.0,
+        "seismic": 2.0,
+        "ukmto": 6.0,
     },
     "polling_intervals": {
         "rss": 300,
         "telegram": 300,
         "newsapi": 600,
-        "reddit": 600,
+        "reddit": 60,
         "ais": 900,
+        "bluesky": 90,
+        "mastodon": 120,
+        "seismic": 120,
+        "ukmto": 180,
     },
 }
 

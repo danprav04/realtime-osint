@@ -32,6 +32,7 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState('rss');
   const [newTarget, setNewTarget] = useState('');
+  const [newFeedMode, setNewFeedMode] = useState('comments');
   const [newInterval, setNewInterval] = useState(300);
   const [newLookback, setNewLookback] = useState(1);
 
@@ -95,6 +96,13 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
 
     setFeedback(null);
     try {
+      const cfgJson: Record<string, any> = {
+        target: newTarget,
+        max_lookback_hours: Number(newLookback),
+      };
+      if (newType === 'reddit') {
+        cfgJson.feed_mode = newFeedMode;
+      }
       await createSource({
         theme_id: activeThemeId,
         name: newName,
@@ -103,7 +111,7 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
         interval_seconds: Number(newInterval),
         max_lookback_hours: Number(newLookback),
         is_enabled: true,
-        config_json: { target: newTarget, max_lookback_hours: Number(newLookback) },
+        config_json: cfgJson,
       });
       setFeedback({ type: 'success', message: `Added new source "${newName}" successfully!` });
       setIsAddOpen(false);
@@ -301,22 +309,41 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
                   onChange={(e) => setNewType(e.target.value)}
                   className="w-full rounded-lg bg-canvas-recessed px-3.5 py-2 text-zinc-100 hairline-border focus:outline-none focus:border-accent-cyan"
                 >
-                  <option value="rss">RSS / Atom Feed</option>
-                  <option value="telegram">Telegram Channel</option>
+                  <option value="rss">RSS / Atom Feed (News, PPRuNe, RadioReference, Liveuamap)</option>
+                  <option value="telegram">Telegram Public Channel (Web Preview / MTProto)</option>
+                  <option value="reddit">Reddit Live Stream (/comments, /new, /hot)</option>
+                  <option value="bluesky">Bluesky / ATProto Public XRPC (No Account Required)</option>
+                  <option value="mastodon">Mastodon / Fediverse Public Timeline</option>
+                  <option value="seismic">EMSC Seismic &amp; LastQuake Felt Sensor</option>
+                  <option value="ukmto">UKMTO Maritime Security Advisories</option>
                   <option value="newsapi">News API / GDELT</option>
-                  <option value="reddit">Reddit Subreddit</option>
                   <option value="ais">Maritime AIS Vessel Stream</option>
                 </select>
               </div>
 
+              {newType === 'reddit' && (
+                <div>
+                  <label className="block text-zinc-300 font-medium mb-1">Reddit Stream Mode</label>
+                  <select
+                    value={newFeedMode}
+                    onChange={(e) => setNewFeedMode(e.target.value)}
+                    className="w-full rounded-lg bg-canvas-recessed px-3.5 py-2 text-zinc-100 hairline-border focus:outline-none focus:border-accent-cyan"
+                  >
+                    <option value="comments">Live Field Comments (/r/sub/comments.json — Fastest)</option>
+                    <option value="new">New Submissions (/r/sub/new.json)</option>
+                    <option value="hot">Curated Hot Posts (/r/sub/hot.json)</option>
+                  </select>
+                </div>
+              )}
+
               <div>
                 <label className="block text-zinc-300 font-medium mb-1">
-                  Target (Feed URL, Channel Username, Subreddit)
+                  Target (Feed URL, @Channel, Subreddit, Bluesky Actor/Search, or #Hashtag@Instance)
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="https://... or @channel or r/worldnews"
+                  placeholder="lebanon+Israel, @channel, elintnews.bsky.social, or https://..."
                   value={newTarget}
                   onChange={(e) => setNewTarget(e.target.value)}
                   className="w-full rounded-lg bg-canvas-recessed px-3.5 py-2 text-zinc-100 hairline-border focus:outline-none focus:border-accent-cyan font-mono"

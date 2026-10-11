@@ -20,6 +20,16 @@ logger = logging.getLogger("osint.api.settings")
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
 DEFAULT_AI_STAGES = {
+    "gatekeeper": {
+        "provider": "gemini",
+        "model_name": "gemma-4-26b-a4b-it",
+        "temperature": 0.0,
+        "fallbacks": [
+            {"provider": "gemini", "model_name": "gemma-4-31b-it", "temperature": 0.0},
+            {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.0},
+            {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.0},
+        ],
+    },
     "extraction": {
         "provider": "groq",
         "model_name": "qwen/qwen3.8-27b",
@@ -74,7 +84,9 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
     )
     for k, v in sorted_items:
         norm_k = k.lower().strip()
-        if "extract" in norm_k:
+        if "gate" in norm_k or "stage0" in norm_k:
+            norm_k = "gatekeeper"
+        elif "extract" in norm_k:
             norm_k = "extraction"
         elif "score" in norm_k:
             norm_k = "scoring"
@@ -179,7 +191,14 @@ async def get_system_settings(
         "polling_intervals": rows.get("polling_intervals", {}),
         "max_lookback_hours": configured_lookbacks,
         "pizza_meter_enabled": pizza_meter_enabled,
+        "gatekeeper_stats": get_pipeline_orchestrator().get_gatekeeper_stats(),
     }
+
+
+@router.get("/gatekeeper-stats", dependencies=[Depends(require_api_key)])
+async def get_gatekeeper_stats() -> Dict[str, Any]:
+    """Return live Pre-Pipeline Stage 0 High-RPD Gatekeeper telemetry counters."""
+    return get_pipeline_orchestrator().get_gatekeeper_stats()
 
 
 @router.put("", dependencies=[Depends(require_api_key)])
@@ -323,7 +342,9 @@ async def update_ai_pipeline_stages(
 
     for stage_id, cfg in payload.items():
         norm_id = stage_id.lower().strip()
-        if "extract" in norm_id:
+        if "gate" in norm_id or "stage0" in norm_id:
+            norm_id = "gatekeeper"
+        elif "extract" in norm_id:
             norm_id = "extraction"
         elif "score" in norm_id:
             norm_id = "scoring"

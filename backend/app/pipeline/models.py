@@ -38,7 +38,7 @@ class AIStageConfig(BaseModel):
     Supports per-stage model provider (Gemini / Groq), model selection,
     temperature, API key override, and an ordered chain of fallbacks.
     """
-    stage_id: Literal["extraction", "scoring", "summarization", "visuals"]
+    stage_id: Literal["gatekeeper", "extraction", "scoring", "summarization", "visuals"]
     provider: Literal["gemini", "groq"] = "gemini"
     model_name: str = "gemini-3.5-flash-lite"
     api_key_override: Optional[str] = None
@@ -50,6 +50,8 @@ class AIStageConfig(BaseModel):
     @classmethod
     def normalize_stage_id(cls, v: Any) -> str:
         s = str(v).lower().strip()
+        if s in ("gatekeeper", "stage0", "pre_filter", "triage", "pre_pipeline"):
+            return "gatekeeper"
         if s in ("extraction_translation", "extraction"):
             return "extraction"
         if s in ("importance_scoring", "scoring"):

@@ -75,7 +75,10 @@ class MockAIProvider(BaseAIProvider):
         # Return realistic response based on prompt contents (check explicit stage schema markers first)
         p_lower = (prompt + " " + (system_prompt or "")).lower()
         prompt_only_lower = prompt.lower()
-        if "stage2result" in prompt_only_lower or "importance_score" in prompt_only_lower:
+        if "messages to evaluate:" in prompt_only_lower or '"keep":' in prompt_only_lower:
+            res = self._mock_stage0_batch(prompt)
+            return json.dumps(res) if json_mode else str(res)
+        elif "stage2result" in prompt_only_lower or "importance_score" in prompt_only_lower:
             combined_stage2 = prompt + "\n" + (system_prompt or "")
             res = self._mock_stage2(combined_stage2, {"scoring_prompt": combined_stage2})
             return json.dumps(res) if json_mode else str(res)
@@ -103,6 +106,20 @@ class MockAIProvider(BaseAIProvider):
             return json.dumps(res) if json_mode else str(res)
 
         return json.dumps({"status": "ok", "provider": self.provider_name}) if json_mode else "Mock response"
+
+    def _mock_stage0_batch(self, prompt: str) -> Dict[str, List[int]]:
+        from backend.app.pipeline.stage0_gatekeeper import _heuristic_keep_decision
+        keep_indices: List[int] = []
+        for line in prompt.splitlines():
+            m = re.match(r"^\[(\d+)\]\s*\(([^)]+)\)\s*(.*)$", line.strip())
+            if m:
+                idx = int(m.group(1))
+                tag = m.group(2).lower()
+                text = m.group(3)
+                s_type = "reddit_comment" if "comment" in tag else tag.split(":")[0]
+                if _heuristic_keep_decision(text, s_type, {}):
+                    keep_indices.append(idx)
+        return {"keep": keep_indices}
 
     async def process_stage(
         self,

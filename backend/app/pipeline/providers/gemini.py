@@ -91,7 +91,39 @@ class GeminiProvider(BaseAIProvider):
         async def _call() -> httpx.Response:
             return await client.post(url, json=payload, headers=headers)
 
-        response = await self._execute_with_retry(_call)
+        try:
+            response = await self._execute_with_retry(_call)
+        except httpx.HTTPStatusError as http_err:
+            # Gemma models on Google AI Studio may reject systemInstruction or responseMimeType="application/json"
+            # with HTTP 400 INVALID_ARGUMENT. Fold system_prompt into user prompt and retry on the same model.
+            if http_err.response is not None and http_err.response.status_code == 400 and (system_prompt or json_mode):
+                logger.info(
+                    f"[gemini:{model_name}] HTTP 400 with systemInstruction/responseMimeType; "
+                    f"retrying on same model with inline prompt instructions..."
+                )
+                combined_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+                if json_mode and "json" not in combined_prompt.lower():
+                    combined_prompt += "\nRespond strictly with valid JSON."
+                compat_payload: Dict[str, Any] = {
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [{"text": combined_prompt}],
+                        }
+                    ],
+                    "generationConfig": {
+                        "temperature": temperature,
+                        "maxOutputTokens": max_tokens,
+                    },
+                }
+
+                async def _call_compat() -> httpx.Response:
+                    return await client.post(url, json=compat_payload, headers=headers)
+
+                response = await self._execute_with_retry(_call_compat)
+            else:
+                raise
+
         res_data = response.json()
 
         self.call_history.append({
