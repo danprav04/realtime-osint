@@ -81,7 +81,7 @@ export function RelevanceMap({
 
   // Reactive UI state
   const [colorMode, setColorMode] = useState<ColorMode>('trust');
-  const [showKeyHeadlines, setShowKeyHeadlines] = useState<boolean>(true);
+  const [showKeyHeadlines, setShowKeyHeadlines] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNode, setHoveredNode] = useState<MapNode | null>(null);
@@ -268,7 +268,7 @@ export function RelevanceMap({
     ctx.lineTo(centerX, centerY + 92 * baseScale * currentScale);
     ctx.stroke();
 
-    // Zone labels placed along top-left diagonal (-135 deg) so they stay clear of horizontal pills
+    // Zone labels placed along top vertical axis
     ctx.setLineDash([]);
     ctx.font = '600 8.5px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textAlign = 'center';
@@ -281,7 +281,7 @@ export function RelevanceMap({
     ctx.restore();
 
     // -------------------------------------------------------------
-    // Layer 2: Topical Cluster Constellations & Non-Occluding Badges
+    // Layer 2: Topical Cluster Constellations & Outer Ring Badges
     // -------------------------------------------------------------
     const screenClusters: Array<{
       cluster: MapCluster;
@@ -313,8 +313,8 @@ export function RelevanceMap({
 
       const scX = toScreenX(cluster.center_x);
       const scY = toScreenY(cluster.center_y);
-      const rawRadius = cluster.radius || Math.max(12, cluster.size * 2.8);
-      const scRadius = Math.max(22, rawRadius * baseScale * currentScale);
+      const rawRadius = cluster.radius || Math.max(10, cluster.size * 2.2);
+      const scRadius = Math.max(12, rawRadius * baseScale * currentScale);
       screenClusters.push({ cluster, scX, scY, scRadius });
 
       const avgTrust = cluster.avg_trust ?? 65;
@@ -326,10 +326,10 @@ export function RelevanceMap({
           : 'rgba(245, 158, 11, 0.04)';
       const strokeRgba =
         avgTrust >= 75
-          ? 'rgba(16, 185, 129, 0.32)'
+          ? 'rgba(16, 185, 129, 0.35)'
           : avgTrust >= 58
-          ? 'rgba(6, 182, 212, 0.28)'
-          : 'rgba(245, 158, 11, 0.28)';
+          ? 'rgba(6, 182, 212, 0.30)'
+          : 'rgba(245, 158, 11, 0.30)';
 
       // Celestial cluster disc
       ctx.save();
@@ -345,10 +345,40 @@ export function RelevanceMap({
       ctx.restore();
     });
 
-    // Render Cluster Label Pills with Bounding-Box-Aware Radial Clearance
-    screenClusters.forEach(({ cluster, scX, scY, scRadius }) => {
+    // Find the widest angular gap among orbiting clusters so the central core cluster's leader line
+    // can exit cleanly to the outer perimeter ring without crossing through other clusters.
+    const orbitAngles = screenClusters
+      .filter((c) => Math.hypot(c.scX - centerX, c.scY - centerY) > 18)
+      .map((c) => Math.atan2(c.scY - centerY, c.scX - centerX))
+      .sort((a, b) => a - b);
+
+    let bestGapAngle = -Math.PI / 2;
+    if (orbitAngles.length >= 2) {
+      let maxGap = -1;
+      for (let i = 0; i < orbitAngles.length; i++) {
+        const a1 = orbitAngles[i];
+        const a2 = i + 1 < orbitAngles.length ? orbitAngles[i + 1] : orbitAngles[0] + Math.PI * 2;
+        const gap = a2 - a1;
+        if (gap > maxGap) {
+          maxGap = gap;
+          bestGapAngle = a1 + gap / 2;
+        }
+      }
+    }
+
+    // Place orbiting clusters' pills first, then central cluster pill in the widest remaining gap
+    const orderedForPills = [...screenClusters].sort((a, b) => {
+      const da = Math.hypot(a.scX - centerX, a.scY - centerY);
+      const db = Math.hypot(b.scX - centerX, b.scY - centerY);
+      return db - da;
+    });
+
+    const outerPerimeterScreenR = 83 * baseScale * currentScale;
+    const projectToOuterRing = selectedClusterFilter === 'all' && currentScale < 1.32;
+
+    orderedForPills.forEach(({ cluster, scX, scY, scRadius }) => {
       ctx.save();
-      const cleanLabel = truncateWords(cluster.label, 30);
+      const cleanLabel = truncateWords(cluster.label, 28);
       const labelText = `C#${cluster.id}: ${cleanLabel} (${cluster.size})`;
 
       ctx.font = '600 11px system-ui, -apple-system, sans-serif';
@@ -359,18 +389,19 @@ export function RelevanceMap({
       const halfW = pillW / 2;
       const halfH = pillH / 2;
 
-      // Determine outward radial direction from map center (or straight up for core cluster)
       const dx = scX - centerX;
       const dy = scY - centerY;
       const distFromCenter = Math.hypot(dx, dy);
 
-      let baseAngle = -Math.PI / 2;
-      if (distFromCenter > 14) {
+      let baseAngle = bestGapAngle;
+      if (distFromCenter > 18) {
         baseAngle = Math.atan2(dy, dx);
       }
 
-      // Try candidate angles around baseAngle to avoid overlapping any cluster disc or existing pill
-      const angleOffsets = [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, Math.PI];
+      // Candidate angle offsets to guarantee zero pill-to-pill or pill-to-disc overlap
+      const angleOffsets = [
+        0, 0.18, -0.18, 0.36, -0.36, 0.54, -0.54, 0.75, -0.75, 1.0, -1.0, 1.3, -1.3,
+      ];
       let chosenX = scX;
       let chosenY = scY - scRadius - halfH - 8;
       let chosenRect = {
@@ -384,10 +415,20 @@ export function RelevanceMap({
         const ang = baseAngle + offset;
         const uX = Math.cos(ang);
         const uY = Math.sin(ang);
-        // Exact distance from rectangle center to its edge along (uX, uY)
         const rectClearance = Math.abs(uX) * halfW + Math.abs(uY) * halfH;
-        const candX = scX + uX * (scRadius + rectClearance + 7);
-        const candY = scY + uY * (scRadius + rectClearance + 7);
+
+        let candX: number;
+        let candY: number;
+        if (projectToOuterRing) {
+          // Always place on the outer perimeter label ring so zero C# pills sit inside the node field
+          const ringR = Math.max(distFromCenter + scRadius, outerPerimeterScreenR) + rectClearance + 8;
+          candX = centerX + uX * ringR;
+          candY = centerY + uY * ringR;
+        } else {
+          candX = scX + uX * (scRadius + rectClearance + 7);
+          candY = scY + uY * (scRadius + rectClearance + 7);
+        }
+
         const candRect = {
           x1: candX - halfW,
           y1: candY - halfH,
@@ -395,17 +436,15 @@ export function RelevanceMap({
           y2: candY + halfH,
         };
 
-        // Check collision with other pills
-        const hitsPill = occupiedLabelRects.some((r) => rectsOverlap(candRect, r, 4));
+        const hitsPill = occupiedLabelRects.some((r) => rectsOverlap(candRect, r, 5));
         if (hitsPill) continue;
 
-        // Check collision with other cluster discs
         const hitsOtherDisc = screenClusters.some((other) => {
           if (other.cluster.id === cluster.id) return false;
           const nearestX = Math.max(candRect.x1, Math.min(other.scX, candRect.x2));
           const nearestY = Math.max(candRect.y1, Math.min(other.scY, candRect.y2));
           const d = Math.hypot(nearestX - other.scX, nearestY - other.scY);
-          return d < other.scRadius - 2;
+          return d < other.scRadius;
         });
 
         if (!hitsOtherDisc) {
@@ -437,7 +476,7 @@ export function RelevanceMap({
       const textColor =
         avgTrust >= 75 ? '#d1fae5' : avgTrust >= 58 ? '#e0f2fe' : '#fef3c7';
 
-      // Subtle leader tick from cluster rim to pill
+      // Leader line from cluster rim to outer pill
       const dirX = chosenX - scX;
       const dirY = chosenY - scY;
       const dirLen = Math.hypot(dirX, dirY);
@@ -447,7 +486,7 @@ export function RelevanceMap({
         ctx.lineTo(chosenX, chosenY);
         ctx.strokeStyle = borderColor;
         ctx.lineWidth = 0.9;
-        ctx.setLineDash([2, 2]);
+        ctx.setLineDash([2, 3]);
         ctx.stroke();
       }
 
@@ -635,13 +674,13 @@ export function RelevanceMap({
       ctx.restore();
     });
 
-    // Pass 2 of Layer 4: Collision-checked node callout labels (hovered/selected first, then lead stories, then zoomed high-priority)
+    // Pass 2 of Layer 4: Collision-checked node callout labels (hovered/selected first, then lead stories when Key Headlines is toggled on, then zoomed high-priority)
     const labelCandidates = visibleNodes
       .filter(({ node, isHovered, isSelected, isDimmed }) => {
         if (isDimmed) return false;
         if (isHovered || isSelected) return true;
         if (showKeyHeadlines && node.is_cluster_lead && (node.cluster_id ?? 0) > 0) return true;
-        if (currentScale >= 1.3 && (node.importance_score || 5) >= 7) return true;
+        if (currentScale >= 1.35 && (node.importance_score || 5) >= 7) return true;
         return false;
       })
       .sort((a, b) => {
@@ -652,7 +691,11 @@ export function RelevanceMap({
 
     labelCandidates.forEach(({ node, scX, scY, radius, isHovered, isSelected }) => {
       const rawTitle = node.headline || node.title;
-      const shortTitle = truncateWords(rawTitle, isHovered || isSelected ? 42 : 30);
+      const srcPrefix = truncateWords(node.source_name, 14);
+      const shortTitle =
+        isHovered || isSelected
+          ? truncateWords(rawTitle, 42)
+          : `${srcPrefix} • ${truncateWords(rawTitle, 25)}`;
 
       ctx.save();
       ctx.font =

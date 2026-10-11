@@ -83,7 +83,7 @@ services:
       ENVIRONMENT: production
       LOG_LEVEL: INFO
       LOG_FORMAT: json
-      MEMORY_BUDGET_MB: 380
+      MEMORY_BUDGET_MB: 512
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       HF_EMBEDDING_URL: ${HF_EMBEDDING_URL:-https://danprav-osint-embeddings-tei.hf.space}
@@ -106,7 +106,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 380M
+          memory: 512M
         reservations:
           memory: 150M
     networks:

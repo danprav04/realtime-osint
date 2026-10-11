@@ -202,6 +202,14 @@ async def update_system_settings(
                     os.environ["HF_EMBEDDING_URL"] = str(v).strip()
                 elif k == "hf_api_key":
                     os.environ["HF_API_KEY"] = str(v).strip()
+                elif k == "telegram_bot_token":
+                    os.environ["TELEGRAM_BOT_TOKEN"] = str(v).strip()
+                    from backend.app.services.telegram_bot import get_telegram_bot
+                    get_telegram_bot().bot_token = str(v).strip()
+                elif k == "telegram_chat_id":
+                    os.environ["TELEGRAM_CHAT_ID"] = str(v).strip()
+                    from backend.app.services.telegram_bot import get_telegram_bot
+                    get_telegram_bot().chat_id = str(v).strip()
         if existing:
             existing.value_json = current_keys
             flag_modified(existing, "value_json")
@@ -213,11 +221,19 @@ async def update_system_settings(
             select(SystemSettings).where(SystemSettings.key == "notification_threshold")
         )
         existing = res.scalars().first()
-        val = {"threshold": int(payload["notification_threshold"])}
+        thresh_int = int(payload["notification_threshold"])
+        val = {"threshold": thresh_int}
         if existing:
             existing.value_json = val
         else:
             session.add(SystemSettings(key="notification_threshold", value_json=val))
+        # Also sync active theme's alert_threshold so the pipeline orchestrator uses it
+        from backend.app.db.models import Theme
+        active_themes = (
+            await session.execute(select(Theme).where(Theme.is_active == True))
+        ).scalars().all()
+        for t in active_themes:
+            t.alert_threshold = thresh_int
 
     if "polling_intervals" in payload:
         res = await session.execute(

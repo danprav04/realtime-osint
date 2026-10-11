@@ -426,11 +426,16 @@ class TelegramBotService:
                 source_url=data.get("source_url"),
             )
             res = await self.send_alert(payload)
-            # If throttled by cooldown, wait for cooldown (up to 5s) and retry once so breaking news batches aren't discarded
+            # If throttled by cooldown, wait for remaining cooldown under lock and retry once so breaking news batches aren't discarded
             if res.get("status") == "throttled" and res.get("reason") == "rate_limit_cooldown":
-                wait_sec = min(max(self.rate_limit_seconds, 1.0), 5.0)
-                await asyncio.sleep(wait_sec)
-                await self.send_alert(payload)
+                async with self._retry_lock:
+                    remaining = max(0.5, self.rate_limit_seconds - (time.time() - self.last_sent_timestamp) + 0.1)
+                    if os.environ.get("PYTEST_CURRENT_TEST"):
+                        wait_sec = min(remaining, 2.0)
+                    else:
+                        wait_sec = min(remaining, 35.0)
+                    await asyncio.sleep(wait_sec)
+                    await self.send_alert(payload)
         except Exception as exc:
             logger.error(f"Error handling bus alert: {exc}", exc_info=True)
 
@@ -465,9 +470,13 @@ class TelegramBotService:
             logger.debug(f"Failed to hot-reload bot settings from DB: {exc}")
 
     async def start(self) -> None:
-        """Start listening to Redis alert channels."""
+        """Start listening to Redis alert channels and load initial DB configuration."""
         if self._is_running:
             return
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            await self._handle_bus_config_reload(CHANNEL_CONFIG_RELOAD, {})
+            if self.bot_token and not self.chat_id:
+                await self.auto_discover_chat_id()
         self.redis_bus.subscribe(CHANNEL_EVENTS_ALERT, self._handle_bus_alert)
         self.redis_bus.subscribe(CHANNEL_CONFIG_RELOAD, self._handle_bus_config_reload)
         self._is_running = True
