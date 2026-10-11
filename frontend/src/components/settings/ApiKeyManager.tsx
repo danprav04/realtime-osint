@@ -19,7 +19,7 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
     initialSettings?.api_keys || {
       gemini_api_key: '',
       groq_api_key: '',
-      hf_embedding_url: 'https://danprav-osint-embeddings-tei.hf.space',
+      hf_embedding_url: '',
       hf_api_key: '',
       telegram_bot_token: '',
       telegram_chat_id: '',
@@ -161,8 +161,8 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
     {
       id: 'hf_embedding_url',
       label: 'Hugging Face Space TEI URL',
-      placeholder: 'https://danprav-osint-embeddings-tei.hf.space',
-      rateLimitUrl: 'https://huggingface.co/spaces/danprav/osint-embeddings-tei',
+      placeholder: 'https://your-space-name.hf.space',
+      rateLimitUrl: apiKeys.hf_embedding_url || 'https://huggingface.co/spaces',
       rateLimitLabel: 'HF Space Console',
     },
     {

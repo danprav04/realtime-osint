@@ -285,12 +285,12 @@ export const PROVIDER_RATE_LIMITS: ProviderRateLimitInfo[] = [
     name: 'Hugging Face TEI',
     shortName: 'HF TEI',
     category: 'ai',
-    rateLimitUrl: 'https://huggingface.co/spaces/danprav/osint-embeddings-tei',
-    usageUrl: 'https://danprav-osint-embeddings-tei.hf.space',
+    rateLimitUrl: 'https://huggingface.co/spaces',
+    usageUrl: 'https://huggingface.co/settings/tokens',
     docsUrl: 'https://huggingface.co/docs/hub/rate-limits',
     quotaSummary: 'Unlimited • 384d MiniLM',
     keyFields: ['hf_api_key', 'hf_embedding_url'],
-    description: 'Self-hosted Hugging Face Space TEI embeddings server (danprav/osint-embeddings-tei)',
+    description: 'Self-hosted Hugging Face Space TEI embeddings server',
   },
 ];
 
@@ -318,7 +318,19 @@ export function getProviderRateLimitStatuses(options?: {
     ? [aiSettings.extraction, aiSettings.scoring, aiSettings.summarization, aiSettings.visuals].filter(Boolean)
     : [];
 
-  return PROVIDER_RATE_LIMITS.map((provider) => {
+  return PROVIDER_RATE_LIMITS.map((baseProvider) => {
+    const customHfUrl =
+      baseProvider.id === 'huggingface' && apiKeys.hf_embedding_url
+        ? String(apiKeys.hf_embedding_url).trim()
+        : '';
+    const provider = customHfUrl
+      ? {
+          ...baseProvider,
+          rateLimitUrl: customHfUrl,
+          usageUrl: customHfUrl,
+        }
+      : baseProvider;
+
     const hasApiKey = provider.keyFields.some((k) => {
       const val = apiKeys[k];
       return Boolean(val && String(val).trim().length > 0);

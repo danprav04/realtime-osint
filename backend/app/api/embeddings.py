@@ -130,5 +130,6 @@ async def get_embedding_status(
         "primary_model": service.default_model,
         "fallback_model": service.fallback_model,
         "hf_space_configured": bool(service.hf_embedding_url),
+        "hf_embedding_url": service.hf_embedding_url or "",
         "quota_tracker": quota,
     }

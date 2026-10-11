@@ -12,10 +12,11 @@ import type {
 } from './types';
 
 const DEFAULT_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const DEFAULT_API_KEY = process.env.NEXT_PUBLIC_API_KEY || 'osint_secret_key_2026';
 
 export function getStoredApiKey(): string {
-  if (typeof window === 'undefined') return 'osint_secret_key_2026';
-  return localStorage.getItem('osint_api_key') || 'osint_secret_key_2026';
+  if (typeof window === 'undefined') return DEFAULT_API_KEY;
+  return localStorage.getItem('osint_api_key') || DEFAULT_API_KEY;
 }
 
 export function setStoredApiKey(key: string): void {

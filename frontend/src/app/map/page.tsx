@@ -264,10 +264,14 @@ export default function RelevanceMapPage() {
           </div>
           {status?.hf_space_configured && (
             <a
-              href="https://huggingface.co/spaces/danprav/osint-embeddings-tei"
+              href={status.hf_embedding_url || 'https://huggingface.co/spaces'}
               target="_blank"
               rel="noopener noreferrer"
-              title="Connected to Hugging Face Space TEI (danprav/osint-embeddings-tei)"
+              title={
+                status.hf_embedding_url
+                  ? `Connected to Hugging Face Space TEI (${status.hf_embedding_url})`
+                  : 'Connected to Hugging Face Space TEI'
+              }
               className="flex items-center space-x-1.5 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20 transition-colors"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />

@@ -571,6 +571,31 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
                 session.add(existing_setting)
                 logger.info("Auto-repaired AI pipeline fallback chains and replaced deprecated models in existing database settings.")
 
+    # 4. Sync persisted UI api_keys into runtime environment if not already provided via .env
+    import os
+    api_keys_res = await session.execute(
+        select(SystemSettings).where(SystemSettings.key == "api_keys")
+    )
+    api_keys_row = api_keys_res.scalars().first()
+    if api_keys_row and isinstance(api_keys_row.value_json, dict):
+        env_var_map = {
+            "gemini_api_key": "GEMINI_API_KEY",
+            "groq_api_key": "GROQ_API_KEY",
+            "hf_embedding_url": "HF_EMBEDDING_URL",
+            "hf_api_key": "HF_API_KEY",
+            "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+            "telegram_chat_id": "TELEGRAM_CHAT_ID",
+            "telegram_api_id": "TELEGRAM_API_ID",
+            "telegram_api_hash": "TELEGRAM_API_HASH",
+            "newsapi_key": "NEWSAPI_KEY",
+            "reddit_client_id": "REDDIT_CLIENT_ID",
+            "reddit_client_secret": "REDDIT_CLIENT_SECRET",
+        }
+        for k, env_name in env_var_map.items():
+            db_val = api_keys_row.value_json.get(k)
+            if db_val and not os.environ.get(env_name):
+                os.environ[env_name] = str(db_val).strip()
+
     await session.commit()
     logger.info(f"Database seed complete: {seeded_counts}")
     return seeded_counts

@@ -257,6 +257,7 @@ export interface EmbeddingStatus {
   primary_model: string;
   fallback_model: string;
   hf_space_configured: boolean;
+  hf_embedding_url?: string;
   quota_tracker?: QuotaTracker;
 }
 

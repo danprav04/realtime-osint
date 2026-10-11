@@ -134,16 +134,26 @@ The primary operations view provides continuous real-time intelligence monitorin
   - **Extracted Entity Pills**: Clickable named entity tags (e.g. `#IRGC`, `#CENTCOM`, `#StraitOfHormuz`, `#Spain`).
   - **Deep Forensics (`Inspect ↗`)**: Slide-over drawer displaying full raw JSON metadata, translation details, and original source hyperlinks.
 
-### 2. Analytics & Trends (`/trends`)
+### 2. AI Executive Summary (`/summary`)
+- **Multi-Source Situation Synthesis**: Generates structured executive briefings with inline `[Event #]` citations, consensus clusters, key developments, and strategic outlook across configurable lookback windows (`1h`, `6h`, `12h`, `24h`, `72h`).
+- **Interactive Citation Inspection**: Click any inline citation badge to inspect the underlying corroborated source events and original raw wire text.
+
+### 3. 2D Semantic Relevance Map (`/map`)
+- **Spatial Intelligence Galaxy**: Projects high-dimensional event embeddings (`gemini-embedding-001` or self-hosted Hugging Face TEI `all-MiniLM-L6-v2`) onto an interactive 2D canvas with topical clustering and multi-source corroboration scoring.
+- **Consensus & Trustworthiness Badges**: Highlights stories corroborated independently across multiple source engines (RSS, Telegram, NewsAPI, Reddit, AIS).
+
+### 4. Analytics, Trends & Pentagon Pizza Meter (`/trends` & `/`)
 - **Hourly Volume Timeline**: Time-series bar visualization tracking event influx over 24-hour windows.
 - **Score Distribution Histogram**: Density histogram showing distribution across the 1–10 severity scale.
 - **Source Engine Activity**: Radial breakdown of ingested intelligence across all 5 active plugins.
+- **Pentagon Pizza Meter (`PentagonPizzaMeter.tsx`)**: Tracks Arlington/Pentagon defense corridor late-night delivery activity calibrated against hourly historical baselines (`DEFCON 1–5`), toggleable in Settings.
+- **Tactical Alert Wheel (`AlertWheel.tsx`)**: Radial regional siren and kinetic alert visualizer on the live feed.
 
-### 3. Settings Control Center (`/settings`)
+### 5. Settings Control Center (`/settings`)
 - **Theme Configuration**: Zero-code monitoring topic switching, keyword lists, entity tracking, alert thresholds, and dynamic AI scoring prompts.
-- **Source Ingestion Manager**: Add/remove feed URLs, toggle active status, adjust polling frequencies, or execute manual on-demand triggers.
-- **AI Matrix Configuration**: Independent provider (**Gemini** vs. **Groq**), model selection, and temperature tuning for each of the 4 pipeline stages.
-- **API Key & Credentials Vault**: In-browser secure configuration for Gemini, Groq, NewsAPI, and Telegram Bot credentials with live connectivity testing.
+- **Source Ingestion Manager**: Add/remove feed URLs, toggle active status, adjust polling frequencies, configure historical lookback windows, or execute manual on-demand triggers.
+- **AI Matrix Configuration**: Independent provider (**Gemini** vs. **Groq**), primary model selection, multi-tier automatic fallback chains, and temperature tuning for each of the 4 pipeline stages.
+- **API Key & Credentials Vault**: In-browser configuration for Gemini, Groq, Hugging Face Space TEI URL & token, NewsAPI, Reddit, and Telegram Bot credentials with live quota/rate-limit links.
 
 ---
 
@@ -238,9 +248,9 @@ The system is configured in `docker-compose.yml` with strict resource bounds tai
 |---|---|:---:|:---:|---|
 | **PostgreSQL 16** | `postgres:16-alpine` | **150 MB** | 64 MB | `shared_buffers=32MB`, `max_connections=20`, `work_mem=2MB` |
 | **Redis 7** | `redis:7-alpine` | **80 MB** | 32 MB | `maxmemory 32mb`, eviction policy `allkeys-lru` |
-| **FastAPI Backend** | `python:3.11-slim` | **380 MB** | 150 MB | Single worker (`uvicorn --workers 1`), direct `httpx` clients, 100-event ring buffer |
+| **FastAPI Backend** | `python:3.11-slim` | **512 MB** | 150 MB | Single worker (`uvicorn --workers 1`), direct `httpx` clients, 100-event ring buffer |
 | **Next.js Frontend** | `node:20-alpine` | **220 MB** | 100 MB | Standalone server build (`server.js`), `NODE_OPTIONS="--max-old-space-size=180"` |
-| **Total Allocation** | — | **830 MB** | **346 MB** | **Leaves > 170MB RAM safety headroom for the host Linux OS** |
+| **Total Allocation** | — | **962 MB** | **346 MB** | **Typical runtime RSS stays ~370MB across all 4 containers** |
 
 ### Security & Lifecycle Features
 - **Rootless Containers**: Backend runs as `appuser` (UID 10001), frontend runs as `nextjs` (UID 1001).
@@ -275,7 +285,7 @@ docker stats
 - **Dashboard UI**: [http://localhost:3000](http://localhost:3000)
 - **FastAPI OpenAPI Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
 - **Health Telemetry**: [http://localhost:8000/api/health](http://localhost:8000/api/health)
-- **Default API Key**: `dev-secret-key-12345` (set in `.env`)
+- **Default API Key**: `osint_secret_key_2026` (configurable via `API_KEY` in `.env`)
 
 ---
 
@@ -284,7 +294,7 @@ docker stats
 #### Prerequisites
 - Python 3.11+
 - Node.js 18+ & npm
-- PostgreSQL and Redis (or run them via Docker: `docker compose up postgres redis -d`)
+- PostgreSQL and Redis (or run locally with zero dependencies via built-in SQLite + in-memory bus fallbacks)
 
 #### Backend Setup
 ```bash
@@ -310,39 +320,46 @@ npm run dev
 
 ## ⚙️ Configuration Reference
 
-Edit `.env` to configure credentials:
+All credentials, endpoints, and thresholds can be configured via `.env` or dynamically at runtime through the **Settings Control Center (`/settings`)**:
 
 ```ini
-# --- Core Security ---
-API_KEY=dev-secret-key-12345
-SECRET_KEY=replace-with-a-random-32-byte-hex-string
+# --- Core Security & Server ---
+API_KEY=osint_secret_key_2026
+ADMIN_PASSWORD=admin123
 ENVIRONMENT=production
+LOG_LEVEL=INFO
+LOG_FORMAT=json
 
 # --- Database & Cache ---
-DATABASE_URL=postgresql+asyncpg://osint:osint_pass@localhost:5432/osint
-REDIS_URL=redis://localhost:6379/0
+POSTGRES_DB=osint
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres_password
+DATABASE_URL=postgresql+asyncpg://postgres:postgres_password@postgres:5432/osint
+REDIS_URL=redis://redis:6379/0
+
+# --- Frontend Endpoints ---
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_WS_URL=http://localhost:8000
 
 # --- AI Providers ---
 # Google Gemini (https://aistudio.google.com/)
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.0-flash
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.5-flash-lite
 
 # Groq Cloud (https://console.groq.com/)
-GROQ_API_KEY=your_groq_api_key
+GROQ_API_KEY=
 GROQ_MODEL=qwen/qwen3.8-27b
 
-# Default Providers per Stage (gemini | groq | mock)
-STAGE1_PROVIDER=groq
-STAGE2_PROVIDER=gemini
-STAGE3_PROVIDER=gemini
-STAGE4_PROVIDER=groq
+# Hugging Face Space TEI Embeddings Endpoint (Optional: Self-hosted 24/7 Semantic Map Embeddings)
+HF_EMBEDDING_URL=
+HF_API_KEY=
 
-# --- Telegram Notifications ---
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-TELEGRAM_CHAT_ID=your_telegram_chat_or_channel_id
+# --- Telegram Notification Bot ---
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
 ALERT_THRESHOLD=7
 
-# --- Ingestion Credentials (Optional - fallbacks will be used if omitted) ---
+# --- Optional Source Ingestion Credentials (Public fallbacks used if blank) ---
 TELEGRAM_API_ID=
 TELEGRAM_API_HASH=
 NEWSAPI_KEY=
@@ -397,7 +414,7 @@ TOTAL    | All 4 E2E Tiers Verified                 | 96     | 96    | 0     | 1
 
 ```
 realtime-osint/
-├── docker-compose.yml              # 830MB memory-capped 4-container production deployment
+├── docker-compose.yml              # Memory-capped 4-container production deployment
 ├── .env.example                    # Template environment variables
 ├── .gitignore                      # Python, Node.js, SQLite, and agent cache exclusions
 ├── README.md                       # Master system documentation
@@ -414,13 +431,17 @@ realtime-osint/
 │   │   │   ├── themes.py           # Theme CRUD, activation & hot-reload publishing
 │   │   │   ├── sources.py          # Source CRUD, intervals & manual polling triggers
 │   │   │   ├── events.py           # Event timeline queries, filtering & pagination
+│   │   │   ├── embeddings.py       # 2D semantic relevance map, backfills & quota status
+│   │   │   ├── summary.py          # Multi-source AI executive situation summary endpoints
+│   │   │   ├── pizza_meter.py      # Pentagon Pizza Index OSINT telemetry endpoint
 │   │   │   ├── stats.py            # Event aggregation & score distribution metrics
 │   │   │   ├── pipeline.py         # AI pipeline manual triggers & stage status
-│   │   │   └── settings.py         # Dynamic AI provider & model settings
+│   │   │   └── settings.py         # Dynamic AI provider, fallback & credential settings
 │   │   ├── db/                     # SQLAlchemy async ORM models, session & theme seed
 │   │   ├── pipeline/               # 4-Stage AI Pipeline (Gemini & Groq)
 │   │   │   ├── orchestrator.py     # Concurrent DAG executor with fallback logic
 │   │   │   ├── parser.py           # 5-tier resilient JSON parse-repair engine
+│   │   │   ├── arabic_normalizer.py# Arabic/Hebrew tactical normalization & acoustic classifier
 │   │   │   ├── stage1_extract.py   # Entity extraction & Arabic/Farsi translation
 │   │   │   ├── stage2_score.py     # Dynamic prompt-driven 1-10 importance scoring
 │   │   │   ├── stage3_summary.py   # BLUF event and digest summarization
@@ -437,26 +458,31 @@ realtime-osint/
 │   │   └── services/               # Real-time infrastructure services
 │   │       ├── redis_bus.py        # Redis pub/sub event bus with memory fallback
 │   │       ├── socket_server.py    # Authenticated Socket.IO ASGI server & ring buffer
-│   │       └── telegram_bot.py     # Token-bucket alert dispatcher & deduplication
-│   └── tests/                      # 229 backend unit, integration & stress tests
+│   │       ├── telegram_bot.py     # Token-bucket alert dispatcher & deduplication
+│   │       ├── embedding_service.py# Gemini & HF Space TEI embeddings + 2D PCA projection
+│   │       └── summary_service.py  # Multi-event clustering & executive briefing synthesis
+│   └── tests/                      # Backend unit, integration & stress tests
 │
 ├── frontend/                       # Next.js 14/15 Dashboard Application
 │   ├── Dockerfile                  # Multi-stage Node.js 20 Alpine standalone Dockerfile
-│   ├── package.json                # React 19, Socket.IO client, Tailwind CSS, Lucide icons
+│   ├── package.json                # React, Socket.IO client, Tailwind CSS, Lucide icons
 │   ├── next.config.js              # Configured for standalone server output
 │   ├── src/
 │   │   ├── app/
 │   │   │   ├── page.tsx            # Live timeline feed with real-time Socket.IO stream
+│   │   │   ├── summary/page.tsx    # AI Executive Situation Summary briefing view
+│   │   │   ├── map/page.tsx        # Interactive 2D Semantic Relevance Map view
 │   │   │   ├── trends/page.tsx     # Visual analytics & trend charts
 │   │   │   ├── settings/page.tsx   # Zero-code theme, source & AI provider settings
 │   │   │   └── globals.css         # Dark-mode styling tokens
 │   │   └── components/
 │   │       ├── Navbar.tsx          # Navigation header with live status pill
 │   │       ├── AuthModal.tsx       # API key authentication dialog
-│   │       ├── timeline/           # EventCard, ImportanceBadge, SourceBadge, EventDetailsModal
+│   │       ├── timeline/           # EventCard, ImportanceBadge, SourceBadge, AlertWheel, EventDetailsModal
+│   │       ├── map/                # RelevanceMap, EventInspector
 │   │       ├── charts/             # VolumeChart, ScoreDistributionChart, SourceActivityChart
 │   │       ├── settings/           # ThemeForm, SourceManager, AIConfigMatrix, ApiKeyManager
-│   │       └── stats/              # StatCards summary metrics
+│   │       └── stats/              # StatCards, PentagonPizzaMeter
 │   └── tests/                      # Frontend component and utility tests
 │
 └── tests/                          # 96 E2E Integration Tests (Tiers 1-4)

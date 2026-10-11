@@ -195,21 +195,34 @@ async def update_system_settings(
         )
         existing = res.scalars().first()
         current_keys = dict(existing.value_json) if existing and existing.value_json else {}
+        env_var_map = {
+            "gemini_api_key": "GEMINI_API_KEY",
+            "groq_api_key": "GROQ_API_KEY",
+            "hf_embedding_url": "HF_EMBEDDING_URL",
+            "hf_api_key": "HF_API_KEY",
+            "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+            "telegram_chat_id": "TELEGRAM_CHAT_ID",
+            "telegram_api_id": "TELEGRAM_API_ID",
+            "telegram_api_hash": "TELEGRAM_API_HASH",
+            "newsapi_key": "NEWSAPI_KEY",
+            "reddit_client_id": "REDDIT_CLIENT_ID",
+            "reddit_client_secret": "REDDIT_CLIENT_SECRET",
+        }
         for k, v in payload["api_keys"].items():
-            if v and not str(v).startswith("***"):
-                current_keys[k] = v
-                if k == "hf_embedding_url":
-                    os.environ["HF_EMBEDDING_URL"] = str(v).strip()
-                elif k == "hf_api_key":
-                    os.environ["HF_API_KEY"] = str(v).strip()
-                elif k == "telegram_bot_token":
-                    os.environ["TELEGRAM_BOT_TOKEN"] = str(v).strip()
+            if k == "hf_embedding_url" and v == "":
+                current_keys[k] = ""
+                os.environ.pop("HF_EMBEDDING_URL", None)
+            elif v and not str(v).startswith("***"):
+                clean_v = str(v).strip()
+                current_keys[k] = clean_v
+                if k in env_var_map:
+                    os.environ[env_var_map[k]] = clean_v
+                if k == "telegram_bot_token":
                     from backend.app.services.telegram_bot import get_telegram_bot
-                    get_telegram_bot().bot_token = str(v).strip()
+                    get_telegram_bot().bot_token = clean_v
                 elif k == "telegram_chat_id":
-                    os.environ["TELEGRAM_CHAT_ID"] = str(v).strip()
                     from backend.app.services.telegram_bot import get_telegram_bot
-                    get_telegram_bot().chat_id = str(v).strip()
+                    get_telegram_bot().chat_id = clean_v
         if existing:
             existing.value_json = current_keys
             flag_modified(existing, "value_json")

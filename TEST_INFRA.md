@@ -2,9 +2,7 @@
 
 **Project:** Real-time OSINT Gathering Service  
 **Document Version:** 1.0.0  
-**Owner:** test_writer_1  
 **Target Architecture:** FastAPI Backend, Next.js Dashboard, Redis Pub/Sub, PostgreSQL, Telegram Alert Bot  
-**Reference Baseline:** `ORIGINAL_REQUEST.md`, `PROJECT.md`, `spec_inventory.md`
 
 ---
 
@@ -13,7 +11,7 @@
 The Real-time OSINT Gathering Service test suite is built upon an **opaque-box, requirement-driven, contract-verified** testing philosophy:
 
 1. **Opaque-Box Verification:** Tests interact strictly with public contracts, HTTP REST API endpoints, WebSocket messages, message queue payloads, and external service interfaces. Tests make zero assumptions about internal private state, unexported classes, or specific database column order.
-2. **Authoritative Specification Derivation:** Every test input, validation assertion, and expected output is directly derived from user requirements in `ORIGINAL_REQUEST.md` and architectural interface contracts in `PROJECT.md` and `spec_inventory.md`.
+2. **Authoritative Specification Derivation:** Every test input, validation assertion, and expected output is directly derived from system requirements and architectural interface contracts.
 3. **Progressive Testability & Determinism:** Tests are deterministic, isolated, and self-contained. Offline mocks simulate external networks (Google Gemini API, Groq Cloud API, Telegram Bot API, Reddit API, NewsAPIs, and Maritime AIS feeds) with high fidelity, ensuring zero flaky network dependencies during CI and local execution.
 4. **Adversarial & Edge-First Mindset:** The suite tests not only happy paths, but actively probes boundary extremes (score 1 and 10, empty payloads, malformed XML, mixed Farsi/Arabic scripts, rate limit bursts, and duplicate storms).
 5. **Zero-Code Hot Reload Verification:** The test suite verifies that modifying theme keywords, scoring prompts, and source polling parameters takes immediate effect in the running system without requiring restarts.
