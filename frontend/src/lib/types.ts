@@ -1,3 +1,36 @@
+export interface RelatedReportItem {
+  event_id: string;
+  headline: string;
+  source_name: string;
+  source_type?: string;
+  importance_score: number;
+  similarity: number;
+  published_at?: string | null;
+}
+
+export interface ScoringBreakdown {
+  final_score: number;
+  priority_level: 'low' | 'medium' | 'high' | 'critical' | string;
+  severity_score: number;
+  novelty_score: number;
+  verification_confidence: 'low' | 'medium' | 'high' | string;
+  confidence_score: number;
+  corroboration_status: string;
+  corroboration_count: number;
+  corroborating_sources: string[];
+  same_source_echo_count?: number;
+  is_same_source_echo?: boolean;
+  max_similarity?: number;
+  source_reliability_tier?: string;
+  source_reliability_label?: string;
+  signal_type?: string;
+  signal_verification?: string;
+  velocity_status?: string;
+  calibration_notes?: string[];
+  related_reports?: RelatedReportItem[];
+  retroactively_corroborated?: boolean;
+}
+
 export interface NormalizedEvent {
   id: string;
   theme_id: string;
@@ -12,7 +45,11 @@ export interface NormalizedEvent {
   language?: string;
   author?: string | null;
   location_json?: { lat?: number; lon?: number; name?: string } | null;
-  metadata_json?: Record<string, any>;
+  metadata_json?: {
+    scoring_breakdown?: ScoringBreakdown;
+    trend_category?: string;
+    [key: string]: any;
+  };
   importance_score?: number | null;
   score_rationale?: string | null;
   summary?: string | null;

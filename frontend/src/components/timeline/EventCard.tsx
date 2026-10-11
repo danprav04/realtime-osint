@@ -11,7 +11,7 @@ import {
   MapPin,
   Clock,
 } from 'lucide-react';
-import { NormalizedEvent } from '@/lib/types';
+import { NormalizedEvent, ScoringBreakdown } from '@/lib/types';
 import { ImportanceBadge } from './ImportanceBadge';
 import { SourceBadge } from './SourceBadge';
 import { formatRelativeTime, formatDateTime } from '@/lib/utils';
@@ -27,6 +27,8 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
   const isTranslated = !!event.translated_text && event.language && event.language !== 'en';
   const entities: string[] = (event.entities_json || (event as any).entities || []) as string[];
   const isPending = !event.is_analyzed && (event.importance_score === null || event.importance_score === undefined);
+  const scoringBreakdown: ScoringBreakdown | undefined =
+    event.metadata_json?.scoring_breakdown || (event as any).metadata?.scoring_breakdown;
 
   const hasNonLatin = (str?: string | null) =>
     str ? /[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str) : false;
@@ -74,6 +76,22 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
             >
               <Globe className="w-2.5 h-2.5" />
               <span>{event.language?.toUpperCase()} → EN</span>
+            </span>
+          )}
+          {scoringBreakdown && scoringBreakdown.corroboration_count >= 1 && (
+            <span
+              className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono"
+              title={`Corroborated by: ${(scoringBreakdown.corroborating_sources || []).join(', ')}`}
+            >
+              <span>✓ {scoringBreakdown.corroboration_count + 1} Sources</span>
+            </span>
+          )}
+          {scoringBreakdown?.is_same_source_echo && (
+            <span
+              className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] bg-zinc-500/10 text-zinc-400 border border-zinc-500/20 font-mono"
+              title="Repetitive update from the same source; score dampened"
+            >
+              <span>Echo Dampened</span>
             </span>
           )}
         </div>
@@ -133,12 +151,50 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
       {/* Expandable in-card details accordion */}
       {isExpanded && (
         <div className="pt-3 mt-2 hairline-t space-y-3 text-xs animate-in fade-in duration-150">
-          {event.score_rationale && (
-            <div className="p-3 rounded-lg bg-canvas-recessed hairline-border">
-              <span className="font-semibold text-accent-amber text-[11px] block mb-1">
-                AI SCORING RATIONALE
-              </span>
-              <p className="text-zinc-300 text-xs leading-relaxed">{event.score_rationale}</p>
+          {(event.score_rationale || scoringBreakdown) && (
+            <div className="p-3 rounded-lg bg-canvas-recessed hairline-border space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-accent-amber text-[11px]">
+                  AI SCORING RATIONALE & CALIBRATION
+                </span>
+                {scoringBreakdown?.corroboration_status && (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-raised hairline-border text-zinc-300">
+                    {scoringBreakdown.corroboration_status}
+                  </span>
+                )}
+              </div>
+
+              {event.score_rationale && (
+                <p className="text-zinc-300 text-xs leading-relaxed">{event.score_rationale}</p>
+              )}
+
+              {scoringBreakdown && (
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-surface-card hairline-border text-zinc-300">
+                    Severity: <strong className="text-zinc-100">{scoringBreakdown.severity_score}/10</strong>
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-surface-card hairline-border text-zinc-300">
+                    Novelty: <strong className="text-zinc-100">{scoringBreakdown.novelty_score}/10</strong>
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-surface-card hairline-border text-zinc-300">
+                    Confidence:{' '}
+                    <strong className="text-zinc-100 uppercase">
+                      {scoringBreakdown.verification_confidence} ({scoringBreakdown.confidence_score}/10)
+                    </strong>
+                  </span>
+                  {scoringBreakdown.source_reliability_label && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-surface-card hairline-border text-zinc-400">
+                      {scoringBreakdown.source_reliability_label}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {scoringBreakdown?.corroborating_sources && scoringBreakdown.corroborating_sources.length > 0 && (
+                <div className="text-[11px] text-emerald-400/90 font-mono">
+                  Corroborated across: {scoringBreakdown.corroborating_sources.join(', ')}
+                </div>
+              )}
             </div>
           )}
 

@@ -1709,6 +1709,278 @@ class EmbeddingService:
             "message": f"Successfully generated embeddings for {len(embs)} events.",
         }
 
+    async def compute_live_scoring_neighborhood(
+        self,
+        session: AsyncSession,
+        candidate_event_id: str,
+        theme_id: int,
+        title: str,
+        intelligence_text: str,
+        extracted_entities: List[str],
+        source_name: str,
+        source_type: str = "rss",
+        published_at: Optional[datetime] = None,
+        location_json: Optional[Any] = None,
+        alert_threshold: int = 7,
+        use_mock: bool = False,
+        lookback_hours: int = 48,
+        max_recent_events: int = 80,
+    ) -> Dict[str, Any]:
+        """
+        Pre-Stage 2 inline semantic embedding & situational context lookup.
+        1. Embeds the incoming candidate event using its Stage 1 English translation and entities.
+        2. Queries recent analyzed events and their cached EventEmbeddings in the active theme.
+        3. Computes context-calibrated cosine similarity + Jaccard echo detection to find:
+           - Top semantically related recent reports
+           - Independent corroborating sources & event IDs
+           - Same-source echo / repetitive update counts
+           - 6h / 24h theater reporting velocity and active high-priority storylines
+        """
+        from backend.app.pipeline.arabic_normalizer import compute_jaccard_similarity
+
+        now = utc_now()
+        pub_dt = published_at or now
+        if isinstance(pub_dt, str):
+            try:
+                pub_dt = datetime.fromisoformat(pub_dt.replace("Z", "+00:00"))
+            except Exception:
+                pub_dt = now
+        if pub_dt.tzinfo is None:
+            pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+
+        # Build a lightweight transient Event object for semantic text & pairwise context bonus
+        temp_event = Event(
+            id=candidate_event_id,
+            theme_id=theme_id,
+            source_type=source_type,
+            source_name=source_name,
+            external_id=candidate_event_id,
+            title=title,
+            headline=title,
+            raw_text=intelligence_text,
+            translated_text=intelligence_text,
+            summary=intelligence_text[:450] if intelligence_text else title,
+            entities_json=list(extracted_entities or []),
+            location_json=location_json if isinstance(location_json, dict) else None,
+            published_at=pub_dt,
+            ingested_at=now,
+        )
+
+        # 1. Generate semantic embedding for candidate event
+        sem_text = build_semantic_embedding_text(temp_event)
+        cand_vectors, model_used = await self.generate_embeddings_batch(
+            texts=[sem_text],
+            use_mock=use_mock,
+            session=session,
+        )
+        cand_vec = cand_vectors[0] if cand_vectors else generate_deterministic_mock_embedding(sem_text)
+
+        # 2. Fetch recent analyzed events in this theme (excluding candidate itself)
+        cutoff_lookback = now - timedelta(hours=lookback_hours)
+        stmt_recent = (
+            select(Event)
+            .where(
+                (Event.theme_id == theme_id)
+                & (Event.id != candidate_event_id)
+                & (Event.is_analyzed == True)
+                & (Event.published_at >= cutoff_lookback)
+            )
+            .order_by(Event.published_at.desc())
+            .limit(max_recent_events)
+        )
+        recent_events: List[Event] = list((await session.execute(stmt_recent)).scalars().all())
+
+        # If no events within 48h (e.g. seeded historical test data), fall back to latest analyzed events in theme
+        if not recent_events:
+            stmt_fallback = (
+                select(Event)
+                .where((Event.theme_id == theme_id) & (Event.id != candidate_event_id) & (Event.is_analyzed == True))
+                .order_by(Event.published_at.desc())
+                .limit(min(30, max_recent_events))
+            )
+            recent_events = list((await session.execute(stmt_fallback)).scalars().all())
+
+        # 3. Compute 6h / 24h theater velocity and active storylines
+        since_6h = now - timedelta(hours=6)
+        since_24h = now - timedelta(hours=24)
+        events_last_6h = 0
+        events_prev_18h = 0
+        critical_alerts_last_6h = 0
+        scores_24h: List[int] = []
+        active_storylines: List[str] = []
+        seen_storyline_hl: Set[str] = set()
+
+        for rev in recent_events:
+            r_score = int(rev.importance_score or 5)
+            r_pub = rev.published_at
+            if r_pub:
+                if r_pub.tzinfo is None:
+                    r_pub = r_pub.replace(tzinfo=timezone.utc)
+                if r_pub >= since_6h:
+                    events_last_6h += 1
+                    if r_score >= alert_threshold:
+                        critical_alerts_last_6h += 1
+                elif r_pub >= since_24h:
+                    events_prev_18h += 1
+                if r_pub >= since_24h:
+                    scores_24h.append(r_score)
+            else:
+                scores_24h.append(r_score)
+
+            if r_score >= alert_threshold and len(active_storylines) < 4:
+                hl = (rev.headline or rev.title or "").strip()
+                if hl and hl.lower() not in seen_storyline_hl:
+                    seen_storyline_hl.add(hl.lower())
+                    active_storylines.append(f"[{rev.source_name} | Score {r_score}/10] {hl}")
+
+        rate_6h = events_last_6h / 6.0
+        rate_prev_18h = max(0.2, events_prev_18h / 18.0)
+        if events_last_6h >= 6 and rate_6h >= rate_prev_18h * 1.6:
+            velocity_status = "Surge"
+        elif events_last_6h >= 3 and rate_6h >= rate_prev_18h * 1.15:
+            velocity_status = "Elevated"
+        elif not recent_events:
+            velocity_status = "Quiet"
+        else:
+            velocity_status = "Normal"
+
+        avg_score_24h = round(sum(scores_24h) / len(scores_24h), 1) if scores_24h else 5.0
+
+        if not recent_events:
+            return {
+                "embedding_vector": cand_vec,
+                "embedding_model_name": model_used,
+                "related_reports": [],
+                "corroboration_count": 0,
+                "corroborating_sources": [],
+                "corroborating_event_ids": [],
+                "same_source_echo_count": 0,
+                "is_same_source_echo": False,
+                "max_similarity": 0.0,
+                "corroboration_status": "First Report / Unverified",
+                "velocity_status": velocity_status,
+                "events_last_6h": events_last_6h,
+                "critical_alerts_last_6h": critical_alerts_last_6h,
+                "avg_score_24h": avg_score_24h,
+                "active_storylines": active_storylines,
+            }
+
+        # 4. Retrieve or compute embeddings for recent peer events
+        recent_ids = [r.id for r in recent_events]
+        stmt_embs = select(EventEmbedding).where(EventEmbedding.event_id.in_(recent_ids))
+        existing_embs = list((await session.execute(stmt_embs)).scalars().all())
+        emb_map: Dict[str, List[float]] = {e.event_id: e.embedding_vector for e in existing_embs if e.embedding_vector}
+
+        missing_peers = [r for r in recent_events if r.id not in emb_map]
+        if missing_peers:
+            # Generate deterministic embeddings for any un-embedded peers to avoid blocking stage latency
+            for mp in missing_peers:
+                mp_text = build_semantic_embedding_text(mp)
+                emb_map[mp.id] = generate_deterministic_mock_embedding(mp_text, dim=len(cand_vec) or 3072)
+
+        peer_vectors = [emb_map[r.id] for r in recent_events]
+        all_vecs = _homogenize_vectors([cand_vec] + peer_vectors)
+        norms = np.linalg.norm(all_vecs, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-8
+        norm_vecs = all_vecs / norms
+
+        cand_norm = norm_vecs[0]
+        peer_norms = norm_vecs[1:]
+        raw_sims = np.dot(peer_norms, cand_norm)
+
+        # Determine threshold calibration (dense neural vs sparse/mock vectors)
+        is_mock_vec = model_used in ("mock-embedding-3072", "mock-fallback") or use_mock
+        p50 = float(np.percentile(raw_sims, 50)) if len(raw_sims) > 0 else 0.0
+        if not is_mock_vec and p50 > 0.45:
+            corrob_threshold = 0.775
+            echo_threshold = 0.81
+            outlier_threshold = 0.63
+        else:
+            corrob_threshold = 0.38
+            echo_threshold = 0.44
+            outlier_threshold = 0.20
+
+        cand_tokens = _extract_event_Lookup_tokens(temp_event)
+        cand_clean_text = f"{title} {intelligence_text}".strip()
+
+        scored_peers: List[Tuple[Event, float, float]] = []
+        corroborating_sources_set: Set[str] = set()
+        corroborating_event_ids: List[str] = []
+        same_source_echo_count = 0
+
+        for idx, peer in enumerate(recent_events):
+            raw_s = float(raw_sims[idx])
+            bonus = _compute_pairwise_context_bonus(temp_event, peer)
+            adj_s = float(np.clip(raw_s + bonus, 0.0, 1.0))
+
+            peer_tokens = _extract_event_Lookup_tokens(peer)
+            shared_tokens = len(cand_tokens.intersection(peer_tokens)) if (cand_tokens and peer_tokens) else 0
+
+            # Check Jaccard similarity for near-duplicate text echo
+            peer_clean_text = f"{peer.headline or peer.title or ''} {peer.translated_text or peer.summary or peer.raw_text or ''}".strip()
+            jaccard_sim = compute_jaccard_similarity(cand_clean_text, peer_clean_text, n=3)
+            effective_sim = max(adj_s, jaccard_sim)
+
+            scored_peers.append((peer, effective_sim, jaccard_sim))
+
+            is_same_source = (peer.source_name or "").strip().lower() == (source_name or "").strip().lower()
+            if is_same_source:
+                if effective_sim >= echo_threshold or jaccard_sim >= 0.75 or (adj_s >= corrob_threshold and shared_tokens >= 2):
+                    same_source_echo_count += 1
+            else:
+                if effective_sim >= corrob_threshold or (adj_s >= corrob_threshold - 0.03 and shared_tokens >= 2):
+                    if peer.source_name:
+                        corroborating_sources_set.add(peer.source_name)
+                    corroborating_event_ids.append(peer.id)
+
+        scored_peers.sort(key=lambda x: x[1], reverse=True)
+        max_similarity = scored_peers[0][1] if scored_peers else 0.0
+
+        related_reports: List[Dict[str, Any]] = []
+        for peer, sim_val, _ in scored_peers[:4]:
+            if sim_val >= outlier_threshold:
+                related_reports.append({
+                    "event_id": peer.id,
+                    "headline": peer.headline or peer.title,
+                    "source_name": peer.source_name,
+                    "source_type": peer.source_type,
+                    "importance_score": int(peer.importance_score or 5),
+                    "similarity": round(sim_val, 3),
+                    "published_at": peer.published_at.isoformat() if peer.published_at else None,
+                })
+
+        corrob_count = len(corroborating_sources_set)
+        is_same_source_echo = same_source_echo_count >= 1
+
+        if is_same_source_echo and corrob_count == 0:
+            corrob_status = "Same-Source Echo"
+        elif corrob_count >= 2:
+            corrob_status = "Highly Corroborated"
+        elif corrob_count == 1:
+            corrob_status = "Developing / Verified"
+        elif max_similarity < outlier_threshold and len(recent_events) >= 3:
+            corrob_status = "Isolated Outlier"
+        else:
+            corrob_status = "First Report / Unverified"
+
+        return {
+            "embedding_vector": cand_vec,
+            "embedding_model_name": model_used,
+            "related_reports": related_reports,
+            "corroboration_count": corrob_count,
+            "corroborating_sources": sorted(corroborating_sources_set),
+            "corroborating_event_ids": corroborating_event_ids,
+            "same_source_echo_count": same_source_echo_count,
+            "is_same_source_echo": is_same_source_echo,
+            "max_similarity": round(max_similarity, 3),
+            "corroboration_status": corrob_status,
+            "velocity_status": velocity_status,
+            "events_last_6h": events_last_6h,
+            "critical_alerts_last_6h": critical_alerts_last_6h,
+            "avg_score_24h": avg_score_24h,
+            "active_storylines": active_storylines,
+        }
+
 
 # Global singleton instance
 _embedding_service: Optional[EmbeddingService] = None
@@ -1719,3 +1991,4 @@ def get_embedding_service() -> EmbeddingService:
     if _embedding_service is None:
         _embedding_service = EmbeddingService()
     return _embedding_service
+

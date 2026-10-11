@@ -972,3 +972,216 @@ async def test_minute_rate_limit_waits_and_retries_same_model_no_qwen_switch(mon
     assert orchestrator.is_model_in_cooldown("gemini", "gemini-3.5-flash-lite") is False
 
 
+@pytest.mark.asyncio
+async def test_stage2_multidimensional_scoring_and_calibration():
+    """
+    Test 23: Verifies multi-dimensional sub-scores (severity, novelty, verification_confidence),
+    source reliability tiers, same-source echo dampening, uncorroborated acoustic rumor capping,
+    and multi-source corroboration boosts in Stage 2 scoring.
+    """
+    from backend.app.pipeline.stage2_score import (
+        classify_source_reliability,
+        calibrate_stage2_result,
+    )
+    from backend.app.pipeline.arabic_normalizer import classify_kinetic_signal
+    from backend.app.pipeline.models import Stage2Result
+
+    # 1. Source reliability tiers
+    t1_id, _ = classify_source_reliability("Reuters", "rss")
+    t2_id, _ = classify_source_reliability("Al Mayadeen", "telegram")
+    t3_id, _ = classify_source_reliability("OSINT Defender", "reddit")
+    assert t1_id == "tier_1_wire_official"
+    assert t2_id == "tier_2_regional_osint"
+    assert t3_id == "tier_3_social_unverified"
+
+    theme_ctx = {"name": "Iran Theater", "alert_threshold": 8}
+
+    # 2. Same-source echo dampening: score reduced by 2 and duplicate alert suppressed
+    raw_echo = Stage2Result(
+        importance_score=9,
+        severity_score=9,
+        novelty_score=7,
+        verification_confidence="medium",
+        confidence_score=7,
+        score_rationale="Missile strike reported.",
+        priority_level="critical",
+        should_alert=True,
+    )
+    echo_ctx = {
+        "source_reliability_tier": "tier_2_regional_osint",
+        "corroboration_count": 0,
+        "corroborating_sources": [],
+        "same_source_echo_count": 2,
+        "is_same_source_echo": True,
+        "corroboration_status": "Repetitive Same-Source Echo",
+    }
+    cal_echo = calibrate_stage2_result(raw_echo, theme_ctx, echo_ctx, "Missile strike reported in Isfahan.")
+    assert cal_echo.importance_score == 7
+    assert cal_echo.novelty_score <= 3
+    assert cal_echo.should_alert is False
+    assert any("Same-source echo dampened" in note for note in cal_echo.calibration_notes)
+
+    # 3. Uncorroborated frontline Arabic acoustic chatter capped below alert_threshold (8)
+    raw_acoustic = Stage2Result(
+        importance_score=8,
+        severity_score=8,
+        novelty_score=7,
+        verification_confidence="medium",
+        confidence_score=6,
+        score_rationale="Explosion heard near border.",
+        priority_level="high",
+        should_alert=True,
+    )
+    acoustic_text = "سماع دوي انفجار في المنطقة الحدودية"
+    acoustic_ctx = {
+        "source_reliability_tier": "tier_2_regional_osint",
+        "kinetic_signal": classify_kinetic_signal(acoustic_text),
+        "corroboration_count": 0,
+        "corroborating_sources": [],
+        "same_source_echo_count": 0,
+        "is_same_source_echo": False,
+        "corroboration_status": "First Report / Unverified",
+    }
+    cal_acoustic = calibrate_stage2_result(
+        raw_acoustic,
+        theme_ctx,
+        acoustic_ctx,
+        acoustic_text,
+    )
+    assert cal_acoustic.importance_score <= 6
+    assert cal_acoustic.should_alert is False
+    assert cal_acoustic.verification_confidence == "low"
+    assert any("Acoustic anomaly cap" in note for note in cal_acoustic.calibration_notes)
+
+    # 4. Multi-source corroborated event receives +1 boost and elevated verification confidence
+    raw_corrob = Stage2Result(
+        importance_score=8,
+        severity_score=8,
+        novelty_score=8,
+        verification_confidence="medium",
+        confidence_score=6,
+        score_rationale="IRGC naval interception confirmed.",
+        priority_level="high",
+        should_alert=True,
+    )
+    corrob_ctx = {
+        "source_reliability_tier": "tier_1_wire_official",
+        "corroboration_count": 2,
+        "corroborating_sources": ["Al Jazeera", "Associated Press"],
+        "same_source_echo_count": 0,
+        "is_same_source_echo": False,
+        "corroboration_status": "Multi-Source Corroborated",
+    }
+    cal_corrob = calibrate_stage2_result(
+        raw_corrob,
+        theme_ctx,
+        corrob_ctx,
+        "IRGC naval forces intercepted a commercial tanker in the Strait of Hormuz.",
+    )
+    assert cal_corrob.importance_score == 9
+    assert cal_corrob.verification_confidence == "high"
+    assert cal_corrob.confidence_score >= 9
+    assert cal_corrob.should_alert is True
+    assert any("Multi-source corroboration boost" in note for note in cal_corrob.calibration_notes)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_inline_embedding_and_retroactive_corroboration_upgrade(test_db_session, mock_redis_bus):
+    """
+    Test 24: Verifies that PipelineOrchestrator:
+    1. Computes inline embeddings prior to Stage 2 and persists EventEmbedding + scoring_breakdown.
+    2. Detects semantic corroboration across independent sources on subsequent events.
+    3. Retroactively upgrades an earlier unverified event (+1 score and rationale note) when
+       corroborated by independent sources.
+    """
+    from backend.app.db.models import EventEmbedding
+
+    orchestrator = PipelineOrchestrator(
+        session_factory=test_db_session,
+        redis_bus=mock_redis_bus,
+        use_mock=True,
+    )
+
+    # Insert raw Event 1 into DB before processing
+    async with test_db_session() as session:
+        session.add(
+            Event(
+                id="corrob-evt-001",
+                theme_id=1,
+                source_type="telegram",
+                source_name="NourNews",
+                external_id="ext-corrob-001",
+                title="Sanctions and IRGC naval exercises near Bandar Abbas",
+                raw_text="IRGC naval units and Quds Force commanders inspected sanctions-evading tanker fleet at Bandar Abbas port.",
+                is_analyzed=False,
+                published_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    evt1 = NormalizedEvent(
+        id="corrob-evt-001",
+        theme_id="1",
+        source_type="telegram",
+        source_name="NourNews",
+        external_id="ext-corrob-001",
+        title="Sanctions and IRGC naval exercises near Bandar Abbas",
+        raw_text="IRGC naval units and Quds Force commanders inspected sanctions-evading tanker fleet at Bandar Abbas port.",
+    )
+    res1 = await orchestrator.process_event(evt1, parallel_stages=False)
+    assert res1.is_analyzed is True
+    initial_score_1 = res1.importance_score
+    assert "scoring_breakdown" in res1.metadata
+    assert res1.metadata["scoring_breakdown"]["corroboration_count"] == 0
+
+    # Verify EventEmbedding was persisted inline
+    async with test_db_session() as session:
+        emb_res = await session.execute(select(EventEmbedding).where(EventEmbedding.event_id == "corrob-evt-001"))
+        emb1 = emb_res.scalars().first()
+        assert emb1 is not None
+
+    # Insert raw Event 2 into DB from an independent Tier-1 source (Reuters) on the same incident
+    async with test_db_session() as session:
+        session.add(
+            Event(
+                id="corrob-evt-002",
+                theme_id=1,
+                source_type="rss",
+                source_name="Reuters",
+                external_id="ext-corrob-002",
+                title="Sanctions and IRGC naval exercises near Bandar Abbas",
+                raw_text="IRGC naval units and Quds Force commanders inspected sanctions-evading tanker fleet at Bandar Abbas port today.",
+                is_analyzed=False,
+                published_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    evt2 = NormalizedEvent(
+        id="corrob-evt-002",
+        theme_id="1",
+        source_type="rss",
+        source_name="Reuters",
+        external_id="ext-corrob-002",
+        title="Sanctions and IRGC naval exercises near Bandar Abbas",
+        raw_text="IRGC naval units and Quds Force commanders inspected sanctions-evading tanker fleet at Bandar Abbas port today.",
+    )
+    res2 = await orchestrator.process_event(evt2, parallel_stages=False)
+    assert res2.is_analyzed is True
+    bd2 = res2.metadata.get("scoring_breakdown", {})
+    assert bd2.get("corroboration_count", 0) >= 1
+    assert "NourNews" in bd2.get("corroborating_sources", [])
+    assert len(bd2.get("related_reports", [])) >= 1
+
+    # Verify Event 1 in the database was retroactively upgraded by Event 2's corroboration!
+    async with test_db_session() as session:
+        ev1_res = await session.execute(select(Event).where(Event.id == "corrob-evt-001"))
+        db_evt1 = ev1_res.scalars().first()
+        assert db_evt1 is not None
+        assert db_evt1.importance_score == min(10, initial_score_1 + 1)
+        assert "Retroactively corroborated" in (db_evt1.score_rationale or "")
+        bd1_updated = (db_evt1.metadata_json or {}).get("scoring_breakdown", {})
+        assert bd1_updated.get("retroactively_corroborated") is True
+        assert "Reuters" in bd1_updated.get("corroborating_sources", [])
+
+

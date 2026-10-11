@@ -14,7 +14,7 @@ import {
   FileText,
   Code,
 } from 'lucide-react';
-import { NormalizedEvent } from '@/lib/types';
+import { NormalizedEvent, ScoringBreakdown } from '@/lib/types';
 import { ImportanceBadge } from './ImportanceBadge';
 import { SourceBadge } from './SourceBadge';
 import { formatDateTime } from '@/lib/utils';
@@ -40,6 +40,8 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
   const entities: string[] = (event.entities_json || (event as any).entities || []) as string[];
   const isTranslated = !!event.translated_text && event.language && event.language !== 'en';
   const isPending = !event.is_analyzed && (event.importance_score === null || event.importance_score === undefined);
+  const scoringBreakdown: ScoringBreakdown | undefined =
+    event.metadata_json?.scoring_breakdown || (event as any).metadata?.scoring_breakdown;
 
   const hasNonLatin = (str?: string | null) =>
     str ? /[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str) : false;
@@ -87,6 +89,16 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                 <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20">
                   <Globe className="w-3 h-3" />
                   <span>Translated from {event.language?.toUpperCase()}</span>
+                </span>
+              )}
+              {scoringBreakdown?.corroboration_status && (
+                <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <span>{scoringBreakdown.corroboration_status}</span>
+                </span>
+              )}
+              {scoringBreakdown?.retroactively_corroborated && (
+                <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-mono bg-accent-amber/10 text-accent-amber border border-accent-amber/20">
+                  <span>↑ Retroactively Upgraded</span>
                 </span>
               )}
             </div>
@@ -182,15 +194,140 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                 </p>
               </div>
 
-              {/* Score Rationale */}
-              {event.score_rationale && (
-                <div className="p-3.5 rounded-lg bg-surface-card hairline-border">
-                  <div className="text-xs font-semibold text-accent-amber mb-1.5">
-                    IMPORTANCE SCORING RATIONALE
+              {/* Score Rationale & Multi-Dimensional Breakdown */}
+              {(event.score_rationale || scoringBreakdown) && (
+                <div className="p-3.5 rounded-lg bg-surface-card hairline-border space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs font-semibold text-accent-amber">
+                      IMPORTANCE SCORING RATIONALE & CALIBRATION
+                    </div>
+                    {scoringBreakdown?.source_reliability_label && (
+                      <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-surface-raised hairline-border text-zinc-300">
+                        {scoringBreakdown.source_reliability_label}
+                      </span>
+                    )}
                   </div>
-                  <p className="text-xs text-zinc-300 leading-relaxed">
-                    {event.score_rationale}
-                  </p>
+
+                  {event.score_rationale && (
+                    <p className="text-xs text-zinc-300 leading-relaxed">
+                      {event.score_rationale}
+                    </p>
+                  )}
+
+                  {scoringBreakdown && (
+                    <>
+                      {/* 3-Column Sub-Score Bars */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                        <div className="p-2.5 rounded-md bg-canvas-recessed hairline-border">
+                          <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+                            <span>Tactical Severity</span>
+                            <span className="font-mono font-semibold text-zinc-100">
+                              {scoringBreakdown.severity_score}/10
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
+                            <div
+                              className="h-full bg-rose-500 rounded-full"
+                              style={{ width: `${Math.min(100, (scoringBreakdown.severity_score || 5) * 10)}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="p-2.5 rounded-md bg-canvas-recessed hairline-border">
+                          <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+                            <span>Escalation Novelty</span>
+                            <span className="font-mono font-semibold text-zinc-100">
+                              {scoringBreakdown.novelty_score}/10
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
+                            <div
+                              className="h-full bg-accent-cyan rounded-full"
+                              style={{ width: `${Math.min(100, (scoringBreakdown.novelty_score || 5) * 10)}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="p-2.5 rounded-md bg-canvas-recessed hairline-border">
+                          <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+                            <span>Verification Confidence</span>
+                            <span className="font-mono font-semibold text-zinc-100 uppercase">
+                              {scoringBreakdown.verification_confidence} ({scoringBreakdown.confidence_score}/10)
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
+                            <div
+                              className="h-full bg-emerald-500 rounded-full"
+                              style={{ width: `${Math.min(100, (scoringBreakdown.confidence_score || 5) * 10)}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Signal & Theater Context Badges */}
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
+                        {scoringBreakdown.signal_type && (
+                          <span className="px-2 py-0.5 rounded bg-canvas-recessed hairline-border text-zinc-300">
+                            Signal: {scoringBreakdown.signal_type.replace(/_/g, ' ')}
+                          </span>
+                        )}
+                        {scoringBreakdown.velocity_status && (
+                          <span className="px-2 py-0.5 rounded bg-canvas-recessed hairline-border text-zinc-300">
+                            Theater Tempo: {scoringBreakdown.velocity_status}
+                          </span>
+                        )}
+                        {scoringBreakdown.corroborating_sources && scoringBreakdown.corroborating_sources.length > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">
+                            Corroborated by: {scoringBreakdown.corroborating_sources.join(', ')}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Calibration Notes */}
+                      {scoringBreakdown.calibration_notes && scoringBreakdown.calibration_notes.length > 0 && (
+                        <div className="p-2.5 rounded-md bg-canvas-recessed hairline-border space-y-1">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 block">
+                            Tradecraft Calibration Applied
+                          </span>
+                          {scoringBreakdown.calibration_notes.map((note, idx) => (
+                            <div key={idx} className="text-[11px] text-zinc-300 font-mono">
+                              • {note}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Related & Corroborating Reports from Vector Embedding Space */}
+                      {scoringBreakdown.related_reports && scoringBreakdown.related_reports.length > 0 && (
+                        <div className="p-2.5 rounded-md bg-canvas-recessed hairline-border space-y-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-accent-cyan block">
+                            Semantically Related Recent Reports (Vector Embedding Matches)
+                          </span>
+                          <div className="space-y-1.5">
+                            {scoringBreakdown.related_reports.map((rel, idx) => (
+                              <div
+                                key={rel.event_id || idx}
+                                className="flex items-center justify-between gap-2 text-xs py-1 border-b border-white/5 last:border-0"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <span className="font-mono text-[10px] text-accent-cyan mr-2">
+                                    [{rel.source_name}]
+                                  </span>
+                                  <span className="text-zinc-200 truncate">{rel.headline}</span>
+                                </div>
+                                <div className="flex items-center space-x-2 flex-shrink-0 font-mono text-[10px]">
+                                  <span className="px-1.5 py-0.5 rounded bg-surface-card hairline-border text-emerald-400">
+                                    {Math.round((rel.similarity || 0) * 100)}% sim
+                                  </span>
+                                  <span className="text-zinc-400">Score {rel.importance_score}/10</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
 

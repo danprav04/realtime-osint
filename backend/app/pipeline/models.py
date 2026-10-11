@@ -179,11 +179,51 @@ class Stage1Result(BaseModel):
         return []
 
 
+class RelatedReportContext(BaseModel):
+    """Summary of a semantically similar recent report retrieved from EventEmbedding space."""
+    event_id: str
+    headline: str
+    source_name: str
+    source_type: str = "rss"
+    importance_score: int = 5
+    similarity: float = 0.0
+    published_at: Optional[str] = None
+
+
+class ScoringContext(BaseModel):
+    """
+    Pre-Stage 2 Situational & Semantic Embedding Context snapshot.
+    Provides Stage 2 with vector neighborhood matches, cross-source corroboration,
+    same-source echo detection, frontline signal triangulation, source reliability tier,
+    and general 6h/24h theater reporting velocity.
+    """
+    related_reports: List[RelatedReportContext] = Field(default_factory=list)
+    corroboration_count: int = 0
+    corroborating_sources: List[str] = Field(default_factory=list)
+    corroborating_event_ids: List[str] = Field(default_factory=list)
+    same_source_echo_count: int = 0
+    is_same_source_echo: bool = False
+    max_similarity: float = 0.0
+    corroboration_status: str = "First Report / Unverified"
+    source_reliability_tier: str = "tier_2_regional_osint"
+    source_reliability_label: str = "Standard OSINT Feed"
+    kinetic_signal: Dict[str, Any] = Field(default_factory=dict)
+    velocity_status: str = "Normal"
+    events_last_6h: int = 0
+    critical_alerts_last_6h: int = 0
+    avg_score_24h: float = 5.0
+    active_storylines: List[str] = Field(default_factory=list)
+    pizza_meter_status: Optional[str] = None
+    embedding_vector: Optional[List[float]] = None
+    embedding_model_name: Optional[str] = None
+
+
 class Stage2Result(BaseModel):
     """
     Output contract for Stage 2: Importance Scoring.
     Evaluates tactical/strategic significance on a 1-10 clamped scale,
-    driven by active Theme scoring prompt and alert threshold.
+    driven by active Theme scoring prompt, general theater context,
+    multi-dimensional sub-scores, and vector embedding corroboration.
     """
     importance_score: int = Field(
         ge=1, le=10,
@@ -206,6 +246,39 @@ class Stage2Result(BaseModel):
         default_factory=list,
         description="Tracked theme entities matched in the event text.",
     )
+    # Multi-dimensional sub-scores & embedding calibration metadata
+    severity_score: Optional[int] = Field(
+        default=None, ge=1, le=10,
+        description="Intrinsic tactical/strategic severity of the event (1-10).",
+    )
+    novelty_score: Optional[int] = Field(
+        default=None, ge=1, le=10,
+        description="Escalation novelty vs. repetitive echo or status quo (1-10).",
+    )
+    verification_confidence: Literal["low", "medium", "high"] = Field(
+        default="medium",
+        description="Confidence classification based on source reliability, signal type, and corroboration.",
+    )
+    confidence_score: Optional[int] = Field(
+        default=None, ge=1, le=10,
+        description="Numeric verification confidence score (1-10).",
+    )
+    corroboration_status: Optional[str] = Field(
+        default=None,
+        description="Embedding corroboration classification label.",
+    )
+    corroborating_sources: List[str] = Field(
+        default_factory=list,
+        description="Independent sources confirming this event in embedding space.",
+    )
+    related_event_ids: List[str] = Field(
+        default_factory=list,
+        description="Event IDs of semantically matched recent reports.",
+    )
+    calibration_notes: List[str] = Field(
+        default_factory=list,
+        description="Deterministic calibration adjustments applied to the score.",
+    )
 
     @field_validator("importance_score", mode="before")
     @classmethod
@@ -216,6 +289,17 @@ class Stage2Result(BaseModel):
         except (ValueError, TypeError):
             return 5
 
+    @field_validator("severity_score", "novelty_score", "confidence_score", mode="before")
+    @classmethod
+    def clamp_optional_subscore(cls, v: Any) -> Optional[int]:
+        if v is None:
+            return None
+        try:
+            val = round(float(v))
+            return max(1, min(10, val))
+        except (ValueError, TypeError):
+            return None
+
     @field_validator("priority_level", mode="before")
     @classmethod
     def derive_priority(cls, v: Any) -> str:
@@ -223,6 +307,53 @@ class Stage2Result(BaseModel):
         if val in ("low", "medium", "high", "critical"):
             return val
         return "medium"
+
+    @field_validator("verification_confidence", mode="before")
+    @classmethod
+    def normalize_confidence(cls, v: Any) -> str:
+        val = str(v).lower().strip() if v else "medium"
+        if val in ("low", "medium", "high"):
+            return val
+        if "high" in val or "verif" in val or "confirm" in val:
+            return "high"
+        if "low" in val or "unverif" in val or "rumor" in val:
+            return "low"
+        return "medium"
+
+    def to_breakdown_dict(self, scoring_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Serialize structured multi-dimensional scoring breakdown for DB persistence and UI."""
+        ctx = scoring_context or {}
+        kin = ctx.get("kinetic_signal") or {}
+        sev = self.severity_score if self.severity_score is not None else self.importance_score
+        nov = self.novelty_score if self.novelty_score is not None else (
+            3 if ctx.get("is_same_source_echo") else 7
+        )
+        conf_num = self.confidence_score if self.confidence_score is not None else (
+            9 if self.verification_confidence == "high"
+            else (4 if self.verification_confidence == "low" else 7)
+        )
+        return {
+            "final_score": self.importance_score,
+            "priority_level": self.priority_level,
+            "severity_score": sev,
+            "novelty_score": nov,
+            "verification_confidence": self.verification_confidence,
+            "confidence_score": conf_num,
+            "corroboration_status": self.corroboration_status or ctx.get("corroboration_status", "First Report / Unverified"),
+            "corroboration_count": ctx.get("corroboration_count", len(self.corroborating_sources)),
+            "corroborating_sources": self.corroborating_sources or ctx.get("corroborating_sources", []),
+            "same_source_echo_count": ctx.get("same_source_echo_count", 0),
+            "is_same_source_echo": bool(ctx.get("is_same_source_echo", False)),
+            "max_similarity": round(float(ctx.get("max_similarity", 0.0)), 3),
+            "source_reliability_tier": ctx.get("source_reliability_tier", "tier_2_regional_osint"),
+            "source_reliability_label": ctx.get("source_reliability_label", "Standard OSINT Feed"),
+            "signal_type": kin.get("signal_type", "general_intelligence"),
+            "signal_verification": kin.get("verification_status", "contextual_update"),
+            "velocity_status": ctx.get("velocity_status", "Normal"),
+            "calibration_notes": list(self.calibration_notes),
+            "related_reports": ctx.get("related_reports", []),
+        }
+
 
 
 class Stage3Result(BaseModel):

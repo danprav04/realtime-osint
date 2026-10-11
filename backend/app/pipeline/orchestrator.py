@@ -12,8 +12,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.config import Settings, get_settings
-from backend.app.db.models import Alert, Event, SystemSettings, Theme
+from backend.app.db.models import Alert, Event, EventEmbedding, SystemSettings, Theme, utc_now
 from backend.app.db.session import get_session_factory
+from backend.app.pipeline.arabic_normalizer import classify_kinetic_signal
 from backend.app.pipeline.models import (
     AIStageConfig,
     AIFallbackConfig,
@@ -30,7 +31,11 @@ from backend.app.pipeline.providers.factory import (
 )
 from backend.app.pipeline.providers.base import BaseAIProvider
 from backend.app.pipeline.stage1_extract import _heuristic_stage1_fallback, run_stage1_extract
-from backend.app.pipeline.stage2_score import _heuristic_stage2_fallback, run_stage2_score
+from backend.app.pipeline.stage2_score import (
+    _heuristic_stage2_fallback,
+    classify_source_reliability,
+    run_stage2_score,
+)
 from backend.app.pipeline.stage3_summary import _heuristic_stage3_fallback, run_stage3_summary
 from backend.app.pipeline.stage4_visuals import _heuristic_stage4_fallback, run_stage4_visuals
 from backend.app.plugins.base import NormalizedEvent
@@ -614,6 +619,94 @@ class PipelineOrchestrator:
 
         return fallback_heuristic_fn()
 
+    async def _build_scoring_context(
+        self,
+        event: Union[NormalizedEvent, Dict[str, Any]],
+        res_s1: Stage1Result,
+        theme_ctx: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Build the pre-Stage 2 Situational & Semantic Embedding Context:
+        1. Classifies source reliability tier and frontline kinetic vs. acoustic signals.
+        2. Queries recent events and embeddings in the active theme to compute vector similarity,
+           cross-source corroboration, same-source echo detection, and 6h/24h theater velocity.
+        """
+        ev_id = str(getattr(event, "id", None) or (event.get("id") if isinstance(event, dict) else "evt"))
+        src_name = getattr(event, "source_name", "OSINT") or (
+            event.get("source_name", "OSINT") if isinstance(event, dict) else "OSINT"
+        )
+        src_type = getattr(event, "source_type", "rss") or (
+            event.get("source_type", "rss") if isinstance(event, dict) else "rss"
+        )
+        title_val = getattr(event, "title", "") or (event.get("title", "") if isinstance(event, dict) else "")
+        raw_text_val = getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else "")
+        location_val = getattr(event, "location", None) or (
+            event.get("location") if isinstance(event, dict) else None
+        )
+        pub_at = getattr(event, "published_at", None) or (
+            event.get("published_at") if isinstance(event, dict) else datetime.now(timezone.utc)
+        )
+
+        tier_id, tier_label = classify_source_reliability(src_name, src_type)
+        kinetic_sig = classify_kinetic_signal(f"{title_val}\n{raw_text_val}")
+        threshold = int(theme_ctx.get("alert_threshold", theme_ctx.get("importance_threshold", 7)))
+
+        ctx: Dict[str, Any] = {
+            "source_reliability_tier": tier_id,
+            "source_reliability_label": tier_label,
+            "kinetic_signal": kinetic_sig,
+            "related_reports": [],
+            "corroboration_count": 0,
+            "corroborating_sources": [],
+            "corroborating_event_ids": [],
+            "same_source_echo_count": 0,
+            "is_same_source_echo": False,
+            "max_similarity": 0.0,
+            "corroboration_status": "First Report / Unverified",
+            "velocity_status": "Normal",
+            "events_last_6h": 0,
+            "critical_alerts_last_6h": 0,
+            "avg_score_24h": 5.0,
+            "active_storylines": [],
+            "pizza_meter_status": None,
+            "embedding_vector": None,
+            "embedding_model_name": None,
+        }
+
+        # Skip DB lookup only in pure memory mock runs where no session_factory was provided
+        if self._session_factory is None and self.use_mock:
+            return ctx
+
+        try:
+            from backend.app.services.embedding_service import get_embedding_service
+            factory = self._get_session_factory()
+            raw_tid = theme_ctx.get("id", 1)
+            numeric_theme_id = int(raw_tid) if str(raw_tid).isdigit() else 1
+            eng_title = res_s1.translated_title or title_val
+            eng_text = res_s1.translated_text or raw_text_val
+
+            async with factory() as session:
+                emb_service = get_embedding_service()
+                neighborhood = await emb_service.compute_live_scoring_neighborhood(
+                    session=session,
+                    candidate_event_id=ev_id,
+                    theme_id=numeric_theme_id,
+                    title=eng_title,
+                    intelligence_text=eng_text,
+                    extracted_entities=res_s1.extracted_entities,
+                    source_name=src_name,
+                    source_type=src_type,
+                    published_at=pub_at,
+                    location_json=location_val,
+                    alert_threshold=threshold,
+                    use_mock=self.use_mock,
+                )
+                ctx.update(neighborhood)
+        except Exception as exc:
+            logger.debug(f"Pre-Stage 2 neighborhood lookup skipped: {exc}")
+
+        return ctx
+
     async def process_event(
         self,
         event: Union[NormalizedEvent, Dict[str, Any]],
@@ -623,8 +716,9 @@ class PipelineOrchestrator:
         """
         Executes the multi-stage AI reasoning pipeline for an event:
         1. Stage 1 (Sequential): Extraction & Translation (with multi-model fallback).
-        2. Stages 2, 3, 4 (Concurrent): Scoring, Summarization, Visual Trends (with multi-model fallbacks).
-        3. Persists enriched fields to database and publishes alerts.
+        2. Pre-Score Context & Embedding Lookup: Computes vector similarity, corroboration, echo status, and theater tempo.
+        3. Stages 2, 3, 4 (Concurrent): Context-Aware Scoring, Summarization, Visual Trends.
+        4. Persists enriched fields, embeddings, and retroactive corroboration upgrades to database and publishes alerts.
         """
         theme_id = getattr(event, "theme_id", None) or (event.get("theme_id") if isinstance(event, dict) else "1")
         theme_ctx = await self._resolve_theme_context(theme_id)
@@ -640,6 +734,9 @@ class PipelineOrchestrator:
         )
 
         intelligence_text = res_s1.translated_text or raw_text_val
+
+        # Pre-Stage 2: Inline Semantic Embedding & Situational Context Lookup
+        scoring_ctx = await self._build_scoring_context(event=event, res_s1=res_s1, theme_ctx=theme_ctx)
 
         # Stage 2, 3, 4 with fallback chains
         def stage2_fallback():
@@ -657,6 +754,8 @@ class PipelineOrchestrator:
                 intelligence_text=intelligence_text,
                 extracted_entities=res_s1.extracted_entities,
                 theme_context=theme_ctx,
+                stage1_result=res_s1,
+                scoring_context=scoring_ctx,
                 **kw,
             ),
             fallback_heuristic_fn=stage2_fallback,
@@ -708,7 +807,7 @@ class PipelineOrchestrator:
             res_s4 = await task_s4
 
         threshold = int(theme_ctx.get("alert_threshold", theme_ctx.get("importance_threshold", 7)))
-        should_alert = bool(res_s2.importance_score >= threshold)
+        should_alert = bool(res_s2.importance_score >= threshold and not scoring_ctx.get("is_same_source_echo"))
 
         ev_id = str(getattr(event, "id", None) or (event.get("id") if isinstance(event, dict) else "evt"))
         src_name = getattr(event, "source_name", "OSINT") or (event.get("source_name", "OSINT") if isinstance(event, dict) else "OSINT")
@@ -719,7 +818,12 @@ class PipelineOrchestrator:
         raw_text = getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else "")
         author = getattr(event, "author", None) or (event.get("author") if isinstance(event, dict) else None)
         location = getattr(event, "location", None) or (event.get("location") if isinstance(event, dict) else None)
-        metadata = getattr(event, "metadata", {}) or (event.get("metadata", {}) if isinstance(event, dict) else {})
+        raw_meta = getattr(event, "metadata", {}) or (event.get("metadata", {}) if isinstance(event, dict) else {})
+        metadata = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+        metadata["scoring_breakdown"] = res_s2.to_breakdown_dict(scoring_ctx)
+        if res_s4.trend_category:
+            metadata["trend_category"] = res_s4.trend_category
+
         pub_at = getattr(event, "published_at", None) or (event.get("published_at") if isinstance(event, dict) else datetime.now(timezone.utc))
         if isinstance(pub_at, str):
             try:
@@ -778,9 +882,14 @@ class PipelineOrchestrator:
             processed_at=datetime.now(timezone.utc),
         )
 
-        # Update DB persistence
+        # Update DB persistence (including inline EventEmbedding and retroactive corroboration upgrades)
         try:
-            await self._persist_analyzed_event(analyzed, should_alert)
+            await self._persist_analyzed_event(
+                analyzed=analyzed,
+                should_alert=should_alert,
+                scoring_ctx=scoring_ctx,
+                alert_threshold=threshold,
+            )
         except Exception as db_err:
             logger.warning(f"Database persistence error in pipeline: {db_err}")
 
@@ -792,8 +901,18 @@ class PipelineOrchestrator:
 
         return analyzed
 
-    async def _persist_analyzed_event(self, analyzed: AnalyzedEvent, should_alert: bool) -> None:
-        """Persist enriched fields to database and insert Alert row if score >= threshold."""
+    async def _persist_analyzed_event(
+        self,
+        analyzed: AnalyzedEvent,
+        should_alert: bool,
+        scoring_ctx: Optional[Dict[str, Any]] = None,
+        alert_threshold: int = 7,
+    ) -> None:
+        """
+        Persist enriched fields, scoring_breakdown metadata, inline EventEmbedding,
+        and retroactive corroboration upgrades for earlier matched events.
+        """
+        ctx = scoring_ctx or {}
         factory = self._get_session_factory()
         async with factory() as session:
             # Find matching event by id or external_id
@@ -810,10 +929,13 @@ class PipelineOrchestrator:
                 db_event.entities_json = analyzed.entities
                 db_event.is_analyzed = True
                 db_event.processed_at = analyzed.processed_at or datetime.now(timezone.utc)
+
+                meta = dict(db_event.metadata_json or {})
+                if analyzed.metadata:
+                    meta.update(analyzed.metadata)
                 if analyzed.trend_category:
-                    meta = dict(db_event.metadata_json or {})
                     meta["trend_category"] = analyzed.trend_category
-                    db_event.metadata_json = meta
+                db_event.metadata_json = meta
 
                 if should_alert:
                     # Check if alert already exists for this event
@@ -829,7 +951,137 @@ class PipelineOrchestrator:
                         )
                         session.add(alert)
 
+                # Persist inline EventEmbedding if already computed during pre-Stage 2 context lookup
+                emb_vec = ctx.get("embedding_vector")
+                if emb_vec:
+                    emb_res = await session.execute(
+                        select(EventEmbedding).where(EventEmbedding.event_id == db_event.id)
+                    )
+                    existing_emb = emb_res.scalars().first()
+                    corrob_cnt = int(ctx.get("corroboration_count", 0))
+                    trust_est = (
+                        85 if corrob_cnt >= 2 else (72 if corrob_cnt == 1 else 48)
+                    )
+                    if existing_emb:
+                        existing_emb.embedding_vector = emb_vec
+                        existing_emb.corroboration_count = corrob_cnt
+                        existing_emb.trustworthiness_score = trust_est
+                    else:
+                        session.add(
+                            EventEmbedding(
+                                event_id=db_event.id,
+                                embedding_vector=emb_vec,
+                                model_name=ctx.get("embedding_model_name") or "gemini-embedding-001",
+                                corroboration_count=corrob_cnt,
+                                trustworthiness_score=trust_est,
+                                embedded_at=utc_now(),
+                            )
+                        )
+
+                # Retroactively upgrade earlier unverified reports when corroborated by an independent source
+                corrob_ids = ctx.get("corroborating_event_ids") or []
+                if corrob_ids:
+                    await self._retroactive_corroboration_upgrade(
+                        session=session,
+                        analyzed=analyzed,
+                        corroborating_event_ids=corrob_ids,
+                        alert_threshold=alert_threshold,
+                    )
+
                 await session.commit()
+
+    async def _retroactive_corroboration_upgrade(
+        self,
+        session: AsyncSession,
+        analyzed: AnalyzedEvent,
+        corroborating_event_ids: List[str],
+        alert_threshold: int = 7,
+    ) -> None:
+        """
+        When a new report from an independent source corroborates earlier reports in embedding space:
+        1. Increments corroboration_count and trustworthiness_score on the earlier EventEmbedding rows.
+        2. If an earlier report was scored while uncorroborated (e.g., First Report / Unverified or
+           capped just below the alert threshold), upgrades its importance_score (+1), updates its
+           scoring_breakdown & score_rationale, and dispatches an Alert if it newly crosses threshold.
+        """
+        stmt_peers = select(Event).where(Event.id.in_(corroborating_event_ids))
+        peer_events = list((await session.execute(stmt_peers)).scalars().all())
+        if not peer_events:
+            return
+
+        stmt_peer_embs = select(EventEmbedding).where(EventEmbedding.event_id.in_(corroborating_event_ids))
+        peer_embs = {
+            e.event_id: e for e in (await session.execute(stmt_peer_embs)).scalars().all()
+        }
+
+        for peer in peer_events:
+            if (peer.source_name or "").strip().lower() == (analyzed.source_name or "").strip().lower():
+                continue
+
+            peer_meta = dict(peer.metadata_json or {})
+            peer_bd = dict(peer_meta.get("scoring_breakdown") or {})
+            prev_sources = list(peer_bd.get("corroborating_sources") or [])
+            if analyzed.source_name and analyzed.source_name not in prev_sources:
+                prev_sources.append(analyzed.source_name)
+            new_corrob_count = max(len(prev_sources), int(peer_bd.get("corroboration_count", 0)) + 1)
+
+            # Update peer EventEmbedding metrics
+            p_emb = peer_embs.get(peer.id)
+            if p_emb:
+                p_emb.corroboration_count = max(int(p_emb.corroboration_count or 0), new_corrob_count)
+                p_emb.trustworthiness_score = max(
+                    int(p_emb.trustworthiness_score or 50),
+                    85 if new_corrob_count >= 2 else 72,
+                )
+
+            was_unverified = (
+                peer_bd.get("corroboration_count", 0) == 0
+                or peer_bd.get("verification_confidence") == "low"
+                or peer_bd.get("corroboration_status") in (None, "First Report / Unverified", "Single-Source Unverified")
+            )
+            already_upgraded = bool(peer_bd.get("retroactively_corroborated", False))
+
+            peer_bd["corroboration_count"] = new_corrob_count
+            peer_bd["corroborating_sources"] = prev_sources
+            peer_bd["corroboration_status"] = (
+                "Highly Corroborated" if new_corrob_count >= 2 else "Developing / Verified"
+            )
+            peer_bd["verification_confidence"] = "high"
+            peer_bd["confidence_score"] = max(int(peer_bd.get("confidence_score") or 7), 8 if new_corrob_count == 1 else 9)
+
+            prev_score = int(peer.importance_score or 5)
+            if was_unverified and not already_upgraded and prev_score >= 4:
+                new_score = min(10, prev_score + 1)
+                peer.importance_score = new_score
+                peer_bd["final_score"] = new_score
+                peer_bd["retroactively_corroborated"] = True
+                notes = list(peer_bd.get("calibration_notes") or [])
+                upgrade_note = (
+                    f"Retroactively corroborated ({prev_score} -> {new_score}) by independent source {analyzed.source_name}"
+                )
+                if upgrade_note not in notes:
+                    notes.append(upgrade_note)
+                peer_bd["calibration_notes"] = notes
+
+                cur_rat = (peer.score_rationale or "").strip()
+                if "retroactively corroborated" not in cur_rat.lower():
+                    peer.score_rationale = f"{cur_rat} [{upgrade_note}]".strip()
+
+                # If the upgraded score now meets/exceeds alert_threshold, create Alert if none exists
+                if new_score >= alert_threshold:
+                    alt_check = await session.execute(select(Alert).where(Alert.event_id == peer.id))
+                    if not alt_check.scalars().first():
+                        session.add(
+                            Alert(
+                                event_id=peer.id,
+                                importance_score=new_score,
+                                channel="telegram",
+                                status="sent",
+                            )
+                        )
+
+            peer_meta["scoring_breakdown"] = peer_bd
+            peer.metadata_json = peer_meta
 
     async def _publish_to_bus(self, analyzed: AnalyzedEvent, should_alert: bool) -> None:
         """Publish analyzed event and critical alert to Redis channels."""

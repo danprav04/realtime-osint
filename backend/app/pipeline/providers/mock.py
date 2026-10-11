@@ -72,15 +72,29 @@ class MockAIProvider(BaseAIProvider):
             "json_mode": json_mode,
         })
 
-        # Return realistic response based on prompt contents
+        # Return realistic response based on prompt contents (check explicit stage schema markers first)
         p_lower = (prompt + " " + (system_prompt or "")).lower()
-        if "stage4" in p_lower or "visual" in p_lower or "trend" in p_lower or "cluster" in p_lower:
+        prompt_only_lower = prompt.lower()
+        if "stage2result" in prompt_only_lower or "importance_score" in prompt_only_lower:
+            combined_stage2 = prompt + "\n" + (system_prompt or "")
+            res = self._mock_stage2(combined_stage2, {"scoring_prompt": combined_stage2})
+            return json.dumps(res) if json_mode else str(res)
+        elif "stage1result" in prompt_only_lower or "'detected_language'" in prompt_only_lower:
+            res = self._mock_stage1(prompt)
+            return json.dumps(res) if json_mode else str(res)
+        elif "stage3result" in prompt_only_lower or "periodicdigestresult" in prompt_only_lower:
+            res = self._mock_stage3(prompt)
+            return json.dumps(res) if json_mode else str(res)
+        elif "stage4result" in prompt_only_lower or "dashboardtrendsynthesis" in prompt_only_lower:
+            res = self._mock_stage4(prompt)
+            return json.dumps(res) if json_mode else str(res)
+        elif "stage4" in p_lower or "visual" in p_lower or "trend" in p_lower or "cluster" in p_lower:
             res = self._mock_stage4(prompt)
             return json.dumps(res) if json_mode else str(res)
         elif "stage3" in p_lower or "summar" in p_lower or "headline" in p_lower:
             res = self._mock_stage3(prompt)
             return json.dumps(res) if json_mode else str(res)
-        elif "stage2" in p_lower or "scoring" in p_lower or "importance_score" in p_lower or "score" in p_lower:
+        elif "stage2" in p_lower or "scoring" in p_lower or "score" in p_lower:
             combined_stage2 = prompt + "\n" + (system_prompt or "")
             res = self._mock_stage2(combined_stage2, {"scoring_prompt": combined_stage2})
             return json.dumps(res) if json_mode else str(res)
@@ -184,7 +198,11 @@ class MockAIProvider(BaseAIProvider):
             scoring_prompt = text.lower()
 
         threshold = ctx.get("importance_threshold", ctx.get("alert_threshold", 7))
-        text_lower = text.lower()
+
+        # Isolate the target event content (before SITUATIONAL & SEMANTIC EMBEDDING CONTEXT or system prompt)
+        event_segment = text.split("SITUATIONAL & SEMANTIC EMBEDDING CONTEXT:")[0]
+        event_segment = event_segment.split("You are a senior geopolitical intelligence")[0]
+        text_lower = event_segment.lower()
 
         # Dynamic steering: check user instructions in scoring_prompt
         is_diplomatic = "diplomatic" in text_lower or "talks" in text_lower or "negotiat" in text_lower or "meeting" in text_lower
@@ -198,7 +216,11 @@ class MockAIProvider(BaseAIProvider):
                 "priority_level": "critical",
                 "should_alert": should_alert,
                 "matched_keywords": ["diplomatic", "talks"],
-                "matched_entities": []
+                "matched_entities": [],
+                "severity_score": 10,
+                "novelty_score": 8,
+                "verification_confidence": "high",
+                "confidence_score": 9,
             }
 
         if is_diplomatic and ("score diplomatic talks 1" in scoring_prompt or "score 1 for diplomatic" in scoring_prompt or "score diplomatic talks as 1" in scoring_prompt):
@@ -211,7 +233,11 @@ class MockAIProvider(BaseAIProvider):
                 "priority_level": "low",
                 "should_alert": should_alert,
                 "matched_keywords": ["diplomatic"],
-                "matched_entities": []
+                "matched_entities": [],
+                "severity_score": 1,
+                "novelty_score": 2,
+                "verification_confidence": "medium",
+                "confidence_score": 7,
             }
 
         # Default heuristic score based on severity
@@ -239,7 +265,11 @@ class MockAIProvider(BaseAIProvider):
             "priority_level": priority,
             "should_alert": should_alert,
             "matched_keywords": ["military", "defense"],
-            "matched_entities": ["IRGC", "CENTCOM"]
+            "matched_entities": ["IRGC", "CENTCOM"],
+            "severity_score": score,
+            "novelty_score": 8 if score >= 7 else 5,
+            "verification_confidence": "medium",
+            "confidence_score": 7,
         }
 
     def _mock_stage3(self, text: str) -> Dict[str, Any]:
