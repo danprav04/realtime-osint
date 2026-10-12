@@ -7,11 +7,23 @@ import type { NormalizedEvent, DashboardStats } from './types';
 
 let socketInstance: Socket | null = null;
 
+export function getWsBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('osint_ws_url') || localStorage.getItem('osint_api_url');
+    if (custom) return custom;
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      const port = process.env.NEXT_PUBLIC_API_PORT || '8080';
+      return `${window.location.protocol}//${window.location.hostname}:${port}`;
+    }
+  }
+  return process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:8000';
+}
+
 export function getSocket(): Socket | null {
   if (typeof window === 'undefined') return null;
 
   if (!socketInstance) {
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:8000';
+    const wsUrl = getWsBaseUrl();
     const apiKey = getStoredApiKey();
 
     socketInstance = io(wsUrl, {

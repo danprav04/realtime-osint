@@ -82,9 +82,12 @@ class PipelineOrchestrator:
         self._db_api_keys: Dict[str, str] = {}
         self._queue: asyncio.Queue[NormalizedEvent] = asyncio.Queue(maxsize=queue_maxsize)
         self._worker_tasks: List[asyncio.Task] = []
+        self._backfill_task: Optional[asyncio.Task] = None
+        self._bg_tasks: set[asyncio.Task] = set()
         self._num_workers = num_workers
         self._running: bool = False
         self._lock = asyncio.Lock()
+        self._db_lock = asyncio.Lock()
         self._reload_subscribed: bool = False
         self._model_cooldowns: Dict[str, float] = {}
         from backend.app.pipeline.stage0_gatekeeper import Stage0Gatekeeper
@@ -258,7 +261,7 @@ class PipelineOrchestrator:
                 self._worker_tasks.append(task)
 
             # Backfill any existing unanalyzed events from database
-            asyncio.create_task(self._backfill_unanalyzed_events())
+            self._backfill_task = asyncio.create_task(self._backfill_unanalyzed_events())
 
             logger.info(f"Pipeline Orchestrator started with {self._num_workers} workers.")
 
@@ -278,11 +281,26 @@ class PipelineOrchestrator:
             except Exception:
                 pass
 
+            all_tasks: List[asyncio.Task] = []
+            if self._backfill_task is not None and not self._backfill_task.done():
+                self._backfill_task.cancel()
+                all_tasks.append(self._backfill_task)
+            self._backfill_task = None
+
             for task in self._worker_tasks:
-                task.cancel()
-            if self._worker_tasks:
-                await asyncio.gather(*self._worker_tasks, return_exceptions=True)
-                self._worker_tasks.clear()
+                if not task.done():
+                    task.cancel()
+                all_tasks.append(task)
+            self._worker_tasks.clear()
+
+            for bg_t in list(self._bg_tasks):
+                if not bg_t.done():
+                    bg_t.cancel()
+                all_tasks.append(bg_t)
+            self._bg_tasks.clear()
+
+            if all_tasks:
+                await asyncio.gather(*all_tasks, return_exceptions=True)
 
             await self._registry.close_all()
             logger.info("Pipeline Orchestrator stopped.")
@@ -340,33 +358,43 @@ class PipelineOrchestrator:
         """Query DB for unanalyzed events and enqueue them for processing."""
         try:
             await asyncio.sleep(2)
-            factory = self._get_session_factory()
-            async with factory() as session:
-                stmt = (
-                    select(Event)
-                    .where(Event.is_analyzed == False)
-                    .order_by(Event.published_at.desc())
-                    .limit(100)
-                )
-                events = (await session.execute(stmt)).scalars().all()
-                if events:
-                    logger.info(f"Backfilling {len(events)} unanalyzed events into pipeline queue...")
-                    for ev in events:
-                        norm = NormalizedEvent(
-                            id=ev.id,
-                            theme_id=str(ev.theme_id),
-                            source_type=ev.source_type,
-                            source_name=ev.source_name,
-                            source_url=ev.source_url,
-                            external_id=ev.external_id,
-                            title=ev.title,
-                            raw_text=ev.raw_text,
-                            language=ev.language,
-                            author=ev.author,
-                            published_at=ev.published_at,
-                            ingested_at=ev.ingested_at,
-                        )
-                        await self.enqueue_event(norm)
+            if not self._running:
+                return
+
+            async def _fetch_unanalyzed():
+                factory = self._get_session_factory()
+                async with factory() as session:
+                    stmt = (
+                        select(Event)
+                        .where(Event.is_analyzed == False)
+                        .order_by(Event.published_at.desc())
+                        .limit(100)
+                    )
+                    return list((await session.execute(stmt)).scalars().all())
+
+            async with self._db_lock:
+                events = await asyncio.shield(_fetch_unanalyzed())
+
+            if events and self._running:
+                logger.info(f"Backfilling {len(events)} unanalyzed events into pipeline queue...")
+                for ev in events:
+                    norm = NormalizedEvent(
+                        id=ev.id,
+                        theme_id=str(ev.theme_id),
+                        source_type=ev.source_type,
+                        source_name=ev.source_name,
+                        source_url=ev.source_url,
+                        external_id=ev.external_id,
+                        title=ev.title,
+                        raw_text=ev.raw_text,
+                        language=ev.language,
+                        author=ev.author,
+                        published_at=ev.published_at,
+                        ingested_at=ev.ingested_at,
+                    )
+                    await self.enqueue_event(norm)
+        except asyncio.CancelledError:
+            return
         except Exception as exc:
             logger.warning(f"Backfill unanalyzed events encountered error: {exc}")
 
@@ -378,60 +406,64 @@ class PipelineOrchestrator:
     async def _reload_configs_from_db(self) -> None:
         """Atomically reload AI stage configs and active theme from DB."""
         try:
-            factory = self._get_session_factory()
-            async with factory() as session:
-                # 1. Reload stage configs and API keys
-                res = await session.execute(
-                    select(SystemSettings).where(
-                        SystemSettings.key.in_(["ai_pipeline_stages", "api_keys"])
-                    )
-                )
-                settings_list = res.scalars().all()
-                for setting in settings_list:
-                    if setting.key == "ai_pipeline_stages" and setting.value_json:
-                        canonical_keys = {"gatekeeper", "extraction", "scoring", "summarization", "visuals"}
-                        sorted_items = sorted(
-                            setting.value_json.items(),
-                            key=lambda item: 1 if str(item[0]).lower().strip() in canonical_keys else 0,
+            async def _do_reload():
+                factory = self._get_session_factory()
+                async with factory() as session:
+                    # 1. Reload stage configs and API keys
+                    res = await session.execute(
+                        select(SystemSettings).where(
+                            SystemSettings.key.in_(["ai_pipeline_stages", "api_keys"])
                         )
-                        for stage_id, cfg_data in sorted_items:
-                            norm_id = self._normalize_stage_id(stage_id)
-                            raw_fallbacks = cfg_data.get("fallbacks")
-                            if raw_fallbacks is None and norm_id in self._stage_configs:
-                                parsed_fallbacks = list(self._stage_configs[norm_id].fallbacks)
-                            else:
-                                parsed_fallbacks = []
-                                for fb in (raw_fallbacks or []):
-                                    if isinstance(fb, dict):
-                                        parsed_fallbacks.append(AIFallbackConfig(
-                                            provider=fb.get("provider", "gemini"),
-                                            model_name=fb.get("model_name") or fb.get("model", "gemini-3.1-flash-lite"),
-                                            temperature=fb.get("temperature"),
-                                            api_key_override=fb.get("api_key_override"),
-                                        ))
-                                    elif isinstance(fb, AIFallbackConfig):
-                                        parsed_fallbacks.append(fb)
-                            self._stage_configs[norm_id] = AIStageConfig(
-                                stage_id=norm_id,  # type: ignore
-                                provider=cfg_data.get("provider", "gemini"),
-                                model_name=cfg_data.get("model_name") or cfg_data.get("model", "gemini-3.5-flash-lite"),
-                                temperature=cfg_data.get("temperature", 0.2),
-                                api_key_override=cfg_data.get("api_key_override"),
-                                enabled=bool(cfg_data.get("enabled", True)),
-                                fallbacks=parsed_fallbacks,
+                    )
+                    settings_list = res.scalars().all()
+                    for setting in settings_list:
+                        if setting.key == "ai_pipeline_stages" and setting.value_json:
+                            canonical_keys = {"gatekeeper", "extraction", "scoring", "summarization", "visuals"}
+                            sorted_items = sorted(
+                                setting.value_json.items(),
+                                key=lambda item: 1 if str(item[0]).lower().strip() in canonical_keys else 0,
                             )
-                    elif setting.key == "api_keys" and setting.value_json:
-                        self._db_api_keys = dict(setting.value_json)
+                            for stage_id, cfg_data in sorted_items:
+                                norm_id = self._normalize_stage_id(stage_id)
+                                raw_fallbacks = cfg_data.get("fallbacks")
+                                if raw_fallbacks is None and norm_id in self._stage_configs:
+                                    parsed_fallbacks = list(self._stage_configs[norm_id].fallbacks)
+                                else:
+                                    parsed_fallbacks = []
+                                    for fb in (raw_fallbacks or []):
+                                        if isinstance(fb, dict):
+                                            parsed_fallbacks.append(AIFallbackConfig(
+                                                provider=fb.get("provider", "gemini"),
+                                                model_name=fb.get("model_name") or fb.get("model", "gemini-3.1-flash-lite"),
+                                                temperature=fb.get("temperature"),
+                                                api_key_override=fb.get("api_key_override"),
+                                            ))
+                                        elif isinstance(fb, AIFallbackConfig):
+                                            parsed_fallbacks.append(fb)
+                                self._stage_configs[norm_id] = AIStageConfig(
+                                    stage_id=norm_id,  # type: ignore
+                                    provider=cfg_data.get("provider", "gemini"),
+                                    model_name=cfg_data.get("model_name") or cfg_data.get("model", "gemini-3.5-flash-lite"),
+                                    temperature=cfg_data.get("temperature", 0.2),
+                                    api_key_override=cfg_data.get("api_key_override"),
+                                    enabled=bool(cfg_data.get("enabled", True)),
+                                    fallbacks=parsed_fallbacks,
+                                )
+                        elif setting.key == "api_keys" and setting.value_json:
+                            self._db_api_keys = dict(setting.value_json)
 
-                # 2. Reload active themes into cache
-                theme_res = await session.execute(
-                    select(Theme).where(Theme.is_active == True)
-                )
-                themes = theme_res.scalars().all()
-                for t in themes:
-                    t_dict = t.to_dict()
-                    self._theme_cache[str(t.id)] = t_dict
-                    self._theme_cache[t.name.lower()] = t_dict
+                    # 2. Reload active themes into cache
+                    theme_res = await session.execute(
+                        select(Theme).where(Theme.is_active == True)
+                    )
+                    themes = theme_res.scalars().all()
+                    for t in themes:
+                        t_dict = t.to_dict()
+                        self._theme_cache[str(t.id)] = t_dict
+                        self._theme_cache[t.name.lower()] = t_dict
+
+            async with self._db_lock:
+                await asyncio.shield(_do_reload())
 
             logger.info("Pipeline Orchestrator configurations reloaded successfully.")
         except Exception as exc:
@@ -445,22 +477,29 @@ class PipelineOrchestrator:
 
         # Try fetching from DB
         try:
-            factory = self._get_session_factory()
-            async with factory() as session:
-                if str(theme_id_or_name).isdigit():
-                    t_res = await session.execute(
-                        select(Theme).where(Theme.id == int(theme_id_or_name))
-                    )
-                else:
-                    t_res = await session.execute(
-                        select(Theme).where(Theme.name.ilike(f"%{theme_id_or_name}%"))
-                    )
-                theme = t_res.scalars().first()
-                if theme:
-                    t_dict = theme.to_dict()
-                    self._theme_cache[key] = t_dict
-                    self._theme_cache[str(theme.id)] = t_dict
-                    return t_dict
+            async def _fetch_theme():
+                factory = self._get_session_factory()
+                async with factory() as session:
+                    if str(theme_id_or_name).isdigit():
+                        t_res = await session.execute(
+                            select(Theme).where(Theme.id == int(theme_id_or_name))
+                        )
+                    else:
+                        t_res = await session.execute(
+                            select(Theme).where(Theme.name.ilike(f"%{theme_id_or_name}%"))
+                        )
+                    theme = t_res.scalars().first()
+                    if theme:
+                        t_dict = theme.to_dict()
+                        self._theme_cache[key] = t_dict
+                        self._theme_cache[str(theme.id)] = t_dict
+                        return t_dict
+                return None
+
+            async with self._db_lock:
+                found = await asyncio.shield(_fetch_theme())
+            if found:
+                return found
         except Exception as exc:
             logger.warning(f"Could not load theme '{theme_id_or_name}' from DB: {exc}")
 
@@ -792,28 +831,33 @@ class PipelineOrchestrator:
 
         try:
             from backend.app.services.embedding_service import get_embedding_service
-            factory = self._get_session_factory()
             raw_tid = theme_ctx.get("id", 1)
             numeric_theme_id = int(raw_tid) if str(raw_tid).isdigit() else 1
             eng_title = res_s1.translated_title or title_val
             eng_text = res_s1.translated_text or raw_text_val
 
-            async with factory() as session:
-                emb_service = get_embedding_service()
-                neighborhood = await emb_service.compute_live_scoring_neighborhood(
-                    session=session,
-                    candidate_event_id=ev_id,
-                    theme_id=numeric_theme_id,
-                    title=eng_title,
-                    intelligence_text=eng_text,
-                    extracted_entities=res_s1.extracted_entities,
-                    source_name=src_name,
-                    source_type=src_type,
-                    published_at=pub_at,
-                    location_json=location_val,
-                    alert_threshold=threshold,
-                    use_mock=self.use_mock,
-                )
+            async def _fetch_neighborhood():
+                factory = self._get_session_factory()
+                async with factory() as session:
+                    emb_service = get_embedding_service()
+                    return await emb_service.compute_live_scoring_neighborhood(
+                        session=session,
+                        candidate_event_id=ev_id,
+                        theme_id=numeric_theme_id,
+                        title=eng_title,
+                        intelligence_text=eng_text,
+                        extracted_entities=res_s1.extracted_entities,
+                        source_name=src_name,
+                        source_type=src_type,
+                        published_at=pub_at,
+                        location_json=location_val,
+                        alert_threshold=threshold,
+                        use_mock=self.use_mock,
+                    )
+
+            async with self._db_lock:
+                neighborhood = await asyncio.shield(_fetch_neighborhood())
+            if neighborhood:
                 ctx.update(neighborhood)
         except Exception as exc:
             logger.debug(f"Pre-Stage 2 neighborhood lookup skipped: {exc}")
@@ -1026,82 +1070,87 @@ class PipelineOrchestrator:
         and retroactive corroboration upgrades for earlier matched events.
         """
         ctx = scoring_ctx or {}
-        factory = self._get_session_factory()
-        async with factory() as session:
-            # Find matching event by id or external_id
-            ev_res = await session.execute(
-                select(Event).where((Event.id == analyzed.id) | (Event.external_id == analyzed.external_id))
-            )
-            db_event = ev_res.scalars().first()
-            if db_event:
-                db_event.translated_text = analyzed.translated_text
-                db_event.importance_score = analyzed.importance_score
-                db_event.score_rationale = analyzed.score_rationale
-                db_event.summary = analyzed.summary
-                db_event.headline = analyzed.headline
-                db_event.entities_json = analyzed.entities
-                db_event.is_analyzed = True
-                db_event.processed_at = analyzed.processed_at or datetime.now(timezone.utc)
 
-                meta = dict(db_event.metadata_json or {})
-                if analyzed.metadata:
-                    meta.update(analyzed.metadata)
-                if analyzed.trend_category:
-                    meta["trend_category"] = analyzed.trend_category
-                db_event.metadata_json = meta
+        async def _do_persist():
+            factory = self._get_session_factory()
+            async with factory() as session:
+                # Find matching event by id or external_id
+                ev_res = await session.execute(
+                    select(Event).where((Event.id == analyzed.id) | (Event.external_id == analyzed.external_id))
+                )
+                db_event = ev_res.scalars().first()
+                if db_event:
+                    db_event.translated_text = analyzed.translated_text
+                    db_event.importance_score = analyzed.importance_score
+                    db_event.score_rationale = analyzed.score_rationale
+                    db_event.summary = analyzed.summary
+                    db_event.headline = analyzed.headline
+                    db_event.entities_json = analyzed.entities
+                    db_event.is_analyzed = True
+                    db_event.processed_at = analyzed.processed_at or datetime.now(timezone.utc)
 
-                if should_alert:
-                    # Check if alert already exists for this event
-                    alt_res = await session.execute(
-                        select(Alert).where(Alert.event_id == db_event.id)
-                    )
-                    if not alt_res.scalars().first():
-                        alert = Alert(
-                            event_id=db_event.id,
-                            importance_score=analyzed.importance_score,
-                            channel="telegram",
-                            status="sent",
+                    meta = dict(db_event.metadata_json or {})
+                    if analyzed.metadata:
+                        meta.update(analyzed.metadata)
+                    if analyzed.trend_category:
+                        meta["trend_category"] = analyzed.trend_category
+                    db_event.metadata_json = meta
+
+                    if should_alert:
+                        # Check if alert already exists for this event
+                        alt_res = await session.execute(
+                            select(Alert).where(Alert.event_id == db_event.id)
                         )
-                        session.add(alert)
-
-                # Persist inline EventEmbedding if already computed during pre-Stage 2 context lookup
-                emb_vec = ctx.get("embedding_vector")
-                if emb_vec:
-                    emb_res = await session.execute(
-                        select(EventEmbedding).where(EventEmbedding.event_id == db_event.id)
-                    )
-                    existing_emb = emb_res.scalars().first()
-                    corrob_cnt = int(ctx.get("corroboration_count", 0))
-                    trust_est = (
-                        85 if corrob_cnt >= 2 else (72 if corrob_cnt == 1 else 48)
-                    )
-                    if existing_emb:
-                        existing_emb.embedding_vector = emb_vec
-                        existing_emb.corroboration_count = corrob_cnt
-                        existing_emb.trustworthiness_score = trust_est
-                    else:
-                        session.add(
-                            EventEmbedding(
+                        if not alt_res.scalars().first():
+                            alert = Alert(
                                 event_id=db_event.id,
-                                embedding_vector=emb_vec,
-                                model_name=ctx.get("embedding_model_name") or "gemini-embedding-001",
-                                corroboration_count=corrob_cnt,
-                                trustworthiness_score=trust_est,
-                                embedded_at=utc_now(),
+                                importance_score=analyzed.importance_score,
+                                channel="telegram",
+                                status="sent",
                             )
+                            session.add(alert)
+
+                    # Persist inline EventEmbedding if already computed during pre-Stage 2 context lookup
+                    emb_vec = ctx.get("embedding_vector")
+                    if emb_vec:
+                        emb_res = await session.execute(
+                            select(EventEmbedding).where(EventEmbedding.event_id == db_event.id)
+                        )
+                        existing_emb = emb_res.scalars().first()
+                        corrob_cnt = int(ctx.get("corroboration_count", 0))
+                        trust_est = (
+                            85 if corrob_cnt >= 2 else (72 if corrob_cnt == 1 else 48)
+                        )
+                        if existing_emb:
+                            existing_emb.embedding_vector = emb_vec
+                            existing_emb.corroboration_count = corrob_cnt
+                            existing_emb.trustworthiness_score = trust_est
+                        else:
+                            session.add(
+                                EventEmbedding(
+                                    event_id=db_event.id,
+                                    embedding_vector=emb_vec,
+                                    model_name=ctx.get("embedding_model_name") or "gemini-embedding-001",
+                                    corroboration_count=corrob_cnt,
+                                    trustworthiness_score=trust_est,
+                                    embedded_at=utc_now(),
+                                )
+                            )
+
+                    # Retroactively upgrade earlier unverified reports when corroborated by an independent source
+                    corrob_ids = ctx.get("corroborating_event_ids") or []
+                    if corrob_ids:
+                        await self._retroactive_corroboration_upgrade(
+                            session=session,
+                            analyzed=analyzed,
+                            corroborating_event_ids=corrob_ids,
+                            alert_threshold=alert_threshold,
                         )
 
-                # Retroactively upgrade earlier unverified reports when corroborated by an independent source
-                corrob_ids = ctx.get("corroborating_event_ids") or []
-                if corrob_ids:
-                    await self._retroactive_corroboration_upgrade(
-                        session=session,
-                        analyzed=analyzed,
-                        corroborating_event_ids=corrob_ids,
-                        alert_threshold=alert_threshold,
-                    )
+                    await session.commit()
 
-                await session.commit()
+        async with self._db_lock:
+            await asyncio.shield(_do_persist())
 
     async def _retroactive_corroboration_upgrade(
         self,
@@ -1217,7 +1266,9 @@ class PipelineOrchestrator:
 
         # Non-blocking background embedding generation
         try:
-            asyncio.create_task(self._trigger_embedding(analyzed))
+            bg_t = asyncio.create_task(self._trigger_embedding(analyzed))
+            self._bg_tasks.add(bg_t)
+            bg_t.add_done_callback(self._bg_tasks.discard)
         except Exception as e:
             logger.debug(f"Could not spawn background embedding task: {e}")
 
@@ -1226,15 +1277,26 @@ class PipelineOrchestrator:
         try:
             from backend.app.services.embedding_service import get_embedding_service
             from backend.app.services.redis_bus import CHANNEL_MAP_UPDATE
-            factory = self._get_session_factory()
-            async with factory() as session:
-                res = await session.execute(select(Event).where(Event.id == analyzed.id))
-                ev = res.scalars().first()
-                if ev:
-                    service = get_embedding_service()
-                    await service.embed_events([ev], session, use_mock=self.use_mock)
-                    bus = self._get_redis_bus()
-                    await bus.publish(CHANNEL_MAP_UPDATE, {"event_id": ev.id, "theme_id": str(ev.theme_id)})
+
+            async def _do_embed():
+                factory = self._get_session_factory()
+                async with factory() as session:
+                    res = await session.execute(select(Event).where(Event.id == analyzed.id))
+                    ev = res.scalars().first()
+                    if ev:
+                        service = get_embedding_service()
+                        await service.embed_events([ev], session, use_mock=self.use_mock)
+                        return ev.id, str(ev.theme_id)
+                return None
+
+            async with self._db_lock:
+                embedded_info = await asyncio.shield(_do_embed())
+
+            if embedded_info:
+                bus = self._get_redis_bus()
+                await bus.publish(CHANNEL_MAP_UPDATE, {"event_id": embedded_info[0], "theme_id": embedded_info[1]})
+        except asyncio.CancelledError:
+            return
         except Exception as exc:
             logger.debug(f"Background embedding skipped or deferred: {exc}")
 

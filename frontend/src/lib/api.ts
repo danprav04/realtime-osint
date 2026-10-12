@@ -13,6 +13,18 @@ import type {
 const DEFAULT_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 const DEFAULT_API_KEY = process.env.NEXT_PUBLIC_API_KEY || 'osint_secret_key_2026';
 
+export function getApiBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('osint_api_url');
+    if (custom) return custom;
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      const port = process.env.NEXT_PUBLIC_API_PORT || '8080';
+      return `${window.location.protocol}//${window.location.hostname}:${port}`;
+    }
+  }
+  return DEFAULT_API_URL;
+}
+
 export function getStoredApiKey(): string {
   if (typeof window === 'undefined') return DEFAULT_API_KEY;
   return localStorage.getItem('osint_api_key') || DEFAULT_API_KEY;
@@ -36,7 +48,8 @@ export async function fetchApi<T>(endpoint: string, options: RequestInit = {}): 
   }
 
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  const url = `${DEFAULT_API_URL}${cleanEndpoint}`;
+  const baseUrl = getApiBaseUrl();
+  const url = `${baseUrl}${cleanEndpoint}`;
 
   const response = await fetch(url, {
     ...options,
