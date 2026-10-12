@@ -974,7 +974,18 @@ class PipelineOrchestrator:
         title = getattr(event, "title", "Event") or (event.get("title", "Event") if isinstance(event, dict) else "Event")
         raw_text = getattr(event, "raw_text", "") or (event.get("raw_text", "") if isinstance(event, dict) else "")
         author = getattr(event, "author", None) or (event.get("author") if isinstance(event, dict) else None)
-        location = getattr(event, "location", None) or (event.get("location") if isinstance(event, dict) else None)
+        _loc_raw = getattr(event, "location", None) or (event.get("location") if isinstance(event, dict) else None)
+        if _loc_raw is None or isinstance(_loc_raw, dict):
+            location = _loc_raw
+        elif hasattr(_loc_raw, "to_dict"):
+            location = _loc_raw.to_dict()
+        elif hasattr(_loc_raw, "model_dump"):
+            location = _loc_raw.model_dump()
+        else:
+            try:
+                location = dict(_loc_raw)
+            except Exception:
+                location = None
         raw_meta = getattr(event, "metadata", {}) or (event.get("metadata", {}) if isinstance(event, dict) else {})
         metadata = dict(raw_meta) if isinstance(raw_meta, dict) else {}
         metadata["scoring_breakdown"] = res_s2.to_breakdown_dict(scoring_ctx)

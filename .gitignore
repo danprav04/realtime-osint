@@ -76,3 +76,4 @@ scratch_*.py
 *.swo
 .DS_Store
 Thumbs.db
+backend_deploy.tar

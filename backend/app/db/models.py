@@ -58,7 +58,7 @@ class Theme(Base):
         "Source", back_populates="theme", cascade="all, delete-orphan", lazy="selectin"
     )
     events: Mapped[List["Event"]] = relationship(
-        "Event", back_populates="theme", cascade="all, delete-orphan", lazy="selectin"
+        "Event", back_populates="theme", cascade="all, delete-orphan", lazy="noload"
     )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -100,7 +100,7 @@ class Source(Base):
 
     # Relationships
     theme: Mapped["Theme"] = relationship("Theme", back_populates="sources", lazy="selectin")
-    events: Mapped[List["Event"]] = relationship("Event", back_populates="source", lazy="selectin")
+    events: Mapped[List["Event"]] = relationship("Event", back_populates="source", lazy="noload")
 
     def to_dict(self) -> Dict[str, Any]:
         target = None
@@ -173,7 +173,7 @@ class Event(Base):
     )
 
     # Relationships
-    theme: Mapped["Theme"] = relationship("Theme", back_populates="events", lazy="selectin")
+    theme: Mapped["Theme"] = relationship("Theme", back_populates="events", lazy="noload")
     source: Mapped[Optional["Source"]] = relationship("Source", back_populates="events")
     alerts: Mapped[List["Alert"]] = relationship(
         "Alert", back_populates="event", cascade="all, delete-orphan", lazy="selectin"
