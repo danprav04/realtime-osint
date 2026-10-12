@@ -64,7 +64,8 @@ pnpm-debug.log*
 
 # Agent & internal work files
 .agent/
-.agents/
+.agents/*
+!.agents/skills/
 ORIGINAL_REQUEST.md
 scratch_*.py
 
