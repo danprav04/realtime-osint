@@ -5,7 +5,6 @@ import type {
   DashboardStats,
   SystemSettings,
   AIPipelineSettings,
-  PizzaMeterData,
   EmbeddingsMapData,
   EmbeddingStatus,
   SituationSummaryData,
@@ -173,31 +172,6 @@ export async function updateAIPipelineSettings(settings: AIPipelineSettings): Pr
   return fetchApi<AIPipelineSettings>('/api/settings/ai-pipeline', {
     method: 'PUT',
     body: JSON.stringify(settings),
-  });
-}
-
-// Pizza Meter
-export async function getPizzaMeter(): Promise<PizzaMeterData> {
-  return fetchApi<PizzaMeterData>('/api/pizza-meter');
-}
-
-export async function togglePizzaMeter(enabled: boolean): Promise<{ status: string; enabled: boolean }> {
-  return fetchApi<{ status: string; enabled: boolean }>('/api/pizza-meter/toggle', {
-    method: 'PUT',
-    body: JSON.stringify({ enabled }),
-  });
-}
-
-export async function simulatePizzaMeter(params: Partial<{
-  level: number;
-  status: string;
-  score: number;
-  trend: string;
-  reset: boolean;
-}>): Promise<PizzaMeterData> {
-  return fetchApi<PizzaMeterData>('/api/pizza-meter/simulate', {
-    method: 'POST',
-    body: JSON.stringify(params),
   });
 }
 

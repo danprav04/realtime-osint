@@ -142,11 +142,10 @@ The primary operations view provides continuous real-time intelligence monitorin
 - **Spatial Intelligence Galaxy**: Projects high-dimensional event embeddings (`gemini-embedding-001` or self-hosted Hugging Face TEI `all-MiniLM-L6-v2`) onto an interactive 2D canvas with topical clustering and multi-source corroboration scoring.
 - **Consensus & Trustworthiness Badges**: Highlights stories corroborated independently across multiple source engines (RSS, Telegram, NewsAPI, Reddit, AIS).
 
-### 4. Analytics, Trends & Pentagon Pizza Meter (`/trends` & `/`)
+### 4. Analytics & Trends (`/trends` & `/`)
 - **Hourly Volume Timeline**: Time-series bar visualization tracking event influx over 24-hour windows.
 - **Score Distribution Histogram**: Density histogram showing distribution across the 1–10 severity scale.
 - **Source Engine Activity**: Radial breakdown of ingested intelligence across all 5 active plugins.
-- **Pentagon Pizza Meter (`PentagonPizzaMeter.tsx`)**: Tracks Arlington/Pentagon defense corridor late-night delivery activity calibrated against hourly historical baselines (`DEFCON 1–5`), toggleable in Settings.
 - **Tactical Alert Wheel (`AlertWheel.tsx`)**: Radial regional siren and kinetic alert visualizer on the live feed.
 
 ### 5. Settings Control Center (`/settings`)
@@ -433,7 +432,6 @@ realtime-osint/
 │   │   │   ├── events.py           # Event timeline queries, filtering & pagination
 │   │   │   ├── embeddings.py       # 2D semantic relevance map, backfills & quota status
 │   │   │   ├── summary.py          # Multi-source AI executive situation summary endpoints
-│   │   │   ├── pizza_meter.py      # Pentagon Pizza Index OSINT telemetry endpoint
 │   │   │   ├── stats.py            # Event aggregation & score distribution metrics
 │   │   │   ├── pipeline.py         # AI pipeline manual triggers & stage status
 │   │   │   └── settings.py         # Dynamic AI provider, fallback & credential settings
@@ -482,7 +480,7 @@ realtime-osint/
 │   │       ├── map/                # RelevanceMap, EventInspector
 │   │       ├── charts/             # VolumeChart, ScoreDistributionChart, SourceActivityChart
 │   │       ├── settings/           # ThemeForm, SourceManager, AIConfigMatrix, ApiKeyManager
-│   │       └── stats/              # StatCards, PentagonPizzaMeter
+│   │       └── stats/              # StatCards
 │   └── tests/                      # Frontend component and utility tests
 │
 └── tests/                          # 96 E2E Integration Tests (Tiers 1-4)

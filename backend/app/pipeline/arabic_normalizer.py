@@ -33,6 +33,7 @@ NUMERAL_TRANSLATION = str.maketrans({
 # 1. Explosion / Detonation (Audible / Visceral Ground Reports)
 EXPLOSION_VERNACULAR: List[str] = [
     "انفجار قوي",
+    "انفجار ضخم",
     "صوت قوي يهز",
     "دبت ضربه",
     "دوي انفجار",
@@ -48,6 +49,7 @@ EXPLOSION_VERNACULAR: List[str] = [
     "صدای انفجار",
     "صداي انفجار",
     "פיצוץ מטורף",
+    "פיצוץ חזק",
     "בום חזק מאוד",
     "בום חזק",
     "loud boom",
@@ -275,6 +277,7 @@ ALL_VERNACULAR_TRIGGERS: List[str] = list(
         + SMOKE_IMPACT_TRIGGERS
         + ACOUSTIC_TRIGGERS
         + KINETIC_TRIGGERS
+        + BURST_ROOT_TOKENS
     )
 )
 

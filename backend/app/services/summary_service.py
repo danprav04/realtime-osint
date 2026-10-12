@@ -3,7 +3,7 @@ backend/app/services/summary_service.py - Full-Spectrum AI Situational Summary E
 =====================================================================================
 Synthesizes incoming report summaries, high-dimensional vector embeddings, semantic
 storyline clusters, multi-source corroboration/trustworthiness scores, and live OSINT
-system telemetry (velocity, entities, locations, alerts, Pentagon Pizza Meter) into
+system telemetry (velocity, entities, locations, alerts) into
 an executive operational briefing (SitRep).
 """
 
@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.pizza_meter import calculate_pizza_meter_status
 from backend.app.db.models import Alert, Event, EventEmbedding, SystemSettings, Theme, utc_now
 from backend.app.pipeline.models import ClusterSynthesisLLMItem, SituationBriefingLLMOutput
 from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
@@ -32,7 +31,7 @@ CACHE_TTL_SECONDS = 900  # 15 minutes
 SITUATION_SUMMARY_SYSTEM_PROMPT = """You are the Chief Intelligence Watch Officer authoring a full-spectrum Operational Situation Summary (SitRep).
 You are provided with:
 1. Active Theme Monitoring Context & Alert Thresholds.
-2. Live OSINT Telemetry: Reporting velocity (6h vs 24h), source breakdown, critical alert counts, and Pentagon Pizza Meter status (if enabled).
+2. Live OSINT Telemetry: Reporting velocity (6h vs 24h), source breakdown, and critical alert counts.
 3. Semantic Embedding Storyline Clusters: Incoming intelligence reports grouped by high-dimensional vector embeddings (cosine similarity + KMeans clustering), annotated with multi-source corroboration counts and trustworthiness scores ("Highly Corroborated", "Developing / Verified", "Single-Source Unverified", "Isolated Outlier").
 4. Unverified / Isolated Outlier Reports: High-visibility claims that lack independent cross-source corroboration in embedding space.
 
@@ -41,7 +40,7 @@ CRITICAL INSTRUCTIONS:
 - Weight your conclusions by EMBEDDING CORROBORATION: treat "Highly Corroborated" and "Developing / Verified" clusters as confirmed operational developments, while explicitly caveats "Single-Source Unverified" and "Isolated Outlier" claims as unconfirmed reporting requiring verification.
 - Provide an overall `threat_trajectory` ("Escalating", "Elevated", "Stable", "De-escalating", "Volatile") and `threat_level_score` (1-10).
 - Write a 2-3 paragraph `executive_bluf` (Bottom Line Up Front) synthesizing the primary operational developments, actor posture, and immediate implications.
-- Write a 1-2 paragraph `strategic_assessment` analyzing cross-cluster linkages, reporting tempo/velocity surges, source diversity, and unconventional indicators (such as the Pentagon Pizza Meter if elevated/critical).
+- Write a 1-2 paragraph `strategic_assessment` analyzing cross-cluster linkages, reporting tempo/velocity surges, and source diversity.
 - For each provided semantic cluster (`cluster_id`), return a matching item in `cluster_assessments` with a punchy operational `title`, a 2-3 sentence `executive_summary` synthesizing the reports in that cluster and their source consensus, a 1-sentence `operational_implication`, and `threat_level` ("low", "medium", "high", "critical").
 - Provide 4-6 `key_developments` bullets, an `unverified_outlier_assessment` summarizing notable uncorroborated claims, and 4-5 actionable `watchlist_indicators` for the next 12-24 hours.
 
@@ -102,7 +101,6 @@ def _build_deterministic_summary(
     velocity_status = telemetry.get("velocity_status", "Normal")
     top_entities = [e["name"] for e in telemetry.get("top_entities", [])[:6]]
     top_locations = [l["name"] for l in telemetry.get("top_locations", [])[:4]]
-    pizza = telemetry.get("pizza_meter")
 
     if total_events == 0:
         return SituationBriefingLLMOutput(
@@ -223,22 +221,13 @@ def _build_deterministic_summary(
     p2 = f"{lead_clusters_str} {entities_str} {locations_str}".strip()
 
     # Build Strategic Assessment
-    pizza_sentence = ""
-    if pizza and pizza.get("enabled", True):
-        p_status = pizza.get("status", "NOMINAL")
-        p_mult = pizza.get("baseline_multiplier", 1.0)
-        pizza_sentence = (
-            f" Unconventional defense corridor telemetry (Pentagon Pizza Meter) registers as {p_status} "
-            f"({p_mult}x hourly baseline), {'correlating with elevated late-night crisis monitoring.' if p_status in ('HIGH', 'CRITICAL', 'ELEVATED') else 'indicating normal baseline staff activity.'}"
-        )
-
     strategic_assessment = (
         f"Cross-cluster embedding analysis indicates a {velocity_status.lower()} reporting tempo "
         f"({telemetry.get('events_last_6h', 0)} events in the last 6 hours vs. "
         f"{telemetry.get('events_prev_18h', 0)} in the preceding 18 hours). "
         f"High-dimensional vector clustering separated {sum(c['report_count'] for c in clusters_meta)} "
         f"clustered reports from {len(outlier_events)} unverified/outlier claims, allowing watch officers "
-        f"to prioritize multi-source consensus over single-feed noise.{pizza_sentence}"
+        f"to prioritize multi-source consensus over single-feed noise."
     )
 
     # Build Key Developments
@@ -409,15 +398,6 @@ class SituationSummaryService:
                         return None
 
                 payload["cached"] = True
-                if isinstance(payload.get("telemetry"), dict):
-                    try:
-                        pizza_res = await calculate_pizza_meter_status(session)
-                        payload["telemetry"] = dict(payload["telemetry"])
-                        payload["telemetry"]["pizza_meter"] = (
-                            pizza_res if (pizza_res and pizza_res.get("enabled", True)) else None
-                        )
-                    except Exception as p_err:
-                        logger.debug(f"Live pizza meter refresh in cached summary skipped: {p_err}")
                 return payload
         except Exception as exc:
             logger.debug(f"Summary cache lookup skipped: {exc}")
@@ -708,14 +688,6 @@ class SituationSummaryService:
         else:
             velocity_status = "Normal"
 
-        pizza_data = None
-        try:
-            pizza_res = await calculate_pizza_meter_status(session)
-            if pizza_res and pizza_res.get("enabled", True):
-                pizza_data = pizza_res
-        except Exception as p_err:
-            logger.debug(f"Pizza meter telemetry skipped in summary: {p_err}")
-
         telemetry = {
             "total_events": total_events,
             "embedded_events": embedded_events,
@@ -735,7 +707,6 @@ class SituationSummaryService:
             "top_entities": [{"name": k, "count": v} for k, v in entity_counter.most_common(12)],
             "top_locations": [{"name": k, "count": v} for k, v in location_counter.most_common(8)],
             "top_categories": [{"name": k, "count": v} for k, v in category_counter.most_common(6)],
-            "pizza_meter": pizza_data,
         }
 
         # 5. Execute AI Synthesis via PipelineOrchestrator fallback chain
@@ -952,13 +923,6 @@ class SituationSummaryService:
             f"- Top Entities: {', '.join(str(e['name']) + ' (' + str(e['count']) + ')' for e in telemetry['top_entities'][:10])}",
             f"- Top Locations: {', '.join(str(l['name']) + ' (' + str(l['count']) + ')' for l in telemetry['top_locations'][:6])}",
         ])
-
-        pizza = telemetry.get("pizza_meter")
-        if pizza:
-            lines.append(
-                f"- Pentagon Pizza Meter (Defense Corridor Indicator): Status={pizza.get('status')} "
-                f"({pizza.get('baseline_multiplier')}x hourly baseline, Score={pizza.get('score')}/100) — {pizza.get('description')}"
-            )
 
         lines.append("")
         lines.append(f"=== SEMANTIC EMBEDDING STORYLINE CLUSTERS ({len(clusters_meta)} clusters) ===")

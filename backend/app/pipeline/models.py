@@ -215,7 +215,6 @@ class ScoringContext(BaseModel):
     critical_alerts_last_6h: int = 0
     avg_score_24h: float = 5.0
     active_storylines: List[str] = Field(default_factory=list)
-    pizza_meter_status: Optional[str] = None
     embedding_vector: Optional[List[float]] = None
     embedding_model_name: Optional[str] = None
 

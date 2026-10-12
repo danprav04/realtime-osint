@@ -96,7 +96,7 @@ export default function SettingsPage() {
       id: 'keys' as const,
       label: 'API Keys & Notifications',
       icon: Key,
-      desc: 'External credentials, Telegram alerts, and Pentagon Pizza Meter',
+      desc: 'External credentials, Telegram alerts, and polling intervals',
     },
   ];
 

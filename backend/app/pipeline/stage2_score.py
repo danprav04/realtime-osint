@@ -204,10 +204,6 @@ def build_stage2_context_block(
         if storylines:
             lines.append(f"- Active High-Priority Theater Storylines: {' ; '.join(storylines[:3])}")
 
-        pizza = scoring_context.get("pizza_meter_status")
-        if pizza:
-            lines.append(f"- Unconventional Defense Telemetry (Pentagon Pizza Meter): {pizza}")
-
     return "\n".join(lines)
 
 

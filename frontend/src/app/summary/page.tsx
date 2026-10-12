@@ -25,20 +25,17 @@ import {
   ExternalLink,
   Crosshair,
   TrendingUp,
-  Pizza,
 } from 'lucide-react';
 import {
   SituationSummaryData,
   SummaryCitationEvent,
   SummaryClusterBreakdown,
   NormalizedEvent,
-  PizzaMeterData,
   Theme,
 } from '@/lib/types';
 import {
   getSituationSummary,
   generateSituationSummary,
-  getPizzaMeter,
   getThemes,
 } from '@/lib/api';
 import { useRealtimeFeed, useSocketConnection } from '@/lib/socket';
@@ -142,7 +139,6 @@ function citationToNormalizedEvent(cit: SummaryCitationEvent, themeId: string): 
 
 export default function AISummaryPage() {
   const [summary, setSummary] = useState<SituationSummaryData | null>(null);
-  const [livePizzaMeter, setLivePizzaMeter] = useState<PizzaMeterData | null | undefined>(undefined);
   const [themes, setThemes] = useState<Theme[]>([]);
   const [selectedTheme, setSelectedTheme] = useState<string>('active');
   const [timeRange, setTimeRange] = useState<string>('all');
@@ -168,18 +164,14 @@ export default function AISummaryPage() {
 
       try {
         const themeParam = selectedTheme === 'active' ? undefined : selectedTheme;
-        const [summaryRes, themesRes, pizzaRes] = await Promise.all([
+        const [summaryRes, themesRes] = await Promise.all([
           forceRefresh
             ? generateSituationSummary({ theme_id: themeParam, time_range: timeRange })
             : getSituationSummary({ theme_id: themeParam, time_range: timeRange }),
           getThemes().catch(() => []),
-          getPizzaMeter().catch(() => undefined),
         ]);
 
         setSummary(summaryRes);
-        if (pizzaRes !== undefined) {
-          setLivePizzaMeter(pizzaRes);
-        }
         setNewEventsCount(0);
         if (themesRes && themesRes.length > 0) {
           setThemes(themesRes);
@@ -279,12 +271,6 @@ export default function AISummaryPage() {
   };
 
   const trajStyle = getTrajectoryStyles(summary?.threat_trajectory);
-  const pizza =
-    livePizzaMeter !== undefined
-      ? livePizzaMeter?.enabled === false
-        ? null
-        : livePizzaMeter
-      : summary?.telemetry?.pizza_meter;
 
   return (
     <div className="space-y-5">
@@ -564,7 +550,7 @@ export default function AISummaryPage() {
               </div>
             </div>
 
-            {/* 4. Operational Tempo & Defense Corridor */}
+            {/* 4. Operational Tempo */}
             <div className="card-slick rounded-xl p-4 flex flex-col justify-between">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">
@@ -581,31 +567,8 @@ export default function AISummaryPage() {
                 </span>
               </div>
               <div className="mt-2 flex items-center justify-between text-[11px] font-mono tabular">
-                {pizza ? (
-                  <>
-                    <span className="text-zinc-400 flex items-center space-x-1">
-                      <Pizza className="w-3 h-3 text-amber-400" />
-                      <span>Pizza Meter:</span>
-                    </span>
-                    <span
-                      className={cn(
-                        'font-semibold',
-                        pizza.status === 'CRITICAL'
-                          ? 'text-rose-400'
-                          : pizza.status === 'HIGH' || pizza.status === 'ELEVATED'
-                          ? 'text-amber-400'
-                          : 'text-emerald-400'
-                      )}
-                    >
-                      {pizza.status} ({pizza.baseline_multiplier}x)
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-zinc-400">Avg Importance:</span>
-                    <span className="text-zinc-200">{summary.telemetry.avg_importance_score} / 10</span>
-                  </>
-                )}
+                <span className="text-zinc-400">Avg Importance:</span>
+                <span className="text-zinc-200">{summary.telemetry.avg_importance_score} / 10</span>
               </div>
             </div>
           </div>
@@ -1032,70 +995,6 @@ export default function AISummaryPage() {
                   ))}
                 </ul>
               </div>
-
-              {/* Pentagon Pizza Meter Defense Corridor Telemetry (When Enabled) */}
-              {pizza && (
-                <div className="card-slick rounded-xl p-5 space-y-3.5">
-                  <div className="flex items-center justify-between pb-2 hairline-b">
-                    <div className="flex items-center space-x-2">
-                      <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/25">
-                        <Pizza className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-semibold text-zinc-100 tracking-tight">
-                          Pentagon Pizza Meter
-                        </h4>
-                        <p className="text-[11px] text-zinc-400">
-                          Arlington DoD Corridor OSINT Indicator
-                        </p>
-                      </div>
-                    </div>
-
-                    <span
-                      className={cn(
-                        'px-2 py-0.5 rounded text-[10px] font-mono font-semibold border tabular',
-                        pizza.status === 'CRITICAL'
-                          ? 'bg-rose-500/15 text-rose-400 border-rose-500/30'
-                          : pizza.status === 'HIGH' || pizza.status === 'ELEVATED'
-                          ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
-                          : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                      )}
-                    >
-                      {pizza.status} ({pizza.baseline_multiplier}x)
-                    </span>
-                  </div>
-
-                  <p className="text-xs text-zinc-300 leading-relaxed">{pizza.description}</p>
-
-                  {pizza.locations && pizza.locations.length > 0 && (
-                    <div className="space-y-2 pt-1">
-                      {pizza.locations.map((loc) => (
-                        <div key={loc.name} className="space-y-1 text-[11px]">
-                          <div className="flex items-center justify-between text-zinc-300">
-                            <span className="truncate font-medium">{loc.name}</span>
-                            <span className="font-mono text-zinc-400 tabular">
-                              {loc.busyness}% (norm {loc.normal_busyness ?? 25}%)
-                            </span>
-                          </div>
-                          <div className="w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-                            <div
-                              className={cn(
-                                'h-full rounded-full transition-all',
-                                loc.status === 'Spike'
-                                  ? 'bg-rose-500'
-                                  : loc.status === 'Elevated'
-                                  ? 'bg-amber-400'
-                                  : 'bg-emerald-400'
-                              )}
-                              style={{ width: `${Math.min(100, loc.busyness)}%` }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
 
               {/* Active Entities & Geographic Hotspots */}
               <div className="card-slick rounded-xl p-5 space-y-4">

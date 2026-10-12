@@ -295,6 +295,9 @@ class TestStage0GatekeeperLLMPath:
 # 4. BlueskySourcePlugin – mock XRPC responses
 # ---------------------------------------------------------------------------
 
+_NOW_ISO = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class TestBlueskySourcePlugin:
     """Tests for BlueskySourcePlugin with mocked HTTP responses."""
 
@@ -307,14 +310,14 @@ class TestBlueskySourcePlugin:
                     "record": {
                         "$type": "app.bsky.feed.post",
                         "text": "Breaking: large explosion reported near Beirut port area — multiple sources confirm",
-                        "createdAt": "2026-10-11T10:00:00Z",
+                        "createdAt": _NOW_ISO,
                     },
                     "author": {
                         "did": "did:plc:abc123",
                         "handle": "elint.news",
                         "displayName": "ELINT News",
                     },
-                    "indexedAt": "2026-10-11T10:00:05Z",
+                    "indexedAt": _NOW_ISO,
                     "likeCount": 42,
                     "repostCount": 15,
                 }
@@ -326,14 +329,14 @@ class TestBlueskySourcePlugin:
                     "record": {
                         "$type": "app.bsky.feed.post",
                         "text": "Just had the best hummus for dinner 😋",
-                        "createdAt": "2026-10-11T09:55:00Z",
+                        "createdAt": _NOW_ISO,
                     },
                     "author": {
                         "did": "did:plc:xyz789",
                         "handle": "foodie.me",
                         "displayName": "Food Lover",
                     },
-                    "indexedAt": "2026-10-11T09:55:05Z",
+                    "indexedAt": _NOW_ISO,
                     "likeCount": 5,
                     "repostCount": 1,
                 }
@@ -361,7 +364,7 @@ class TestBlueskySourcePlugin:
         assert len(events) == 2
         assert events[0].source_type == "bluesky"
         assert "Beirut" in events[0].raw_text or "explosion" in events[0].raw_text.lower()
-        assert events[0].author in ("ELINT News", "elint.news")
+        assert events[0].author in ("ELINT News", "elint.news", "@elint.news")
 
     @pytest.mark.asyncio
     async def test_poll_returns_empty_on_304(self):
@@ -430,10 +433,10 @@ class TestBlueskySourcePlugin:
         mock_resp.json.return_value = {"posts": []}
 
         captured_urls = []
-        original_get = mock_resp
 
-        async def fake_get(url, **kwargs):
-            captured_urls.append(url)
+        async def fake_get(*args, **kwargs):
+            url = args[1] if len(args) > 1 else kwargs.get("url", args[0] if args else "")
+            captured_urls.append(str(url))
             return mock_resp
 
         with patch("httpx.AsyncClient.get", new=fake_get):
@@ -455,7 +458,7 @@ class TestMastodonSourcePlugin:
     MOCK_JSON_TIMELINE = [
         {
             "id": "109876543210",
-            "created_at": "2026-10-11T10:05:00.000Z",
+            "created_at": _NOW_ISO,
             "content": "<p>OSINT: Multiple vessels have changed course in the Strait of Hormuz — AIS data confirms.</p>",
             "account": {"username": "osint_analyst", "acct": "osint_analyst@infosec.exchange"},
             "url": "https://infosec.exchange/@osint_analyst/109876543210",
@@ -464,7 +467,7 @@ class TestMastodonSourcePlugin:
         },
         {
             "id": "109876543211",
-            "created_at": "2026-10-11T10:03:00.000Z",
+            "created_at": _NOW_ISO,
             "content": "<p>Good morning everyone! Hope you have a wonderful day!</p>",
             "account": {"username": "happyuser", "acct": "happyuser@mastodon.social"},
             "url": "https://mastodon.social/@happyuser/109876543211",
@@ -485,7 +488,7 @@ class TestMastodonSourcePlugin:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.headers = {"Content-Type": "application/json; charset=utf-8"}
+        mock_resp.headers = {"content-type": "application/json; charset=utf-8"}
         mock_resp.json.return_value = self.MOCK_JSON_TIMELINE
         mock_resp.text = json.dumps(self.MOCK_JSON_TIMELINE)
 
@@ -575,7 +578,7 @@ MOCK_EMSC_RESPONSE = {
         {
             "properties": {
                 "unid": "20261011_000001",
-                "time": "2026-10-11T10:00:00.000Z",
+                "time": _NOW_ISO,
                 "mag": 2.4,
                 "magtype": "ml",
                 "depth": 1.5,  # Shallow / surface — potential kinetic detonation
@@ -587,7 +590,7 @@ MOCK_EMSC_RESPONSE = {
         {
             "properties": {
                 "unid": "20261011_000002",
-                "time": "2026-10-11T09:45:00.000Z",
+                "time": _NOW_ISO,
                 "mag": 4.1,
                 "magtype": "mb",
                 "depth": 32.0,  # Deep tectonic — natural
@@ -599,7 +602,7 @@ MOCK_EMSC_RESPONSE = {
         {
             "properties": {
                 "unid": "20261011_000003",
-                "time": "2026-10-11T09:30:00.000Z",
+                "time": _NOW_ISO,
                 "mag": 1.8,
                 "magtype": "ml",
                 "depth": 0.0,  # Zero depth — could be surface explosion
@@ -1052,3 +1055,233 @@ class TestCreatePluginInstance:
         from backend.app.plugins.rss_plugin import RSSSourcePlugin
         p = create_plugin_instance("unknown_xyz", "8", "1", "Fallback Test", {})
         assert isinstance(p, RSSSourcePlugin)
+
+
+# ---------------------------------------------------------------------------
+# 11. RedditSourcePlugin – /comments.json & ETag caching
+# ---------------------------------------------------------------------------
+
+class TestRedditCommentsAndCaching:
+    """Tests for RedditSourcePlugin live comment stream (/comments.json) and ETag caching."""
+
+    @pytest.mark.asyncio
+    async def test_reddit_comments_mode_parses_t1_items(self):
+        from backend.app.plugins.reddit_plugin import RedditSourcePlugin
+
+        plugin = RedditSourcePlugin(
+            source_id="red_comments_1",
+            theme_id="1",
+            name="r/lebanon (Live Comments)",
+            config={"subreddit": "lebanon", "feed_mode": "comments", "limit": 10},
+            poll_interval=60,
+        )
+        assert plugin.feed_mode == "comments"
+
+        now_ts = datetime.now(timezone.utc).timestamp()
+        mock_payload = {
+            "data": {
+                "children": [
+                    {
+                        "kind": "t1",
+                        "data": {
+                            "id": "c_leb_01",
+                            "body": "Loud boom heard right now in southern Beirut, windows shook! انفجار قوي",
+                            "link_title": "Megathread: Situation in Lebanon",
+                            "author": "beirut_resident",
+                            "created_utc": now_ts,
+                            "permalink": "/r/lebanon/comments/xyz/megathread/c_leb_01/",
+                            "score": 14,
+                            "parent_id": "t3_xyz",
+                        },
+                    }
+                ]
+            }
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"etag": '"reddit_etag_1"'}
+        mock_resp.json.return_value = mock_payload
+
+        with patch("httpx.AsyncClient.get", return_value=mock_resp):
+            events = await plugin.poll()
+
+        assert len(events) == 1
+        assert events[0].metadata.get("is_comment") is True
+        assert events[0].metadata.get("feed_mode") == "comments"
+        assert events[0].language == "ar"
+        assert plugin._last_etag == '"reddit_etag_1"'
+
+    @pytest.mark.asyncio
+    async def test_reddit_304_not_modified_returns_empty(self):
+        from backend.app.plugins.reddit_plugin import RedditSourcePlugin
+
+        plugin = RedditSourcePlugin(
+            source_id="red_comments_2",
+            theme_id="1",
+            name="r/Israel (Live Comments)",
+            config={"subreddit": "Israel", "feed_mode": "comments"},
+            poll_interval=60,
+        )
+        plugin._last_etag = '"etag_cached"'
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 304
+        mock_resp.headers = {}
+
+        with patch("httpx.AsyncClient.get", return_value=mock_resp):
+            events = await plugin.poll()
+
+        assert events == []
+
+
+# ---------------------------------------------------------------------------
+# 12. TelegramSourcePlugin – ETag 304 & Browser-Parity Headers
+# ---------------------------------------------------------------------------
+
+class TestTelegramCachingAndHeaders:
+    """Tests for TelegramSourcePlugin web preview ETag 304 handling."""
+
+    @pytest.mark.asyncio
+    async def test_telegram_web_preview_304_returns_empty(self):
+        from backend.app.plugins.telegram_plugin import TelegramSourcePlugin
+
+        plugin = TelegramSourcePlugin(
+            source_id="tg_1",
+            theme_id="1",
+            name="Sabereen News",
+            config={"channel": "sabreenS1"},
+            poll_interval=60,
+        )
+        plugin._last_etag = '"tg_etag_123"'
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 304
+        mock_resp.headers = {}
+
+        with patch("httpx.AsyncClient.get", return_value=mock_resp):
+            events = await plugin.poll()
+
+        assert events == []
+
+
+# ---------------------------------------------------------------------------
+# 13. SlidingWindowBurstDetector & Sonic Boom De-Escalation
+# ---------------------------------------------------------------------------
+
+class TestVernacularTriangulationAndBurst:
+    """Tests for SlidingWindowBurstDetector, sonic boom de-escalation, and Stage 2 burst boost."""
+
+    def test_sliding_window_burst_detector_triggers_on_3_hits(self):
+        from backend.app.pipeline.arabic_normalizer import SlidingWindowBurstDetector, normalize_arabic_text
+
+        detector = SlidingWindowBurstDetector(window_sec=60.0, burst_threshold=3)
+        t0 = 1000.0
+        r1 = detector.record_and_check(normalize_arabic_text("انفجار قوي في الضاحية"), now_ts=t0)
+        assert r1["term_burst_active"] is False
+        r2 = detector.record_and_check(normalize_arabic_text("سماع دوي انفجار الآن"), now_ts=t0 + 10)
+        assert r2["term_burst_active"] is False
+        r3 = detector.record_and_check(normalize_arabic_text("انفجار ضخم هز المكان"), now_ts=t0 + 25)
+        assert r3["term_burst_active"] is True
+        assert r3["burst_count"] >= 3
+
+    def test_sonic_boom_only_deescalation_in_stage2(self):
+        from backend.app.pipeline.arabic_normalizer import classify_kinetic_signal
+        from backend.app.pipeline.models import Stage2Result
+        from backend.app.pipeline.stage2_score import calibrate_stage2_result
+
+        sonic_text = "سماع صوت خرق جدار الصوت فوق بيروت من الطيران الحربي"
+        sig = classify_kinetic_signal(sonic_text, record_burst=False)
+        assert sig["is_sonic_boom_only"] is True
+
+        raw_s2 = Stage2Result(
+            importance_score=8,
+            severity_score=8,
+            novelty_score=7,
+            verification_confidence="medium",
+            confidence_score=7,
+            score_rationale="Loud boom reported over Beirut.",
+            priority_level="high",
+            should_alert=True,
+        )
+        cal = calibrate_stage2_result(
+            raw_s2,
+            {"name": "Middle East", "alert_threshold": 7},
+            {"kinetic_signal": sig, "corroboration_count": 0},
+            sonic_text,
+        )
+        assert cal.importance_score <= 5
+        assert cal.should_alert is False
+        assert any("Sonic boom de-escalated" in n for n in cal.calibration_notes)
+
+
+# ---------------------------------------------------------------------------
+# 14. GeminiProvider Gemma 4 HTTP 400 Auto-Recovery & Orchestrator Batch Filter
+# ---------------------------------------------------------------------------
+
+class TestGemma4AndOrchestratorGatekeeper:
+    """Tests for Gemma 4 rate limits/HTTP 400 fallback and Orchestrator.filter_events_batch."""
+
+    @pytest.mark.asyncio
+    async def test_gemma4_http_400_retries_with_folded_prompt(self):
+        import httpx
+        from backend.app.pipeline.providers.gemini import GeminiProvider
+
+        prov = GeminiProvider(api_key="test-key", default_model="gemma-4-26b-a4b-it")
+        assert prov.max_rpm == 28
+
+        resp_400 = MagicMock()
+        resp_400.status_code = 400
+        resp_400.headers = {}
+        resp_400.text = "Developer instruction is not enabled for models/gemma-4-26b-a4b-it"
+        resp_400.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "400 Bad Request", request=MagicMock(), response=resp_400
+        )
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.headers = {}
+        resp_200.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"keep": [0]}'}]}}],
+            "usageMetadata": {"totalTokenCount": 42},
+        }
+
+        payloads_sent = []
+
+        async def fake_post(*args, **kwargs):
+            payloads_sent.append(kwargs.get("json", {}))
+            return resp_400 if len(payloads_sent) == 1 else resp_200
+
+        with patch("httpx.AsyncClient.post", new=fake_post), patch.object(
+            prov, "_acquire_pacing_slot", new_callable=AsyncMock
+        ):
+            out = await prov.generate_text(
+                prompt="Messages to evaluate: [0] explosion in Tehran",
+                system_prompt="You are a gatekeeper.",
+                model="gemma-4-26b-a4b-it",
+                json_mode=True,
+            )
+
+        assert out == '{"keep": [0]}'
+        assert len(payloads_sent) == 2
+        assert "systemInstruction" not in payloads_sent[1]
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_filter_events_batch_with_mock_provider(self):
+        from backend.app.pipeline.orchestrator import PipelineOrchestrator
+
+        orch = PipelineOrchestrator(use_mock=True)
+        batch = [
+            _make_event("انفجار ضخم في أصفهان", source_type="telegram"),  # fast_pass
+            _make_event("[deleted]", source_type="reddit"),  # fast_drop
+            _make_event("Where can I find the best shawarma in town today?", source_type="reddit"),  # dropped
+            _make_event("Reports of naval vessel movement near Strait of Hormuz", source_type="bluesky"),  # kept
+        ]
+        kept = await orch.filter_events_batch(batch, force_llm=True)
+        kept_texts = [ev.raw_text for ev in kept]
+        assert "انفجار ضخم في أصفهان" in kept_texts
+        assert "Reports of naval vessel movement near Strait of Hormuz" in kept_texts
+        assert "[deleted]" not in kept_texts
+        stats = orch.get_gatekeeper_stats()
+        assert stats["evaluated_count"] == 4
+        assert stats["passed_count"] >= 2
+

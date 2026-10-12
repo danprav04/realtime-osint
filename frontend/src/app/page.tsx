@@ -15,10 +15,9 @@ import {
   ArrowUpDown,
 } from 'lucide-react';
 import { NormalizedEvent, DashboardStats, Theme, AlertItem } from '@/lib/types';
-import { getEvents, getStats, getActiveTheme, getSettings } from '@/lib/api';
+import { getEvents, getStats, getActiveTheme } from '@/lib/api';
 import { useRealtimeFeed } from '@/lib/socket';
 import { StatCards } from '@/components/stats/StatCards';
-import { PentagonPizzaMeter } from '@/components/stats/PentagonPizzaMeter';
 import { EventCard } from '@/components/timeline/EventCard';
 import { EventDetailsModal } from '@/components/timeline/EventDetailsModal';
 import { AlertWheel } from '@/components/timeline/AlertWheel';
@@ -34,13 +33,6 @@ export default function DashboardPage() {
   const [isPaused, setIsPaused] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<NormalizedEvent | null>(null);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
-  const [pizzaMeterEnabled, setPizzaMeterEnabled] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      const cached = localStorage.getItem('pizza_meter_enabled');
-      if (cached !== null) return cached === 'true';
-    }
-    return true;
-  });
 
   // Filters & Sorting
   const [searchQuery, setSearchQuery] = useState('');
@@ -68,22 +60,15 @@ export default function DashboardPage() {
           ? 'published_asc'
           : 'published_desc';
 
-      const [eventsData, statsData, themeData, settingsData] = await Promise.all([
+      const [eventsData, statsData, themeData] = await Promise.all([
         getEvents({ limit: 100, sort_by: backendSortParam }),
         getStats(),
         getActiveTheme().catch(() => null),
-        getSettings().catch(() => null),
       ]);
       const sorted = sortEvents(eventsData || [], activeSort);
       setEvents(sorted);
       setStats(statsData || null);
       if (themeData) setActiveTheme(themeData);
-      if (settingsData && settingsData.pizza_meter_enabled !== undefined) {
-        setPizzaMeterEnabled(settingsData.pizza_meter_enabled);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('pizza_meter_enabled', String(settingsData.pizza_meter_enabled));
-        }
-      }
 
       // Seed Alert Wheel with existing high-importance / critical events
       const threshold = themeData?.alert_threshold ?? 8;
@@ -309,11 +294,6 @@ export default function DashboardPage() {
 
       {/* 4 Summary Stat Cards */}
       <StatCards stats={stats} loading={loading} />
-
-      {/* Pentagon Pizza Meter (Unobtrusive OSINT Info Source) */}
-      {pizzaMeterEnabled && (
-        <PentagonPizzaMeter onDisabled={() => setPizzaMeterEnabled(false)} />
-      )}
 
       {/* Filter and Control Toolbar */}
       <div className="card-slick rounded-xl p-4 space-y-4">

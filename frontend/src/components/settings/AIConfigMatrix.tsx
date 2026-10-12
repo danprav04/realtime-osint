@@ -126,34 +126,46 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
 
   const handleProviderChange = (stageKey: keyof AIPipelineSettings, provider: 'gemini' | 'groq') => {
     const defaultModel = provider === 'gemini' ? 'gemini-3.5-flash-lite' : 'qwen/qwen3.8-27b';
-    setSettings((prev) => ({
-      ...prev,
-      [stageKey]: {
-        ...prev[stageKey],
-        provider,
-        model_name: defaultModel,
-      },
-    }));
+    setSettings((prev) => {
+      const stage = prev[stageKey];
+      if (!stage) return prev;
+      return {
+        ...prev,
+        [stageKey]: {
+          ...stage,
+          provider,
+          model_name: defaultModel,
+        },
+      };
+    });
   };
 
   const handleModelChange = (stageKey: keyof AIPipelineSettings, model_name: string) => {
-    setSettings((prev) => ({
-      ...prev,
-      [stageKey]: {
-        ...prev[stageKey],
-        model_name,
-      },
-    }));
+    setSettings((prev) => {
+      const stage = prev[stageKey];
+      if (!stage) return prev;
+      return {
+        ...prev,
+        [stageKey]: {
+          ...stage,
+          model_name,
+        },
+      };
+    });
   };
 
   const handleTemperatureChange = (stageKey: keyof AIPipelineSettings, temperature: number) => {
-    setSettings((prev) => ({
-      ...prev,
-      [stageKey]: {
-        ...prev[stageKey],
-        temperature,
-      },
-    }));
+    setSettings((prev) => {
+      const stage = prev[stageKey];
+      if (!stage) return prev;
+      return {
+        ...prev,
+        [stageKey]: {
+          ...stage,
+          temperature,
+        },
+      };
+    });
   };
 
   // Fallback management handlers
@@ -164,6 +176,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   ) => {
     setSettings((prev) => {
       const stage = prev[stageKey];
+      if (!stage) return prev;
       const existing = stage.fallbacks || [];
       const currentProvider = stage.provider;
       const nextProvider = suggestedProvider || (currentProvider === 'gemini' ? 'gemini' : 'groq');
@@ -189,6 +202,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   const handleRemoveFallback = (stageKey: keyof AIPipelineSettings, index: number) => {
     setSettings((prev) => {
       const stage = prev[stageKey];
+      if (!stage) return prev;
       const existing = [...(stage.fallbacks || [])];
       existing.splice(index, 1);
       return {
@@ -209,6 +223,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   ) => {
     setSettings((prev) => {
       const stage = prev[stageKey];
+      if (!stage) return prev;
       const existing = [...(stage.fallbacks || [])];
       if (existing[index]) {
         const updated = {
@@ -233,6 +248,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   const handleMoveFallback = (stageKey: keyof AIPipelineSettings, index: number, direction: 'up' | 'down') => {
     setSettings((prev) => {
       const stage = prev[stageKey];
+      if (!stage) return prev;
       const existing = [...(stage.fallbacks || [])];
       const targetIndex = direction === 'up' ? index - 1 : index + 1;
       if (targetIndex >= 0 && targetIndex < existing.length) {

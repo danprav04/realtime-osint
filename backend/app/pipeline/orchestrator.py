@@ -684,8 +684,13 @@ class PipelineOrchestrator:
                 self.use_mock
                 or force_llm
                 or getattr(self._registry, "use_mock", False)
-                or resolve_api_key("gemini", gk_cfg.api_key_override, self._db_api_keys)
-                or resolve_api_key("groq", gk_cfg.api_key_override, self._db_api_keys)
+                or (
+                    self._running
+                    and (
+                        resolve_api_key("gemini", gk_cfg.api_key_override, self._db_api_keys)
+                        or resolve_api_key("groq", gk_cfg.api_key_override, self._db_api_keys)
+                    )
+                )
             )
             b_size = self._gatekeeper.batch_size
             for start in range(0, len(llm_candidates), b_size):
@@ -777,7 +782,6 @@ class PipelineOrchestrator:
             "critical_alerts_last_6h": 0,
             "avg_score_24h": 5.0,
             "active_storylines": [],
-            "pizza_meter_status": None,
             "embedding_vector": None,
             "embedding_model_name": None,
         }

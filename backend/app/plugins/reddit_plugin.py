@@ -29,7 +29,12 @@ class RedditSourcePlugin(BaseSourcePlugin):
     ):
         super().__init__(source_id, theme_id, name, config, poll_interval, is_enabled)
         # Subreddits can be a list, comma-separated string, or full Reddit URL
-        raw_subs = self.config.get("subreddits") or self.config.get("target") or ["worldnews", "geopolitics"]
+        raw_subs = (
+            self.config.get("subreddits")
+            or self.config.get("subreddit")
+            or self.config.get("target")
+            or ["worldnews", "geopolitics"]
+        )
         if isinstance(raw_subs, str):
             raw_subs = [s.strip() for s in raw_subs.split(",") if s.strip()]
 
@@ -74,6 +79,8 @@ class RedditSourcePlugin(BaseSourcePlugin):
         self._praw_reddit: Optional[Any] = None
         # Conditional HTTP cache headers per URL: {url: {"etag": ..., "last_modified": ...}}
         self._http_cache_meta: Dict[str, Dict[str, str]] = {}
+        self._last_etag: Optional[str] = None
+        self._last_modified: Optional[str] = None
 
     @staticmethod
     def _parse_sub_and_mode(raw: str) -> Tuple[str, Optional[str]]:
@@ -193,6 +200,8 @@ class RedditSourcePlugin(BaseSourcePlugin):
                         req_headers["If-None-Match"] = cache_entry["etag"]
                     if cache_entry.get("last_modified"):
                         req_headers["If-Modified-Since"] = cache_entry["last_modified"]
+                elif self._last_etag:
+                    req_headers["If-None-Match"] = self._last_etag
 
                 try:
                     resp = await client.get(url, headers=req_headers) if req_headers else await client.get(url)
@@ -207,8 +216,13 @@ class RedditSourcePlugin(BaseSourcePlugin):
                         continue
 
                     # Save ETag / Last-Modified for conditional polling
-                    etag = resp.headers.get("etag") or resp.headers.get("ETag")
-                    last_mod = resp.headers.get("last-modified") or resp.headers.get("Last-Modified")
+                    resp_headers = getattr(resp, "headers", None) or {}
+                    etag = resp_headers.get("etag") or resp_headers.get("ETag")
+                    last_mod = resp_headers.get("last-modified") or resp_headers.get("Last-Modified")
+                    if etag:
+                        self._last_etag = etag
+                    if last_mod:
+                        self._last_modified = last_mod
                     if etag or last_mod:
                         self._http_cache_meta[url] = {
                             k: v for k, v in (("etag", etag), ("last_modified", last_mod)) if v

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Key, Eye, EyeOff, Save, Check, AlertCircle, Bell, Shield, Pizza, ExternalLink } from 'lucide-react';
+import { Key, Eye, EyeOff, Save, Check, AlertCircle, Bell, Shield, ExternalLink } from 'lucide-react';
 import { AIPipelineSettings, Source, SystemSettings } from '@/lib/types';
 import { updateSettings } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -55,10 +55,6 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
     }
   );
 
-  const [pizzaMeterEnabled, setPizzaMeterEnabled] = useState<boolean>(
-    initialSettings?.pizza_meter_enabled ?? true
-  );
-
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -76,9 +72,6 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
       }
       if (initialSettings.max_lookback_hours) {
         setMaxLookbackHours((prev) => ({ ...prev, ...initialSettings.max_lookback_hours }));
-      }
-      if (initialSettings.pizza_meter_enabled !== undefined) {
-        setPizzaMeterEnabled(initialSettings.pizza_meter_enabled);
       }
     }
   }, [initialSettings]);
@@ -99,23 +92,6 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
     setMaxLookbackHours((prev) => ({ ...prev, [sourceKey]: value }));
   };
 
-  const handleTogglePizzaMeter = async (enabled: boolean) => {
-    setPizzaMeterEnabled(enabled);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('pizza_meter_enabled', String(enabled));
-    }
-    try {
-      await updateSettings({ pizza_meter_enabled: enabled });
-      setFeedback({
-        type: 'success',
-        message: `Pentagon Pizza Meter ${enabled ? 'enabled' : 'disabled'} and saved.`,
-      });
-      onRefresh();
-    } catch (err: any) {
-      setFeedback({ type: 'error', message: err.message || 'Failed to update pizza meter toggle' });
-    }
-  };
-
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -126,11 +102,7 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
         notification_threshold: notificationThreshold,
         polling_intervals: pollingIntervals,
         max_lookback_hours: maxLookbackHours,
-        pizza_meter_enabled: pizzaMeterEnabled,
       });
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('pizza_meter_enabled', String(pizzaMeterEnabled));
-      }
       setFeedback({
         type: 'success',
         message: 'Credentials & notification settings successfully saved!',
@@ -269,50 +241,6 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
       )}
 
       <form onSubmit={handleSave} className="space-y-6 text-xs">
-        {/* Pentagon Pizza Meter Feature Toggle */}
-        <div className="p-4 rounded-xl bg-canvas-recessed hairline-border space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2 text-zinc-200 font-semibold">
-              <Pizza className="w-4 h-4 text-amber-400" />
-              <span>Pentagon Pizza Meter (DEFCON Anomaly Indicator)</span>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={pizzaMeterEnabled}
-              onClick={() => handleTogglePizzaMeter(!pizzaMeterEnabled)}
-              className={cn(
-                'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
-                pizzaMeterEnabled ? 'bg-amber-500' : 'bg-zinc-700'
-              )}
-              title={pizzaMeterEnabled ? 'Click to disable Pizza Meter' : 'Click to enable Pizza Meter'}
-            >
-              <span
-                className={cn(
-                  'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out',
-                  pizzaMeterEnabled ? 'translate-x-4' : 'translate-x-0'
-                )}
-              />
-            </button>
-          </div>
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] text-zinc-400">
-            <span>
-              Toggle real-time Pentagon and Arlington defense corridor pizza delivery volume on the dashboard.
-              Alerts are calibrated against historical normal business per hour.
-            </span>
-            <span
-              className={cn(
-                'font-mono font-semibold px-2 py-0.5 rounded text-[10px] uppercase shrink-0 self-start sm:self-auto border',
-                pizzaMeterEnabled
-                  ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
-                  : 'text-zinc-500 bg-zinc-800/40 border-zinc-700'
-              )}
-            >
-              {pizzaMeterEnabled ? 'ACTIVE / VISIBLE' : 'DISABLED / HIDDEN'}
-            </span>
-          </div>
-        </div>
-
         {/* Telegram Notification Rule */}
         <div className="p-4 rounded-xl bg-canvas-recessed hairline-border space-y-3">
           <div className="flex items-center justify-between">

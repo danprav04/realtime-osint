@@ -188,33 +188,7 @@ export interface SystemSettings {
   notification_threshold: number;
   polling_intervals: Record<string, number>;
   max_lookback_hours?: Record<string, number>;
-  pizza_meter_enabled?: boolean;
   gatekeeper_stats?: GatekeeperStats;
-}
-
-export interface PizzaLocation {
-  name: string;
-  address: string;
-  busyness: number;
-  normal_busyness?: number;
-  status: 'Normal' | 'Elevated' | 'Spike';
-  distance: string;
-}
-
-export interface PizzaMeterData {
-  status: 'NOMINAL' | 'ELEVATED' | 'HIGH' | 'CRITICAL';
-  level: number;
-  score: number;
-  trend: 'stable' | 'increasing' | 'decreasing';
-  baseline_multiplier: number;
-  description: string;
-  monitored_region: string;
-  last_updated: string;
-  locations: PizzaLocation[];
-  history: Array<{ timestamp: string; score: number }>;
-  enabled?: boolean;
-  hourly_calibrated?: boolean;
-  arlington_hour?: number;
 }
 
 export interface MapTrustworthiness {
@@ -407,7 +381,6 @@ export interface SituationSummaryData {
     top_entities: Array<{ name: string; count: number }>;
     top_locations: Array<{ name: string; count: number }>;
     top_categories: Array<{ name: string; count: number }>;
-    pizza_meter?: PizzaMeterData | null;
   };
 }
 

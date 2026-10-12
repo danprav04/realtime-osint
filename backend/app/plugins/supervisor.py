@@ -326,18 +326,20 @@ class IngestionSupervisor:
         if not fresh_events:
             return []
 
-        # Pre-check DB duplicates in a single batch query if possible
-        unseen_events: List[NormalizedEvent] = []
+        # Pre-check DB duplicates in a single batch query when the AI pipeline orchestrator is active
+        # so Stage 0 LLM quota is never spent re-evaluating already-persisted events.
+        unseen_events: List[NormalizedEvent] = fresh_events
         try:
-            factory = self._get_session_factory()
-            async with factory() as session:
-                ext_ids = [ev.external_id for ev in fresh_events if ev.external_id]
-                if ext_ids:
-                    dup_stmt = select(Event.external_id).where(Event.external_id.in_(ext_ids))
-                    existing_ids = set((await session.execute(dup_stmt)).scalars().all())
-                    unseen_events = [ev for ev in fresh_events if ev.external_id not in existing_ids]
-                else:
-                    unseen_events = fresh_events
+            from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
+            orch = get_pipeline_orchestrator()
+            if orch.is_running:
+                factory = self._get_session_factory()
+                async with factory() as session:
+                    ext_ids = [ev.external_id for ev in fresh_events if ev.external_id]
+                    if ext_ids:
+                        dup_stmt = select(Event.external_id).where(Event.external_id.in_(ext_ids))
+                        existing_ids = set((await session.execute(dup_stmt)).scalars().all())
+                        unseen_events = [ev for ev in fresh_events if ev.external_id not in existing_ids]
         except Exception:
             unseen_events = fresh_events
 
@@ -366,7 +368,8 @@ class IngestionSupervisor:
         if not plugin:
             raise KeyError(f"Source ID '{source_id}' not found.")
         events = await plugin.poll()
-        return await self.filter_and_dispatch_batch(plugin, events)
+        await self.filter_and_dispatch_batch(plugin, events)
+        return events
 
     async def _run_plugin_worker(self, plugin: BaseSourcePlugin) -> None:
         """

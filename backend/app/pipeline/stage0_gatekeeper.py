@@ -237,10 +237,10 @@ class Stage0Gatekeeper:
             self._recent_texts.append(combined)
             return "fast_pass"
 
-        # 5. Vernacular kinetic trigger + theme keyword/entity fast-pass
+        # 5. Vernacular kinetic/explosion/acoustic trigger fast-pass
         norm_text = normalize_arabic_text(combined).lower()
         has_kinetic = any(normalize_arabic_text(k).lower() in norm_text for k in KINETIC_TRIGGERS)
-        if has_kinetic:
+        if has_kinetic or has_vernacular_signal(combined):
             self._recent_texts.append(combined)
             return "fast_pass"
 

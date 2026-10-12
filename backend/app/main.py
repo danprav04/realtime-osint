@@ -20,7 +20,6 @@ from backend.app.api.events import router as events_router
 from backend.app.api.sources import router as sources_router
 from backend.app.api.stats import router as stats_router
 from backend.app.api.themes import router as themes_router
-from backend.app.api.pizza_meter import router as pizza_meter_router
 from backend.app.api.embeddings import router as embeddings_router
 from backend.app.api.summary import router as summary_router
 from backend.app.auth import require_api_key
@@ -209,7 +208,6 @@ def create_app() -> FastAPI:
     application.include_router(sources_router)
     application.include_router(events_router)
     application.include_router(stats_router)
-    application.include_router(pizza_meter_router)
     application.include_router(embeddings_router)
     application.include_router(summary_router)
 

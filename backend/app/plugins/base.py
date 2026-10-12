@@ -33,7 +33,21 @@ class NormalizedEvent(BaseModel):
     """
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     theme_id: str
-    source_type: Literal["rss", "telegram", "newsapi", "reddit", "ais"]
+    source_type: Literal[
+        "rss",
+        "telegram",
+        "newsapi",
+        "reddit",
+        "ais",
+        "bluesky",
+        "bsky",
+        "mastodon",
+        "fediverse",
+        "seismic",
+        "emsc",
+        "geophysical",
+        "ukmto",
+    ]
     source_name: str
     source_url: Optional[str] = None
     external_id: str
@@ -49,11 +63,15 @@ class NormalizedEvent(BaseModel):
     @field_validator("source_type", mode="before")
     @classmethod
     def normalize_source_type(cls, v: Any) -> str:
-        s = str(v).lower()
+        s = str(v).lower().strip()
         if s in ("news_api", "newsapi"):
             return "newsapi"
         if s in ("maritime_ais", "ais"):
             return "ais"
+        if s in ("bsky", "bluesky"):
+            return "bluesky"
+        if s in ("fediverse", "mastodon"):
+            return "mastodon"
         return s
 
     @field_validator("theme_id", mode="before")

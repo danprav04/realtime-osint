@@ -19,9 +19,9 @@ DEFAULT_UKMTO_URL = "https://www.ukmto.org/indian-ocean/recent-incidents"
 
 def _parse_dms_coords(text: str) -> Optional[Tuple[float, float]]:
     """Extract DMS or decimal coordinates from UKMTO advisory text."""
-    # Pattern like 14°50'N 042°15'E or 14 50N 042 15E
+    # Pattern like 14°50'N 042°15'E or 14°50'30"N 042°15'20"E or 14 50N 042 15E
     m = re.search(
-        r"(\d{1,2})[°\s]+(\d{1,2})(?:['′]\s*(\d{1,2}))?\s*([NS])[,\s/]+(\d{2,3})[°\s]+(\d{1,2})(?:['′]\s*(\d{1,2}))?\s*([EW])",
+        r"(\d{1,2})[°\s]+(\d{1,2})['′’]?(?:\s*(\d{1,2})(?:[\"″”])?)?\s*([NS])[,\s/]+(\d{2,3})[°\s]+(\d{1,2})['′’]?(?:\s*(\d{1,2})(?:[\"″”])?)?\s*([EW])",
         text,
         re.IGNORECASE,
     )

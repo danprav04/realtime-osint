@@ -127,7 +127,6 @@ async def get_system_settings(
                 "notification_threshold",
                 "polling_intervals",
                 "max_lookback_hours",
-                "pizza_meter_enabled",
             ])
         )
     )
@@ -177,20 +176,11 @@ async def get_system_settings(
     if "max_lookback_hours" in rows and isinstance(rows["max_lookback_hours"], dict):
         configured_lookbacks.update({k: float(v) for k, v in rows["max_lookback_hours"].items()})
 
-    pizza_meter_enabled = True
-    if "pizza_meter_enabled" in rows:
-        val = rows["pizza_meter_enabled"]
-        if isinstance(val, dict):
-            pizza_meter_enabled = bool(val.get("enabled", True))
-        elif isinstance(val, bool):
-            pizza_meter_enabled = val
-
     return {
         "api_keys": masked_keys,
         "notification_threshold": rows.get("notification_threshold", {}).get("threshold", 7),
         "polling_intervals": rows.get("polling_intervals", {}),
         "max_lookback_hours": configured_lookbacks,
-        "pizza_meter_enabled": pizza_meter_enabled,
         "gatekeeper_stats": get_pipeline_orchestrator().get_gatekeeper_stats(),
     }
 
@@ -206,7 +196,7 @@ async def update_system_settings(
     payload: Dict[str, Any],
     session: AsyncSession = Depends(get_db_session),
 ) -> Dict[str, Any]:
-    """Update system settings (API keys, threshold, intervals, lookback, pizza meter) and notify workers."""
+    """Update system settings (API keys, threshold, intervals, lookback) and notify workers."""
     if "api_keys" in payload:
         from sqlalchemy.orm.attributes import flag_modified
         res = await session.execute(
@@ -290,17 +280,6 @@ async def update_system_settings(
             existing.value_json = current_lb
         else:
             session.add(SystemSettings(key="max_lookback_hours", value_json=current_lb))
-
-    if "pizza_meter_enabled" in payload:
-        res = await session.execute(
-            select(SystemSettings).where(SystemSettings.key == "pizza_meter_enabled")
-        )
-        existing = res.scalars().first()
-        val = {"enabled": bool(payload["pizza_meter_enabled"])}
-        if existing:
-            existing.value_json = val
-        else:
-            session.add(SystemSettings(key="pizza_meter_enabled", value_json=val))
 
     await session.commit()
 
