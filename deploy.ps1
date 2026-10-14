@@ -20,6 +20,10 @@ param(
     [ValidateSet("all", "frontend", "backend", "config")]
     [string]$Service = "all",
 
+    # Randomized production host ports (2026-10-15) - keep in sync with docker-compose.yml
+    [int]$BackendPort = 24176,
+    [int]$FrontendPort = 26816,
+
     [string]$RemoteHost = "production",
     [string]$RemoteUser = "ubuntu",
     [string]$RemoteDir = "/home/ubuntu/deployments/realtime-osint",
@@ -99,9 +103,38 @@ function Invoke-Docker {
     }
 }
 
+function Compress-Tar {
+    # gzip a tar; returns $true on success. Compressing the image tar cuts the
+    # Tailscale transfer by ~3x. Prefers fast native WSL gzip, falls back to
+    # the slower built-in Windows bsdtar.
+    param([string]$TarPath)
+    $abs = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $TarPath))
+    try {
+        $wslPath = (& wsl wslpath -a "$abs") | Select-Object -First 1
+        if ($wslPath -and ($LASTEXITCODE -eq 0)) {
+            & wsl gzip -1 -kf -- "$wslPath"
+            if ($LASTEXITCODE -eq 0) { return $true }
+        }
+    } catch {}
+    try {
+        & tar -czf "$TarPath.gz" "$TarPath"
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 $TarFilesToClean = @()
 
 try {
+    # Always keep the remote compose file in sync when deploying the full stack or config.
+    if ($Service -eq "all" -or $Service -eq "config") {
+        Write-Step "Synchronizing docker-compose.yml to $RemoteTarget..."
+        scp docker-compose.yml "${RemoteTarget}:${RemoteDir}/docker-compose.yml"
+        if ($LASTEXITCODE -ne 0) { throw "SCP failed for docker-compose.yml" }
+        Write-Success "docker-compose.yml synced (backend=${BackendPort}, frontend=${FrontendPort})."
+    }
+
     if ($Service -eq "all" -or $Service -eq "backend") {
         Write-Step "Building backend image for linux/amd64..."
         Invoke-Docker @("build", "--platform", "linux/amd64", "-t", "realtimeosint-backend:latest", "./backend")
@@ -113,19 +146,31 @@ try {
         $TarFilesToClean += $backendTar
         Write-Success "Exported $backendTar"
 
-        Write-Step "Uploading $backendTar to ${RemoteTarget}:$RemoteDir..."
-        scp $backendTar "${RemoteTarget}:${RemoteDir}/$backendTar"
-        if ($LASTEXITCODE -ne 0) { throw "SCP failed for $backendTar" }
+        $backendUpload = $backendTar
+        $backendLoadCmd = "docker load -i $backendTar"
+        if (Compress-Tar $backendTar) {
+            $backendUpload = "$backendTar.gz"
+            $TarFilesToClean += $backendUpload
+            $backendLoadCmd = "gunzip -c $backendTar.gz | docker load"
+            Write-Success "Compressed to $backendUpload ($([math]::Round((Get-Item $backendUpload).Length / 1MB)) MB)"
+        }
+
+        Write-Step "Uploading $backendUpload to ${RemoteTarget}:$RemoteDir..."
+        scp $backendUpload "${RemoteTarget}:${RemoteDir}/$backendUpload"
+        if ($LASTEXITCODE -ne 0) { throw "SCP failed for $backendUpload" }
 
         Write-Step "Loading backend image on remote server..."
-        ssh $RemoteTarget "cd $RemoteDir && docker load -i $backendTar && rm -f $backendTar && docker compose up -d backend"
+        ssh $RemoteTarget "cd $RemoteDir && $backendLoadCmd && rm -f $backendTar $backendTar.gz && docker compose up -d backend"
         if ($LASTEXITCODE -ne 0) { throw "Remote backend deploy failed" }
         Write-Success "Backend updated and restarted on production."
     }
 
     if ($Service -eq "all" -or $Service -eq "frontend") {
         Write-Step "Building frontend image for linux/amd64..."
-        Invoke-Docker @("build", "--platform", "linux/amd64", "-t", "realtimeosint-frontend:latest", "./frontend")
+        Invoke-Docker @("build", "--platform", "linux/amd64", "-t", "realtimeosint-frontend:latest",
+            "--build-arg", "NEXT_PUBLIC_API_PORT=$BackendPort",
+            "--build-arg", "NEXT_PUBLIC_API_URL=http://localhost:8000",
+            "--build-arg", "NEXT_PUBLIC_WS_URL=http://localhost:8000", "./frontend")
         Write-Success "Frontend image built successfully."
 
         Write-Step "Exporting frontend image to tar..."
@@ -134,14 +179,30 @@ try {
         $TarFilesToClean += $frontendTar
         Write-Success "Exported $frontendTar"
 
-        Write-Step "Uploading $frontendTar to ${RemoteTarget}:$RemoteDir..."
-        scp $frontendTar "${RemoteTarget}:${RemoteDir}/$frontendTar"
-        if ($LASTEXITCODE -ne 0) { throw "SCP failed for $frontendTar" }
+        $frontendUpload = $frontendTar
+        $frontendLoadCmd = "docker load -i $frontendTar"
+        if (Compress-Tar $frontendTar) {
+            $frontendUpload = "$frontendTar.gz"
+            $TarFilesToClean += $frontendUpload
+            $frontendLoadCmd = "gunzip -c $frontendTar.gz | docker load"
+            Write-Success "Compressed to $frontendUpload ($([math]::Round((Get-Item $frontendUpload).Length / 1MB)) MB)"
+        }
+
+        Write-Step "Uploading $frontendUpload to ${RemoteTarget}:$RemoteDir..."
+        scp $frontendUpload "${RemoteTarget}:${RemoteDir}/$frontendUpload"
+        if ($LASTEXITCODE -ne 0) { throw "SCP failed for $frontendUpload" }
 
         Write-Step "Loading frontend image on remote server..."
-        ssh $RemoteTarget "cd $RemoteDir && docker load -i $frontendTar && rm -f $frontendTar && docker compose up -d frontend"
+        ssh $RemoteTarget "cd $RemoteDir && $frontendLoadCmd && rm -f $frontendTar $frontendTar.gz && docker compose up -d frontend"
         if ($LASTEXITCODE -ne 0) { throw "Remote frontend deploy failed" }
         Write-Success "Frontend updated and restarted on production."
+    }
+
+    if ($Service -eq "all") {
+        Write-Step "Reconciling full stack against synced compose..."
+        ssh $RemoteTarget "cd $RemoteDir && docker compose up -d"
+        if ($LASTEXITCODE -ne 0) { throw "Remote stack reconcile failed" }
+        Write-Success "All services reconciled."
     }
 
     if ($Service -eq "config") {
@@ -164,14 +225,14 @@ Write-Step "Verifying remote health checks..."
 Start-Sleep -Seconds 2
 
 try {
-    $healthResp = Invoke-RestMethod -Uri "http://${TailscaleIP}:8080/api/health" -TimeoutSec 10
+    $healthResp = Invoke-RestMethod -Uri "http://${TailscaleIP}:${BackendPort}/api/health" -TimeoutSec 10
     Write-Success "Backend API Health: $($healthResp.status) (Postgres: $($healthResp.database.status), Redis: $($healthResp.redis.status))"
 } catch {
     Write-Warn "Could not query backend health endpoint: $_"
 }
 
 try {
-    $frontendResp = Invoke-WebRequest -Uri "http://${TailscaleIP}:3000" -TimeoutSec 10 -UseBasicParsing
+    $frontendResp = Invoke-WebRequest -Uri "http://${TailscaleIP}:${FrontendPort}" -TimeoutSec 10 -UseBasicParsing
     Write-Success "Frontend Dashboard: HTTP $($frontendResp.StatusCode) OK"
 } catch {
     Write-Warn "Could not query frontend endpoint: $_"
@@ -183,6 +244,6 @@ ssh $RemoteTarget "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}
 
 Write-Host "`n========================================================" -ForegroundColor Green
 Write-Host " DEPLOYMENT COMPLETE! All services operational." -ForegroundColor Green
-Write-Host " Frontend: http://${RemoteHost}:3000  (or http://${TailscaleIP}:3000)" -ForegroundColor Cyan
-Write-Host " Backend:  http://${RemoteHost}:8080  (or http://${TailscaleIP}:8080)" -ForegroundColor Cyan
+Write-Host " Frontend: http://${RemoteHost}:${FrontendPort}  (or http://${TailscaleIP}:${FrontendPort})" -ForegroundColor Cyan
+Write-Host " Backend:  http://${RemoteHost}:${BackendPort}  (or http://${TailscaleIP}:${BackendPort})" -ForegroundColor Cyan
 Write-Host "========================================================`n" -ForegroundColor Green

@@ -34,8 +34,8 @@ The host is an Oracle Cloud `VM.Standard.E2.1.Micro` instance:
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `osint-postgres` | `postgres:16-alpine` | `120M` | `45M` | `5432` | *None* (Docker network only) |
 | `osint-redis` | `redis:7-alpine` | `50M` | `20M` | `6379` | *None* (Docker network only) |
-| `osint-backend` | `realtimeosint-backend:latest` | `450M` | `150M` | `8000` | `8080:8000` |
-| `osint-frontend` | `realtimeosint-frontend:latest` | `180M` | `80M` | `3000` | `3000:3000` |
+| `osint-backend` | `realtimeosint-backend:latest` | `450M` | `150M` | `8000` | `24176:8000` |
+| `osint-frontend` | `realtimeosint-frontend:latest` | `180M` | `80M` | `3000` | `26816:3000` |
 
 ---
 
@@ -46,8 +46,8 @@ The server also runs host-level services (`macros-counter-service`, PostgreSQL o
 **Port Safety Rules:**
 1. **Never expose `osint-postgres` on host port `5432`** (conflicts with host PostgreSQL).
 2. **Never expose `osint-redis` on host port `6379`** (conflicts with host Redis).
-3. **Never bind `osint-backend` to port `8000` or `8001`** (used by existing Uvicorn apps). It is strictly mapped to `8080:8000`.
-4. **`osint-frontend`** is mapped to `3000:3000`.
+3. **Never bind `osint-backend` to port `8000` or `8001`** (used by existing Uvicorn apps). It is mapped to `24176:8000` (randomized 2026-10-15; `8080` retired).
+4. **`osint-frontend`** is mapped to `26816:3000` (randomized 2026-10-15).
 
 ---
 
@@ -55,10 +55,10 @@ The server also runs host-level services (`macros-counter-service`, PostgreSQL o
 
 | Service | Tailscale Domain | Tailscale IP |
 | :--- | :--- | :--- |
-| **Frontend Web UI** | `http://production:3000` | `http://100.64.0.1:3000` |
-| **Backend API Health** | `http://production:8080/api/health` | `http://100.64.0.1:8080/api/health` |
-| **Backend REST API** | `http://production:8080/api/events` | `http://100.64.0.1:8080/api/events` |
-| **WebSocket Gateway** | `http://production:8080/socket.io` | `http://100.64.0.1:8080/socket.io` |
+| **Frontend Web UI** | `http://production:26816` | `http://100.64.0.1:26816` |
+| **Backend API Health** | `http://production:24176/api/health` | `http://100.64.0.1:24176/api/health` |
+| **Backend REST API** | `http://production:24176/api/events` | `http://100.64.0.1:24176/api/events` |
+| **WebSocket Gateway** | `http://production:24176/socket.io` | `http://100.64.0.1:24176/socket.io` |
 
 *Default API Key*: `osint_secret_key_2026` (passed via header `X-API-Key: osint_secret_key_2026`).
 
@@ -115,5 +115,5 @@ ssh ubuntu@production "cd /home/ubuntu/deployments/realtime-osint && docker comp
 
 ### Test Remote API Health from Local Desktop
 ```powershell
-curl -i "http://100.64.0.1:8080/api/health"
+curl -i "http://100.64.0.1:24176/api/health"
 ```

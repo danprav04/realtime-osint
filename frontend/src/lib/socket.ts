@@ -12,7 +12,7 @@ export function getWsBaseUrl(): string {
     const custom = localStorage.getItem('osint_ws_url') || localStorage.getItem('osint_api_url');
     if (custom) return custom;
     if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      const port = process.env.NEXT_PUBLIC_API_PORT || '8080';
+      const port = process.env.NEXT_PUBLIC_API_PORT || '24176';
       return `${window.location.protocol}//${window.location.hostname}:${port}`;
     }
   }

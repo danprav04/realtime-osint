@@ -6,7 +6,7 @@ Adversarial Stress & Verification Suite for:
    - Programmatic YAML validation of services, volumes, networks
    - Strict memory limits (<900MB total budget, 830MB target allocation)
    - Reservation bounds verification (reservations <= limits)
-   - Port conflict detection (5432, 6379, 8000, 3000)
+   - Port conflict detection (internal-only postgres/redis; randomized backend 24176, frontend 26816)
    - Healthcheck timeout & interval invariants (timeout < interval)
    - Cascading dependency graph & lifecycle constraints
 2. Postgres & Redis Low-Memory Tuning Verification:
@@ -141,31 +141,38 @@ def test_memory_limits_budget_under_900mb():
 
 
 def test_port_bindings_collision_free():
-    """Verify host port bindings do not conflict and match standard specifications."""
+    """Verify host port bindings do not conflict and match the randomized production mapping."""
     compose = load_compose_dict()
     services = compose["services"]
 
-    published_ports = []
-    expected_ports = {
-        "postgres": 5432,
-        "redis": 6379,
-        "backend": 8000,
-        "frontend": 3000,
+    # Randomized host ports (2026-10-15) to avoid predictable scanning targets.
+    # postgres/redis must stay internal-only: the production host already runs
+    # its own PostgreSQL (5432) and Redis (6379) at the host level.
+    expected = {
+        "postgres": None,        # (host_port, container_port); None = no host publish
+        "redis": None,
+        "backend": (24176, 8000),
+        "frontend": (26816, 3000),
     }
 
+    published_ports = []
     for name, svc in services.items():
         ports = svc.get("ports", [])
+        if expected[name] is None:
+            assert not ports, f"Service {name} must NOT publish host ports: {ports}"
+            continue
         assert ports, f"Service {name} should expose a port mapping"
         for p in ports:
             # Format "host:container"
             host_port = int(str(p).split(":")[0])
             container_port = int(str(p).split(":")[1])
             published_ports.append(host_port)
-            assert host_port == expected_ports[name], (
-                f"Service {name} published port {host_port} != expected {expected_ports[name]}"
+            exp_host, exp_container = expected[name]
+            assert host_port == exp_host, (
+                f"Service {name} published port {host_port} != expected {exp_host}"
             )
-            assert container_port == host_port, (
-                f"Service {name} host port {host_port} does not match container port {container_port}"
+            assert container_port == exp_container, (
+                f"Service {name} container port {container_port} != expected {exp_container}"
             )
 
     # Assert no collisions across any published ports
