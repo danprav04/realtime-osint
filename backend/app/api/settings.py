@@ -37,6 +37,7 @@ DEFAULT_AI_STAGES = {
         "fallbacks": [
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
             {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
         ],
     },
@@ -46,6 +47,7 @@ DEFAULT_AI_STAGES = {
         "temperature": 0.1,
         "fallbacks": [
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.1},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.1},
             {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.1},
             {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.1},
         ],
@@ -55,9 +57,12 @@ DEFAULT_AI_STAGES = {
         "model_name": "openai/gpt-oss-120b",
         "temperature": 0.2,
         "fallbacks": [
+            {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
+            {"provider": "aihubmix", "model_name": "coding-minimax-m3-free", "temperature": 0.2},
             {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
             {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.2},
         ],
     },
@@ -69,6 +74,7 @@ DEFAULT_AI_STAGES = {
             {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
         ],
     },
 }
@@ -137,6 +143,7 @@ async def get_system_settings(
     env_keys = {
         "gemini_api_key": app_settings.GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY"),
         "groq_api_key": app_settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY"),
+        "aihubmix_api_key": app_settings.AIHUBMIX_API_KEY or os.environ.get("AIHUBMIX_API_KEY"),
         "telegram_bot_token": app_settings.TELEGRAM_BOT_TOKEN or os.environ.get("TELEGRAM_BOT_TOKEN"),
         "telegram_chat_id": app_settings.TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID"),
         "telegram_api_id": os.environ.get("TELEGRAM_API_ID"),
@@ -207,6 +214,7 @@ async def update_system_settings(
         env_var_map = {
             "gemini_api_key": "GEMINI_API_KEY",
             "groq_api_key": "GROQ_API_KEY",
+            "aihubmix_api_key": "AIHUBMIX_API_KEY",
             "hf_embedding_url": "HF_EMBEDDING_URL",
             "hf_api_key": "HF_API_KEY",
             "telegram_bot_token": "TELEGRAM_BOT_TOKEN",

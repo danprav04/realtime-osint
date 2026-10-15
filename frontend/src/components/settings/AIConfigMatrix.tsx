@@ -26,7 +26,7 @@ interface AIConfigMatrixProps {
 
 export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: AIConfigMatrixProps) {
   const defaultStage = (
-    provider: 'gemini' | 'groq',
+    provider: 'gemini' | 'groq' | 'aihubmix',
     model: string,
     fallbacks: AIFallbackConfig[] = []
   ): AIStageConfig => ({
@@ -58,10 +58,12 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           extraction: defaultStage('groq', 'qwen/qwen3.8-27b', [
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
           ]),
           scoring: defaultStage('gemini', 'gemini-3.5-flash-lite', [
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.1 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.1 },
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.1 },
             { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.1 },
           ]),
@@ -69,12 +71,14 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
             { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
             { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.2 },
           ]),
           visuals: defaultStage('groq', 'openai/gpt-oss-20b', [
             { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
           ]),
         }
   );
@@ -124,8 +128,13 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     },
   ];
 
-  const handleProviderChange = (stageKey: keyof AIPipelineSettings, provider: 'gemini' | 'groq') => {
-    const defaultModel = provider === 'gemini' ? 'gemini-3.5-flash-lite' : 'qwen/qwen3.8-27b';
+  const handleProviderChange = (stageKey: keyof AIPipelineSettings, provider: 'gemini' | 'groq' | 'aihubmix') => {
+    let defaultModel = 'gemini-3.5-flash-lite';
+    if (provider === 'groq') {
+      defaultModel = 'qwen/qwen3.8-27b';
+    } else if (provider === 'aihubmix') {
+      defaultModel = stageKey === 'summarization' ? 'coding-minimax-m3-free' : 'coding-glm-5.3-free';
+    }
     setSettings((prev) => {
       const stage = prev[stageKey];
       if (!stage) return prev;
@@ -171,7 +180,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   // Fallback management handlers
   const handleAddFallback = (
     stageKey: keyof AIPipelineSettings,
-    suggestedProvider?: 'gemini' | 'groq',
+    suggestedProvider?: 'gemini' | 'groq' | 'aihubmix',
     suggestedModel?: string
   ) => {
     setSettings((prev) => {
@@ -179,8 +188,13 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
       if (!stage) return prev;
       const existing = stage.fallbacks || [];
       const currentProvider = stage.provider;
-      const nextProvider = suggestedProvider || (currentProvider === 'gemini' ? 'gemini' : 'groq');
-      const nextModel = suggestedModel || (nextProvider === 'gemini' ? 'gemini-3.1-flash-lite' : 'qwen/qwen3.8-27b');
+      const nextProvider = suggestedProvider || (currentProvider === 'gemini' ? 'groq' : currentProvider === 'groq' ? 'aihubmix' : 'gemini');
+      let nextModel = suggestedModel;
+      if (!nextModel) {
+        if (nextProvider === 'gemini') nextModel = 'gemini-3.1-flash-lite';
+        else if (nextProvider === 'groq') nextModel = 'qwen/qwen3.8-27b';
+        else nextModel = 'coding-glm-5.3-free';
+      }
 
       return {
         ...prev,
@@ -231,7 +245,13 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           [field]: value,
         };
         if (field === 'provider') {
-          updated.model_name = value === 'gemini' ? 'gemini-3.1-flash-lite' : 'qwen/qwen3.8-27b';
+          if (value === 'gemini') {
+            updated.model_name = 'gemini-3.1-flash-lite';
+          } else if (value === 'groq') {
+            updated.model_name = 'qwen/qwen3.8-27b';
+          } else if (value === 'aihubmix') {
+            updated.model_name = 'coding-glm-5.3-free';
+          }
         }
         existing[index] = updated;
       }
@@ -415,6 +435,8 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           {stages.map((stage) => {
             const currentStageConfig = settings[stage.key] || defaultGatekeeperStage();
             const isGemini = currentStageConfig.provider === 'gemini';
+            const isGroq = currentStageConfig.provider === 'groq';
+            const isAIHubMix = currentStageConfig.provider === 'aihubmix';
             const fallbacks = currentStageConfig.fallbacks || [];
             const gkStats = stage.key === 'gatekeeper' ? systemSettings?.gatekeeper_stats : null;
 
@@ -485,12 +507,13 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                       <select
                         value={currentStageConfig.provider}
                         onChange={(e) =>
-                          handleProviderChange(stage.key, e.target.value as 'gemini' | 'groq')
+                          handleProviderChange(stage.key, e.target.value as 'gemini' | 'groq' | 'aihubmix')
                         }
                         className="w-full rounded-lg bg-surface-card px-3 py-2 text-zinc-100 hairline-border focus:outline-none focus:border-accent-indigo"
                       >
                         <option value="gemini">Google Gemini API</option>
                         <option value="groq">Groq Cloud (LPU Inference)</option>
+                        <option value="aihubmix">AI Hub Mix (Free Flagships)</option>
                       </select>
                     </div>
 
@@ -502,11 +525,13 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                           href={
                             isGemini
                               ? 'https://aistudio.google.com/rate-limit'
-                              : 'https://console.groq.com/settings/limits'
+                              : isGroq
+                              ? 'https://console.groq.com/settings/limits'
+                              : 'https://aihubmix.com/models/free'
                           }
                           target="_blank"
                           rel="noopener noreferrer"
-                          title={`View ${isGemini ? 'Google Gemini' : 'Groq Cloud'} rate limits`}
+                          title={`View ${isGemini ? 'Google Gemini' : isGroq ? 'Groq Cloud' : 'AI Hub Mix'} rate limits`}
                           className="inline-flex items-center space-x-1 text-[10px] text-accent-cyan hover:text-accent-cyan/80 font-mono hover:underline transition-colors"
                         >
                           <span>
@@ -514,7 +539,9 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               ? currentStageConfig.model_name.includes('gemma')
                                 ? 'Gemma 4: 30 RPM / 14.4K RPD'
                                 : 'Flash: 500 RPD'
-                              : 'Free: 30 RPM / 1K RPD'}
+                              : isGroq
+                              ? 'Free: 30 RPM / 1K RPD'
+                              : 'Free: 10 RPM / 100 RPD / 1M TPD'}
                           </span>
                           <ExternalLink className="w-2.5 h-2.5" />
                         </a>
@@ -524,7 +551,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                         list={`models-${stage.key}`}
                         value={currentStageConfig.model_name}
                         onChange={(e) => handleModelChange(stage.key, e.target.value)}
-                        placeholder={isGemini ? 'gemma-4-26b-a4b-it' : 'qwen/qwen3.8-27b'}
+                        placeholder={isGemini ? 'gemma-4-26b-a4b-it' : isGroq ? 'qwen/qwen3.8-27b' : 'coding-glm-5.3-free'}
                         className="w-full rounded-lg bg-surface-card px-3 py-2 text-zinc-100 font-mono text-xs hairline-border focus:outline-none focus:border-accent-indigo"
                       />
                       <datalist id={`models-${stage.key}`}>
@@ -536,11 +563,19 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                             <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Secondary Quota)</option>
                             <option value="gemini-2.5-flash">gemini-2.5-flash (Balanced)</option>
                           </>
-                        ) : (
+                        ) : isGroq ? (
                           <>
                             <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Fastest Multilingual | 1K RPD)</option>
                             <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Deep Reasoning | 1K RPD)</option>
                             <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (Lightweight | 1K RPD)</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="coding-glm-5.3-free">coding-glm-5.3-free (Flagship Reasoning | 1.05M Context)</option>
+                            <option value="coding-minimax-m3-free">coding-minimax-m3-free (Flagship Synthesis | 1M Context)</option>
+                            <option value="nemotron-3-super-120b-a12b-free">nemotron-3-super-120b-a12b-free (120B Frontier | 1.05M Context)</option>
+                            <option value="coding-glm-5.2-free">coding-glm-5.2-free (High Capacity | 1M Context)</option>
+                            <option value="qwen3.8-flash-free">qwen3.8-flash-free (Low Latency Free Triage)</option>
                           </>
                         )}
                       </datalist>
@@ -576,7 +611,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               ⚡ 3.1-flash-lite
                             </button>
                           </>
-                        ) : (
+                        ) : isGroq ? (
                           <>
                             <button
                               type="button"
@@ -591,6 +626,37 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
                             >
                               🧠 gpt-oss-120b
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'coding-glm-5.3-free')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan transition-colors"
+                            >
+                              🧠 glm-5.3 (1.05M)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'coding-minimax-m3-free')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan transition-colors"
+                            >
+                              📖 minimax-m3 (1M)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'nemotron-3-super-120b-a12b-free')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                            >
+                              🚀 nemotron-120b
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'qwen3.8-flash-free')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                            >
+                              ⚡ qwen3.8-flash
                             </button>
                           </>
                         )}
@@ -629,6 +695,17 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                     </div>
 
                     <div className="flex items-center space-x-1.5">
+                      {/* Quick preset button for Gemma 4 (Highest RPD) */}
+                      {!fallbacks.some((f) => f.model_name?.includes('gemma')) && (
+                        <button
+                          type="button"
+                          onClick={() => handleAddFallback(stage.key, 'gemini', 'gemma-4-26b-a4b-it')}
+                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-md transition-colors"
+                          title="Gemma 4 has the largest quota (14,400 RPD / 30 RPM)"
+                        >
+                          <span>+ Add Gemma 4 (14.4K RPD)</span>
+                        </button>
+                      )}
                       {/* Quick preset button */}
                       {isGemini && !fallbacks.some((f) => f.model_name === 'gemini-3.1-flash-lite') && (
                         <button
@@ -664,6 +741,8 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                     <div className="space-y-2">
                       {fallbacks.map((fb, idx) => {
                         const fbIsGemini = fb.provider === 'gemini';
+                        const fbIsGroq = fb.provider === 'groq';
+                        const fbIsAIHubMix = fb.provider === 'aihubmix';
                         return (
                           <div
                             key={idx}
@@ -681,12 +760,13 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               <select
                                 value={fb.provider}
                                 onChange={(e) =>
-                                  handleUpdateFallback(stage.key, idx, 'provider', e.target.value as 'gemini' | 'groq')
+                                  handleUpdateFallback(stage.key, idx, 'provider', e.target.value as 'gemini' | 'groq' | 'aihubmix')
                                 }
                                 className="w-full rounded-md bg-canvas-recessed px-2.5 py-1.5 text-zinc-100 hairline-border focus:outline-none focus:border-accent-indigo text-xs"
                               >
                                 <option value="gemini">Gemini API</option>
                                 <option value="groq">Groq Cloud</option>
+                                <option value="aihubmix">AI Hub Mix (Free)</option>
                               </select>
                             </div>
 
@@ -696,7 +776,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                 type="text"
                                 value={fb.model_name}
                                 onChange={(e) => handleUpdateFallback(stage.key, idx, 'model_name', e.target.value)}
-                                placeholder={fbIsGemini ? 'gemini-3.1-flash-lite' : 'qwen/qwen3.8-27b'}
+                                placeholder={fbIsGemini ? 'gemma-4-26b-a4b-it' : fbIsGroq ? 'qwen/qwen3.8-27b' : 'coding-glm-5.3-free'}
                                 className="w-full rounded-md bg-canvas-recessed px-2.5 py-1.5 text-zinc-100 font-mono text-xs hairline-border focus:outline-none focus:border-accent-indigo"
                               />
                               <div className="flex flex-wrap items-center justify-between gap-1 mt-1">
@@ -720,12 +800,21 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                       <button
                                         type="button"
                                         onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemma-4-26b-a4b-it')}
-                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 hover:text-emerald-300 font-semibold"
+                                        title="Google AI Studio Gemma 4: 14,400 RPD / 30 RPM"
                                       >
-                                        gemma-4-26b
+                                        🔥 gemma-4-26b
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemma-4-31b-it')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 hover:text-emerald-300 font-semibold"
+                                        title="Google AI Studio Gemma 4: 14,400 RPD / 30 RPM"
+                                      >
+                                        🔥 gemma-4-31b
                                       </button>
                                     </>
-                                  ) : (
+                                  ) : fbIsGroq ? (
                                     <>
                                       <button
                                         type="button"
@@ -742,20 +831,46 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                         gpt-oss-120b
                                       </button>
                                     </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'coding-glm-5.3-free')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan"
+                                      >
+                                        glm-5.3 (1.05M)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'coding-minimax-m3-free')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan"
+                                      >
+                                        minimax-m3 (1M)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'nemotron-3-super-120b-a12b-free')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                      >
+                                        nemotron-120b
+                                      </button>
+                                    </>
                                   )}
                                 </div>
                                 <a
                                   href={
                                     fbIsGemini
                                       ? 'https://aistudio.google.com/rate-limit'
-                                      : 'https://console.groq.com/settings/limits'
+                                      : fbIsGroq
+                                      ? 'https://console.groq.com/settings/limits'
+                                      : 'https://aihubmix.com/models/free'
                                   }
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  title={`Open ${fbIsGemini ? 'Gemini' : 'Groq'} rate limits`}
+                                  title={`Open ${fbIsGemini ? 'Gemini' : fbIsGroq ? 'Groq' : 'AI Hub Mix'} rate limits`}
                                   className="inline-flex items-center space-x-0.5 text-[9px] font-mono text-accent-cyan/80 hover:text-accent-cyan hover:underline"
                                 >
-                                  <span>{fbIsGemini ? 'Gemini Limits' : 'Groq Limits'}</span>
+                                  <span>{fbIsGemini ? 'Gemini Limits' : fbIsGroq ? 'Groq Limits' : 'AIHubMix Limits'}</span>
                                   <ExternalLink className="w-2.5 h-2.5" />
                                 </a>
                               </div>

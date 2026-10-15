@@ -19,6 +19,7 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
     initialSettings?.api_keys || {
       gemini_api_key: '',
       groq_api_key: '',
+      aihubmix_api_key: '',
       hf_embedding_url: '',
       hf_api_key: '',
       telegram_bot_token: '',
@@ -129,6 +130,13 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
       placeholder: 'gsk_...',
       rateLimitUrl: 'https://console.groq.com/settings/limits',
       rateLimitLabel: 'Groq Rate Limits',
+    },
+    {
+      id: 'aihubmix_api_key',
+      label: 'AI Hub Mix API Key (Free Flagships)',
+      placeholder: 'sk-...',
+      rateLimitUrl: 'https://aihubmix.com/models/free',
+      rateLimitLabel: '10 RPM • 100 RPD • 1M TPD',
     },
     {
       id: 'hf_embedding_url',

@@ -10,6 +10,7 @@ from backend.app.pipeline.models import AIStageConfig
 from backend.app.pipeline.providers.base import BaseAIProvider
 from backend.app.pipeline.providers.gemini import GeminiProvider
 from backend.app.pipeline.providers.groq import GroqProvider
+from backend.app.pipeline.providers.aihubmix import AIHubMixProvider
 from backend.app.pipeline.providers.mock import MockAIProvider
 
 logger = logging.getLogger("osint.ai.factory")
@@ -49,6 +50,10 @@ def resolve_api_key(
         env_val = getattr(st, "GROQ_API_KEY", None) or os.environ.get("GROQ_API_KEY")
         if env_val and not str(env_val).startswith("***"):
             return str(env_val).strip()
+    elif p_norm in ("aihubmix", "aihub", "inferera"):
+        env_val = getattr(st, "AIHUBMIX_API_KEY", None) or os.environ.get("AIHUBMIX_API_KEY")
+        if env_val and not str(env_val).startswith("***"):
+            return str(env_val).strip()
 
     return None
 
@@ -81,6 +86,8 @@ def get_stage_provider(
         return GeminiProvider(api_key=api_key, default_model=stage_config.model_name)
     elif provider_name == "groq":
         return GroqProvider(api_key=api_key, default_model=stage_config.model_name)
+    elif provider_name in ("aihubmix", "aihub", "inferera"):
+        return AIHubMixProvider(api_key=api_key, default_model=stage_config.model_name)
     else:
         raise ValueError(f"Unsupported AI provider: '{stage_config.provider}'")
 
@@ -119,6 +126,11 @@ class ProviderRegistry:
                 )
             elif p_norm == "groq":
                 self._providers[key] = GroqProvider(
+                    api_key=api_key,
+                    default_model=model_name,
+                )
+            elif p_norm in ("aihubmix", "aihub", "inferera"):
+                self._providers[key] = AIHubMixProvider(
                     api_key=api_key,
                     default_model=model_name,
                 )

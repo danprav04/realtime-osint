@@ -490,6 +490,7 @@ def create_contract_test_app() -> FastAPI:
             "fallbacks": [
                 {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
                 {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
             ],
         },
@@ -500,6 +501,7 @@ def create_contract_test_app() -> FastAPI:
             "temperature": 0.1,
             "fallbacks": [
                 {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.1},
+                {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.1},
                 {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.1},
                 {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.1},
             ],
@@ -513,6 +515,7 @@ def create_contract_test_app() -> FastAPI:
                 {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
                 {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
                 {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.2},
             ],
         },
@@ -525,6 +528,7 @@ def create_contract_test_app() -> FastAPI:
                 {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
                 {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
             ],
         },
     }

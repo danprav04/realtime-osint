@@ -162,10 +162,11 @@ The pipeline decomposes raw content processing into four independent stages. Eac
 
 | Stage | Default Model | Purpose & Contract | Fallback Behavior |
 |---|---|---|---|
-| **1. Extraction & Translation** | `groq: qwen/qwen3.8-27b` | Detects Arabic and Farsi Unicode script blocks and translates them into English. Preserves military acronyms (`CENTCOM`, `IRGC`, `IAEA`) and Persian zero-width non-joiners (`\u200c`). | `gemini-3.5-flash-lite` -> `gemini-3.1-flash-lite` -> `openai/gpt-oss-120b` -> Regex fallback |
-| **2. Importance Scoring** | `gemini: gemini-3.5-flash-lite` | Evaluates the event on a strict 1–10 scale based on the user's custom scoring prompt for the active theme. | `gemini-3.1-flash-lite` -> `openai/gpt-oss-120b` -> `qwen/qwen3.8-27b` -> Keyword density heuristic |
-| **3. BLUF Summarization** | `groq: openai/gpt-oss-120b` | Generates a 2-3 sentence Bottom-Line-Up-Front summary highlighting actors, kinetic action, and strategic impact. | `qwen/qwen3.8-27b` -> `gemini-3.5-flash-lite` -> `gemini-3.1-flash-lite` -> Extractive lead summary |
-| **4. Visual Analytics** | `groq: openai/gpt-oss-20b` | Extracts thematic cluster tags, location names, and event categories for dashboard charts. | `qwen/qwen3.8-27b` -> `gemini-3.5-flash-lite` -> `gemini-3.1-flash-lite` -> Rule-based tag mapper |
+| **0. Gatekeeper** | `gemini: gemma-4-26b-a4b-it` | High-RPD micro-batched filter (up to 12 items/call) that drops non-actionable chatter before storage. | `gemma-4-31b-it` -> `openai/gpt-oss-20b` -> `qwen/qwen3.8-27b` -> Keyword fast-pass |
+| **1. Extraction & Translation** | `groq: qwen/qwen3.8-27b` | Detects Arabic and Farsi Unicode script blocks and translates them into English. Preserves military acronyms (`CENTCOM`, `IRGC`, `IAEA`) and Persian zero-width non-joiners (`\u200c`). | `gemini-3.5-flash-lite` -> `gemini-3.1-flash-lite` -> `gemma-4-26b-a4b-it` -> `openai/gpt-oss-120b` -> Regex fallback |
+| **2. Importance Scoring** | `gemini: gemini-3.5-flash-lite` | Evaluates the event on a strict 1–10 scale based on the user's custom scoring prompt for the active theme. | `gemini-3.1-flash-lite` -> `gemma-4-26b-a4b-it` -> `openai/gpt-oss-120b` -> `qwen/qwen3.8-27b` -> Keyword density heuristic |
+| **3. BLUF Summarization** | `groq: openai/gpt-oss-120b` | Generates a 2-3 sentence Bottom-Line-Up-Front summary highlighting actors, kinetic action, and strategic impact. | `qwen/qwen3.8-27b` -> `gemini-3.5-flash-lite` -> `gemini-3.1-flash-lite` -> `gemma-4-26b-a4b-it` -> `openai/gpt-oss-20b` -> Extractive lead summary |
+| **4. Visual Analytics** | `groq: openai/gpt-oss-20b` | Extracts thematic cluster tags, location names, and event categories for dashboard charts. | `qwen/qwen3.8-27b` -> `gemini-3.5-flash-lite` -> `gemini-3.1-flash-lite` -> `gemma-4-26b-a4b-it` -> Rule-based tag mapper |
 
 ```mermaid
 flowchart LR

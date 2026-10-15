@@ -121,6 +121,7 @@ class PipelineOrchestrator:
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
                 ],
             ),
@@ -131,6 +132,7 @@ class PipelineOrchestrator:
                 temperature=0.1,
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.1),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.1),
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.1),
                 ],
@@ -144,6 +146,7 @@ class PipelineOrchestrator:
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.2),
                 ],
             ),
@@ -156,6 +159,7 @@ class PipelineOrchestrator:
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                 ],
             ),
         }
@@ -335,23 +339,30 @@ class PipelineOrchestrator:
     def _get_fallback_provider(self, primary_provider_name: str, stage_id: str) -> Optional[BaseAIProvider]:
         """
         If the primary provider hits 429 or fails, select an alternate healthy provider
-        (e.g., failover Groq -> Gemini, or Gemini -> Groq) if its API key is configured.
+        (e.g., failover Groq -> Gemini -> AIHubMix) if its API key is configured.
         """
         if self.use_mock:
             return None
         p_norm = primary_provider_name.lower().strip()
-        alt_provider = "gemini" if p_norm == "groq" else "groq"
-        alt_key = resolve_api_key(alt_provider, None, self._db_api_keys)
-        if alt_key:
-            alt_model = "gemini-3.5-flash-lite" if alt_provider == "gemini" else "qwen/qwen3.8-27b"
-            try:
-                return self._registry.get_provider(
-                    provider=alt_provider,
-                    model_name=alt_model,
-                    api_key=alt_key,
-                )
-            except Exception as e:
-                logger.debug(f"Could not initialize fallback provider {alt_provider}: {e}")
+        candidate_order = ["groq", "gemini", "aihubmix"]
+        alt_providers = [p for p in candidate_order if p != p_norm]
+        default_models = {
+            "gemini": "gemini-3.5-flash-lite",
+            "groq": "qwen/qwen3.8-27b",
+            "aihubmix": "coding-glm-5.3-free",
+        }
+        for alt_provider in alt_providers:
+            alt_key = resolve_api_key(alt_provider, None, self._db_api_keys)
+            if alt_key:
+                alt_model = default_models.get(alt_provider, "coding-glm-5.3-free")
+                try:
+                    return self._registry.get_provider(
+                        provider=alt_provider,
+                        model_name=alt_model,
+                        api_key=alt_key,
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not initialize fallback provider {alt_provider}: {e}")
         return None
 
     async def _backfill_unanalyzed_events(self) -> None:
@@ -553,6 +564,17 @@ class PipelineOrchestrator:
                 "model_name": fb.model_name,
                 "temperature": fb.temperature if fb.temperature is not None else stage_cfg.temperature,
                 "api_key_override": fb.api_key_override or stage_cfg.api_key_override,
+            })
+
+        # Ensure Gemma 4 is present at every fallback chain at least somewhere (highest RPD: 14,400 / 30 RPM),
+        # providing an expansive safety net before falling back to deterministic offline heuristics.
+        has_gemma = any("gemma" in str(cand.get("model_name", "")).lower() for cand in candidates)
+        if not has_gemma:
+            candidates.append({
+                "provider": "gemini",
+                "model_name": "gemma-4-26b-a4b-it",
+                "temperature": stage_cfg.temperature,
+                "api_key_override": stage_cfg.api_key_override,
             })
 
         for idx, cand in enumerate(candidates):

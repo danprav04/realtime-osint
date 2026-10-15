@@ -146,7 +146,7 @@ export interface DashboardStats {
 }
 
 export interface AIFallbackConfig {
-  provider: 'gemini' | 'groq';
+  provider: 'gemini' | 'groq' | 'aihubmix';
   model_name: string;
   temperature?: number;
   api_key_override?: string | null;
@@ -154,7 +154,7 @@ export interface AIFallbackConfig {
 
 export interface AIStageConfig {
   stage_id?: string;
-  provider: 'gemini' | 'groq';
+  provider: 'gemini' | 'groq' | 'aihubmix';
   model_name: string;
   temperature: number;
   api_key_override?: string | null;

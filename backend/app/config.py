@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # AI Pipeline credentials
     GEMINI_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
+    AIHUBMIX_API_KEY: Optional[str] = None
+    AIHUBMIX_BASE_URL: str = "https://aihubmix.com/v1"
+    AIHUBMIX_MAX_RPD: int = 100
+    AIHUBMIX_MAX_TPD: int = 1_000_000
     HF_EMBEDDING_URL: Optional[str] = None  # Self-hosted unlimited HF Space TEI endpoint
     HF_API_KEY: Optional[str] = None
 

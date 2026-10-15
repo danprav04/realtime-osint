@@ -5,6 +5,7 @@ backend/app/pipeline/providers/__init__.py - AI Provider Abstraction Package
 from backend.app.pipeline.providers.base import BaseAIProvider
 from backend.app.pipeline.providers.gemini import GeminiProvider
 from backend.app.pipeline.providers.groq import GroqProvider
+from backend.app.pipeline.providers.aihubmix import AIHubMixProvider
 from backend.app.pipeline.providers.mock import MockAIProvider
 from backend.app.pipeline.providers.factory import (
     ProviderRegistry,
@@ -17,6 +18,7 @@ __all__ = [
     "BaseAIProvider",
     "GeminiProvider",
     "GroqProvider",
+    "AIHubMixProvider",
     "MockAIProvider",
     "ProviderRegistry",
     "get_provider_registry",

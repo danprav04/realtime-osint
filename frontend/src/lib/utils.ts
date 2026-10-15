@@ -196,7 +196,7 @@ export function sortEvents<
 }
 
 export interface ProviderRateLimitInfo {
-  id: 'gemini' | 'groq' | 'telegram' | 'newsapi' | 'reddit' | 'huggingface';
+  id: 'gemini' | 'groq' | 'aihubmix' | 'telegram' | 'newsapi' | 'reddit' | 'huggingface';
   name: string;
   shortName: string;
   category: 'ai' | 'ingestion' | 'alert';
@@ -240,6 +240,18 @@ export const PROVIDER_RATE_LIMITS: ProviderRateLimitInfo[] = [
     quotaSummary: '30 RPM • 1K–14.4K RPD',
     keyFields: ['groq_api_key'],
     description: 'Groq Console organization RPM, RPD, TPM, and TPD model limits',
+  },
+  {
+    id: 'aihubmix',
+    name: 'AI Hub Mix',
+    shortName: 'AIHubMix',
+    category: 'ai',
+    rateLimitUrl: 'https://aihubmix.com/models/free',
+    usageUrl: 'https://aihubmix.com/token',
+    docsUrl: 'https://doc.aihubmix.com',
+    quotaSummary: '10 RPM • 100 RPD • 1M TPD (Free Flagships)',
+    keyFields: ['aihubmix_api_key'],
+    description: 'AI Hub Mix free tier flagship models (coding-glm-5.3-free, coding-minimax-m3-free, nemotron-3-super-120b)',
   },
   {
     id: 'telegram',
@@ -337,7 +349,7 @@ export function getProviderRateLimitStatuses(options?: {
     });
 
     const activeInAiPipeline =
-      (provider.id === 'gemini' || provider.id === 'groq') &&
+      (provider.id === 'gemini' || provider.id === 'groq' || provider.id === 'aihubmix') &&
       stages.some(
         (stage) =>
           stage?.provider === provider.id ||

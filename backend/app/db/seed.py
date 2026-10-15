@@ -605,6 +605,7 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
             "fallbacks": [
                 {"provider": "gemini", "model": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "gemini", "model": "gemma-4-26b-a4b-it", "temperature": 0.2},
                 {"provider": "groq", "model": "openai/gpt-oss-120b", "temperature": 0.2},
             ],
         },
@@ -616,6 +617,7 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
             "enabled": True,
             "fallbacks": [
                 {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.1},
+                {"provider": "gemini", "model": "gemma-4-26b-a4b-it", "temperature": 0.1},
                 {"provider": "groq", "model": "openai/gpt-oss-120b", "temperature": 0.1},
                 {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.1},
             ],
@@ -630,6 +632,7 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
                 {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.2},
                 {"provider": "gemini", "model": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "gemini", "model": "gemma-4-26b-a4b-it", "temperature": 0.2},
                 {"provider": "groq", "model": "openai/gpt-oss-20b", "temperature": 0.2},
             ],
         },
@@ -643,6 +646,7 @@ DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
                 {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.2},
                 {"provider": "gemini", "model": "gemini-3.5-flash-lite", "temperature": 0.2},
                 {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.2},
+                {"provider": "gemini", "model": "gemma-4-26b-a4b-it", "temperature": 0.2},
             ],
         },
     },
@@ -788,6 +792,18 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
                                 if fb.get(m_field) == "llama-3.3-70b-versatile":
                                     fb[m_field] = "openai/gpt-oss-120b"
                                     repaired = True
+                        # Ensure Gemma 4 is present at every fallback chain at least somewhere (highest RPD: 14,400)
+                        has_gemma = any(
+                            "gemma" in str(fb.get("model_name") or fb.get("model", "")).lower()
+                            for fb in target_stage["fallbacks"]
+                        )
+                        if not has_gemma:
+                            target_stage["fallbacks"].append({
+                                "provider": "gemini",
+                                "model": "gemma-4-26b-a4b-it",
+                                "temperature": target_stage.get("temperature", 0.2),
+                            })
+                            repaired = True
                 else:
                     cur_stages[s_key] = s_def
                     repaired = True
@@ -795,7 +811,7 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
                 existing_setting.value_json = cur_stages
                 flag_modified(existing_setting, "value_json")
                 session.add(existing_setting)
-                logger.info("Auto-repaired AI pipeline fallback chains and replaced deprecated models in existing database settings.")
+                logger.info("Auto-repaired AI pipeline fallback chains (including Gemma 4 presence) and replaced deprecated models in existing database settings.")
 
     # 4. Sync persisted UI api_keys into runtime environment if not already provided via .env
     import os

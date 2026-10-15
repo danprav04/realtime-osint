@@ -1185,3 +1185,87 @@ async def test_orchestrator_inline_embedding_and_retroactive_corroboration_upgra
         assert "Reuters" in bd1_updated.get("corroborating_sources", [])
 
 
+# ==============================================================================
+# 28. GEMMA 4 PRESENCE ACROSS ALL PIPELINE FALLBACK CHAINS (HIGH-RPD DEFENSE)
+# ==============================================================================
+
+def test_gemma4_present_in_all_default_fallback_chains():
+    """
+    Test 28: Verifies that Gemma 4 (with its massive 14,400 RPD quota) is present
+    at every fallback chain across DEFAULT_AI_STAGES, seed data, and orchestrator defaults.
+    """
+    from backend.app.api.settings import DEFAULT_AI_STAGES
+    from backend.app.db.seed import DEFAULT_SETTINGS_DATA
+    from backend.app.pipeline.orchestrator import PipelineOrchestrator
+
+    # 1. API settings defaults
+    for stage_name, stage_cfg in DEFAULT_AI_STAGES.items():
+        fallbacks = stage_cfg.get("fallbacks", [])
+        has_gemma = any("gemma" in fb["model_name"].lower() for fb in fallbacks)
+        assert has_gemma, f"Stage '{stage_name}' in DEFAULT_AI_STAGES is missing Gemma 4 in its fallback chain!"
+
+    # 2. Database seed defaults
+    seed_stages = DEFAULT_SETTINGS_DATA["ai_pipeline_stages"]
+    for stage_name, stage_cfg in seed_stages.items():
+        fallbacks = stage_cfg.get("fallbacks", [])
+        has_gemma = any("gemma" in str(fb.get("model") or fb.get("model_name", "")).lower() for fb in fallbacks)
+        assert has_gemma, f"Stage '{stage_name}' in DEFAULT_SETTINGS_DATA is missing Gemma 4 in its fallback chain!"
+
+    # 3. Pipeline orchestrator defaults
+    orchestrator = PipelineOrchestrator(use_mock=True)
+    for stage_name in ("gatekeeper", "extraction", "scoring", "summarization", "visuals"):
+        cfg = orchestrator.get_stage_config(stage_name)
+        has_gemma = any("gemma" in fb.model_name.lower() for fb in cfg.fallbacks)
+        assert has_gemma, f"Stage '{stage_name}' in orchestrator default configs is missing Gemma 4 in its fallback chain!"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_candidate_chain_guarantees_gemma4():
+    """
+    Test 29: Verifies that even if a stage is configured without Gemma 4 in its fallbacks,
+    the execution candidate chain automatically appends Gemma 4 as a high-RPD safety fallback.
+    """
+    orchestrator = PipelineOrchestrator(use_mock=True)
+
+    # Configure stage without Gemma 4
+    orchestrator.set_stage_config(
+        "scoring",
+        AIStageConfig(
+            stage_id="scoring",
+            provider="gemini",
+            model_name="gemini-3.5-flash-lite",
+            temperature=0.1,
+            fallbacks=[
+                AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
+                AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.1),
+            ],
+        ),
+    )
+
+    attempted_models = []
+
+    async def mock_runner(provider, model, temperature, raise_on_error=True):
+        attempted_models.append(model)
+        if "gemma" in model.lower():
+            # Gemma 4 catches the request successfully!
+            from backend.app.pipeline.models import Stage2Result
+            return Stage2Result(
+                importance_score=8,
+                score_rationale="Gemma 4 high-RPD fallback succeeded",
+                priority_level="high",
+                should_alert=True,
+            )
+        raise RuntimeError(f"Simulated failure for {model}")
+
+    res = await orchestrator._execute_stage_with_fallbacks(
+        stage_id="scoring",
+        runner_fn=mock_runner,
+        fallback_heuristic_fn=lambda: None,
+    )
+
+    assert "gemma-4-26b-a4b-it" in attempted_models, "Gemma 4 was not included in candidate execution chain!"
+    assert res.importance_score == 8
+    assert "Gemma 4" in res.score_rationale
+
+
+
