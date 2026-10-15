@@ -300,6 +300,121 @@ class SituationSummaryService:
     and system telemetry to generate and cache the AI Situational Summary.
     """
 
+    def __init__(self):
+        self.last_generation_time: Optional[datetime] = None
+        self.last_generation_event_count: int = 0
+        self.last_generation_latest_ingested: Optional[str] = None
+
+    def record_generation(
+        self, gen_time: datetime, count: int, latest_iso: Optional[str]
+    ) -> None:
+        """Record the timestamp and event counts of a summary generation."""
+        self.last_generation_time = gen_time
+        self.last_generation_event_count = count
+        self.last_generation_latest_ingested = latest_iso
+
+    def get_last_generation_metadata(
+        self,
+    ) -> Tuple[Optional[datetime], int, Optional[str]]:
+        """Return (last_generation_time, last_generation_event_count, last_generation_latest_ingested)."""
+        return (
+            self.last_generation_time,
+            self.last_generation_event_count,
+            self.last_generation_latest_ingested,
+        )
+
+    async def get_latest_persisted_summary(
+        self,
+        session: AsyncSession,
+        theme_id: Optional[str] = None,
+        time_range: str = "all",
+    ) -> Dict[str, Any]:
+        """
+        Retrieve the latest persisted situational summary from SystemSettings
+        without triggering ANY LLM synthesis, pipeline stages, or heavy computation.
+        If no persisted summary exists in cache, returns a deterministic fallback.
+        """
+        theme_obj, theme_key, theme_name, alert_threshold = await self._resolve_theme(
+            session, theme_id
+        )
+        norm_time_range = (time_range or "all").lower().strip()
+        cache_key = f"{theme_key}:{norm_time_range}"
+
+        # 1. Attempt lookup in SystemSettings
+        try:
+            stmt = select(SystemSettings).where(
+                SystemSettings.key == SUMMARY_CACHE_SETTINGS_KEY
+            )
+            record = (await session.execute(stmt)).scalars().first()
+            if record and isinstance(record.value_json, dict):
+                cache_map = record.value_json
+                entry = cache_map.get(cache_key)
+                if not entry:
+                    entry = cache_map.get(f"{theme_key}:all")
+                if not entry and cache_map:
+                    entry = max(
+                        cache_map.values(),
+                        key=lambda e: e.get("generated_at", ""),
+                        default=None,
+                    )
+                if entry and isinstance(entry, dict) and "payload" in entry:
+                    payload = dict(entry["payload"])
+                    payload["cached"] = True
+                    return payload
+        except Exception as exc:
+            logger.warning(f"Error reading persisted summary: {exc}")
+
+        # 2. If nothing persisted, return safe deterministic fallback with zero LLM generation
+        telemetry = {
+            "total_events": 0,
+            "embedded_events": 0,
+            "embedding_coverage_pct": 100.0,
+            "corroborated_reports_count": 0,
+            "corroboration_rate_pct": 0,
+            "cross_source_edges_count": 0,
+            "total_clusters": 0,
+            "isolated_outliers_count": 0,
+            "critical_alerts_count": 0,
+            "avg_importance_score": 0.0,
+            "max_importance_score": 0,
+            "velocity_status": "Quiet",
+            "events_last_6h": 0,
+            "events_prev_18h": 0,
+            "source_breakdown": {},
+            "top_entities": [],
+            "top_locations": [],
+            "top_categories": [],
+        }
+        fallback_llm = _build_deterministic_summary(
+            theme_name=theme_name,
+            alert_threshold=alert_threshold,
+            clusters_meta=[],
+            outlier_events=[],
+            telemetry=telemetry,
+        )
+        return {
+            "theme_id": theme_key,
+            "theme_name": theme_name,
+            "generated_at": utc_now().isoformat(),
+            "time_range": norm_time_range,
+            "cached": True,
+            "active_ai_model": "deterministic-fusion-engine",
+            "active_embedding_model": "gemini-embedding-001",
+            "threat_trajectory": fallback_llm.threat_trajectory,
+            "threat_level_score": fallback_llm.threat_level_score,
+            "executive_bluf": fallback_llm.executive_bluf,
+            "strategic_assessment": fallback_llm.strategic_assessment,
+            "key_developments": [],
+            "clusters": [],
+            "unverified_outliers": {
+                "count": 0,
+                "assessment": fallback_llm.unverified_outlier_assessment,
+                "events": [],
+            },
+            "watchlist_indicators": fallback_llm.watchlist_indicators,
+            "telemetry": telemetry,
+        }
+
     async def _resolve_theme(
         self, session: AsyncSession, theme_id: Optional[str]
     ) -> Tuple[Optional[Theme], str, str, int]:
@@ -498,6 +613,13 @@ class SituationSummaryService:
                 total_events_count=len(events_in_window),
             )
             if cached is not None:
+                if self.last_generation_time is None and cached.get("generated_at"):
+                    try:
+                        self.last_generation_time = datetime.fromisoformat(cached["generated_at"])
+                        self.last_generation_event_count = len(events_in_window)
+                        self.last_generation_latest_ingested = latest_ingested_str
+                    except Exception:
+                        pass
                 return cached
 
         # 1. Obtain full Embedding Relevance Map data (auto-embeds any un-embedded events,
@@ -910,6 +1032,7 @@ class SituationSummaryService:
             total_events_count=total_events,
             payload=result_payload,
         )
+        self.record_generation(utc_now(), total_events, latest_ingested_str)
 
         return result_payload
 

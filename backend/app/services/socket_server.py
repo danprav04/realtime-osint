@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional
 import urllib.parse
 import socketio
-from backend.app.auth import verify_api_key_string
+from backend.app.auth import verify_api_key_string, verify_viewer_token
 from backend.app.services.redis_bus import (
     CHANNEL_EVENTS_ALERT,
     CHANNEL_EVENTS_NEW,
@@ -52,7 +52,12 @@ def _extract_auth_token(environ: Dict[str, Any], auth: Optional[Dict[str, Any]])
     """
     # 1. Socket.IO v4 client auth dict
     if isinstance(auth, dict):
-        candidate = auth.get("token") or auth.get("api_key") or auth.get("apiKey")
+        candidate = (
+            auth.get("viewer_token")
+            or auth.get("token")
+            or auth.get("api_key")
+            or auth.get("apiKey")
+        )
         if candidate:
             return str(candidate)
 
@@ -60,11 +65,13 @@ def _extract_auth_token(environ: Dict[str, Any], auth: Optional[Dict[str, Any]])
     query_str = environ.get("QUERY_STRING", "")
     if query_str:
         qs = urllib.parse.parse_qs(query_str)
-        for key in ("token", "api_key", "apiKey", "key"):
+        for key in ("viewer_token", "token", "api_key", "apiKey", "key"):
             if key in qs and qs[key]:
                 return qs[key][0]
 
     # 3. HTTP headers (for polling transport handshake)
+    if "HTTP_X_VIEWER_TOKEN" in environ:
+        return environ["HTTP_X_VIEWER_TOKEN"]
     if "HTTP_X_API_KEY" in environ:
         return environ["HTTP_X_API_KEY"]
     auth_header = environ.get("HTTP_AUTHORIZATION", "")
@@ -77,16 +84,23 @@ def _extract_auth_token(environ: Dict[str, Any], auth: Optional[Dict[str, Any]])
 @sio.event
 async def connect(sid: str, environ: Dict[str, Any], auth: Optional[Dict[str, Any]] = None) -> None:
     """
-    Validate client API key upon connection.
+    Validate client API key or viewer token upon connection.
     Rejects unauthenticated or invalid clients with ConnectionRefusedError.
     """
     token = _extract_auth_token(environ, auth)
-    if not verify_api_key_string(token):
-        logger.warning(f"Rejected unauthorized Socket.IO connection: sid={sid}")
-        raise socketio.exceptions.ConnectionRefusedError("Unauthorized: Invalid or missing API key")
+    is_admin = verify_api_key_string(token)
+    is_viewer = False if is_admin else verify_viewer_token(token)
 
-    _active_clients[sid] = {"connected_at": asyncio.get_event_loop().time()}
-    logger.info(f"Socket.IO client connected: {sid} (total active: {len(_active_clients)})")
+    if not is_admin and not is_viewer:
+        logger.warning(f"Rejected unauthorized Socket.IO connection: sid={sid}")
+        raise socketio.exceptions.ConnectionRefusedError("Unauthorized: Invalid or missing API key or viewer token")
+
+    role = "admin" if is_admin else "viewer"
+    _active_clients[sid] = {
+        "connected_at": asyncio.get_event_loop().time(),
+        "role": role,
+    }
+    logger.info(f"Socket.IO client connected ({role}): {sid} (total active: {len(_active_clients)})")
 
 
 @sio.event
@@ -152,6 +166,23 @@ async def handle_bus_map_update(channel: str, data: Any) -> None:
     payload = data if isinstance(data, dict) else {"raw": data}
     _broadcast_log.append({"type": "map:update", "payload": payload})
     await sio.emit("map:update", payload)
+
+
+async def broadcast_summary_update(summary_payload: Dict[str, Any]) -> None:
+    """Broadcast refreshed AI situational summary notification to all clients."""
+    try:
+        payload = {
+            "theme_id": summary_payload.get("theme_id"),
+            "theme_name": summary_payload.get("theme_name"),
+            "generated_at": summary_payload.get("generated_at"),
+            "threat_trajectory": summary_payload.get("threat_trajectory"),
+            "threat_level_score": summary_payload.get("threat_level_score"),
+        }
+        _broadcast_log.append({"type": "summary:update", "payload": payload})
+        await sio.emit("summary:update", payload)
+    except Exception as exc:
+        logger.warning(f"Failed to emit summary:update: {exc}")
+
 
 
 async def init_socket_server(bus: Optional[RedisBus] = None) -> None:

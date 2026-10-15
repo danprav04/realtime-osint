@@ -15,7 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from backend.app.api import health_router, pipeline_router, settings_router
+from backend.app.api import health_router, pipeline_router, public_router, settings_router
 from backend.app.api.events import router as events_router
 from backend.app.api.sources import router as sources_router
 from backend.app.api.stats import router as stats_router
@@ -157,11 +157,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     supervisor = get_ingestion_supervisor()
     await supervisor.start()
 
+    # 7. Start Automated 30-Minute AI Summary Scheduler
+    from backend.app.services.summary_scheduler import get_summary_scheduler
+    summary_scheduler = get_summary_scheduler()
+    await summary_scheduler.start()
+
     logger.info("Application startup sequence completed successfully.")
     yield
 
     # Shutdown sequence
     logger.info("Initiating graceful shutdown sequence...")
+    await summary_scheduler.stop()
     await supervisor.stop()
     await orchestrator.stop()
     await telegram_bot.stop()
@@ -210,6 +216,7 @@ def create_app() -> FastAPI:
     application.include_router(stats_router)
     application.include_router(embeddings_router)
     application.include_router(summary_router)
+    application.include_router(public_router)
 
     # Root endpoint
     @application.get("/", tags=["General"])

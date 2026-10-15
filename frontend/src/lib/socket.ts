@@ -39,6 +39,34 @@ export function getSocket(): Socket | null {
   return socketInstance;
 }
 
+let viewerSocketInstance: Socket | null = null;
+
+export function getViewerSocket(viewerToken?: string | null): Socket | null {
+  if (typeof window === 'undefined') return null;
+  if (!viewerToken) {
+    if (viewerSocketInstance) {
+      viewerSocketInstance.disconnect();
+      viewerSocketInstance = null;
+    }
+    return null;
+  }
+
+  if (!viewerSocketInstance) {
+    const wsUrl = getWsBaseUrl();
+    viewerSocketInstance = io(wsUrl, {
+      path: '/socket.io',
+      auth: { viewer_token: viewerToken },
+      query: { viewer_token: viewerToken },
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 15,
+      reconnectionDelay: 2000,
+      autoConnect: true,
+    });
+  }
+  return viewerSocketInstance;
+}
+
+
 export function useSocketConnection() {
   const [isConnected, setIsConnected] = useState(false);
   const [lastPing, setLastPing] = useState<number | null>(null);

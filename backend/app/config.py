@@ -54,6 +54,16 @@ class Settings(BaseSettings):
         description="Admin API Key for REST & WebSocket authentication",
     )
     ADMIN_PASSWORD: str = "admin123"
+    PUBLIC_DISPLAY_PASSWORD: str = Field(
+        default="osint-2026",
+        validation_alias=AliasChoices("PUBLIC_DISPLAY_PASSWORD", "DISPLAY_PASSWORD"),
+        description="Password required to access the public read-only display dashboard",
+    )
+    PUBLIC_DISPLAY_SECRET: str = Field(
+        default="osint_viewer_secret_signing_key_2026",
+        validation_alias=AliasChoices("PUBLIC_DISPLAY_SECRET", "VIEWER_SECRET"),
+        description="Secret key for signing viewer session tokens",
+    )
     CORS_ORIGINS: List[str] = ["*"]
 
     # AI Pipeline credentials

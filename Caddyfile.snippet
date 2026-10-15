@@ -1,0 +1,53 @@
+# --- Production Environment for ir-osint.danprav.me ---
+ir-osint.danprav.me {
+    encode gzip zstd
+
+    log {
+        output file /var/log/caddy/ir_osint_access.log {
+            roll_size 50mb
+            roll_keep 3
+            roll_keep_for 360h
+        }
+        format json
+        level INFO
+    }
+
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    # 1. Block sensitive administrative / pipeline endpoints
+    @blocked_paths path /api/settings* /api/sources* /api/pipeline* /api/summary/generate* /api/embeddings/backfill* /settings* /summary* /map* /trends*
+    respond @blocked_paths "Access Denied: Protected administrative resource" 403
+
+    # 2. Allow POST only for public authentication; block all other mutating HTTP methods
+    @unauthorized_mutations {
+        method POST PUT DELETE PATCH
+        not path /api/public/auth
+    }
+    respond @unauthorized_mutations "Access Denied: Read-only public portal" 403
+
+    # 3. WebSocket Gateway for real-time live feed (proxies to backend 24176)
+    handle /socket.io/* {
+        reverse_proxy localhost:24176
+    }
+
+    # 4. Public API endpoints (proxies to backend 24176)
+    handle /api/public/* {
+        reverse_proxy localhost:24176
+    }
+
+    # 5. Root path rewrites to the dedicated public display page
+    handle / {
+        rewrite * /display
+        reverse_proxy localhost:26816
+    }
+
+    # 6. Next.js assets & display page
+    handle {
+        reverse_proxy localhost:26816
+    }
+}
