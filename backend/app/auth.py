@@ -124,6 +124,14 @@ class SimpleRateLimiter:
         records.append(now)
         self._attempts[key] = records
 
+        # Bounded cleanup if tracking map grows under heavy traffic
+        if len(self._attempts) > 2000:
+            self._attempts = {
+                k: [t for t in v if t > window_start]
+                for k, v in self._attempts.items()
+                if any(t > window_start for t in v)
+            }
+
     def reset(self, key: str) -> None:
         self._attempts.pop(key, None)
 

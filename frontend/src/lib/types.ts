@@ -95,6 +95,7 @@ export interface AlertItem {
   source_name?: string | null;
   source_url?: string | null;
   ai_provenance?: AIProvenance;
+  metadata_json?: Record<string, any>;
   published_at?: string | null;
   timestamp?: string | null;
   created_at?: string | null;

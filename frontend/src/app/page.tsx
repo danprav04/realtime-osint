@@ -84,6 +84,8 @@ export default function DashboardPage() {
           importance_score: ev.importance_score ?? 8,
           source_name: ev.source_name,
           source_url: ev.source_url,
+          ai_provenance: ev.ai_provenance || ev.metadata_json?.ai_provenance,
+          metadata_json: ev.metadata_json,
           published_at: ev.published_at,
           timestamp: ev.published_at,
           created_at: ev.ingested_at,
@@ -162,6 +164,8 @@ export default function DashboardPage() {
           importance_score: newEvent.importance_score ?? 8,
           source_name: newEvent.source_name,
           source_url: newEvent.source_url,
+          ai_provenance: newEvent.ai_provenance || (newEvent as any).metadata_json?.ai_provenance || (newEvent as any).metadata?.ai_provenance,
+          metadata_json: (newEvent as any).metadata_json || (newEvent as any).metadata,
           published_at: newEvent.published_at,
           timestamp: newEvent.published_at,
           created_at: newEvent.ingested_at,
@@ -183,6 +187,8 @@ export default function DashboardPage() {
         importance_score: alertData.importance_score ?? 9,
         source_name: alertData.source_name || 'REAL-TIME OSINT',
         source_url: alertData.source_url,
+        ai_provenance: alertData.ai_provenance || alertData.metadata_json?.ai_provenance || alertData.metadata?.ai_provenance,
+        metadata_json: alertData.metadata_json || alertData.metadata,
         published_at: alertData.published_at || alertData.sent_at || alertData.timestamp || alertData.created_at || new Date().toISOString(),
         timestamp: alertData.timestamp || alertData.published_at || new Date().toISOString(),
         created_at: alertData.created_at || new Date().toISOString(),
@@ -274,6 +280,8 @@ export default function DashboardPage() {
         summary: alert.summary,
         raw_text: alert.summary || alert.title,
         importance_score: alert.importance_score ?? 9,
+        ai_provenance: alert.ai_provenance || alert.metadata_json?.ai_provenance,
+        metadata_json: alert.metadata_json,
         published_at: alert.published_at || new Date().toISOString(),
         ingested_at: alert.created_at || new Date().toISOString(),
       });
@@ -286,6 +294,7 @@ export default function DashboardPage() {
       {alerts.length > 0 && (
         <AlertWheel
           alerts={alerts}
+          events={events}
           onDismissAlert={handleDismissAlert}
           onDismissAll={handleDismissAll}
           onOpenDetails={handleOpenAlertDetails}

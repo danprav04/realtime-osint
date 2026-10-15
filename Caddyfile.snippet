@@ -1,4 +1,4 @@
-# --- Production Environment for ir-osint.danprav.me ---
+# --- Production Environment for ir-osint.danprav.me (Zero-Trust Gated Public Portal) ---
 ir-osint.danprav.me {
     encode gzip zstd
 
@@ -12,42 +12,100 @@ ir-osint.danprav.me {
         level INFO
     }
 
+    # Strict defense-in-depth security headers
     header {
         X-Frame-Options "SAMEORIGIN"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
         -Server
     }
 
-    # 1. Block sensitive administrative / pipeline endpoints
-    @blocked_paths path /api/settings* /api/sources* /api/pipeline* /api/summary/generate* /api/embeddings/backfill* /settings* /summary* /map* /trends*
-    respond @blocked_paths "Access Denied: Protected administrative resource" 403
-
-    # 2. Allow POST only for public authentication; block all other mutating HTTP methods
+    # 1. Block all mutating HTTP methods (POST, PUT, DELETE, PATCH) EXCEPT the password login endpoint
     @unauthorized_mutations {
         method POST PUT DELETE PATCH
         not path /api/public/auth
     }
     respond @unauthorized_mutations "Access Denied: Read-only public portal" 403
 
-    # 3. WebSocket Gateway for real-time live feed (proxies to backend 24176)
+    # 2. Block all internal/administrative pages and API routes
+    @blocked_internal path /settings* /summary* /map* /trends* /docs* /redoc* /openapi.json* /test/*
+    respond @blocked_internal "Access Denied: Protected administrative resource" 403
+
+    # 3. Block all non-public API endpoints (Deny-by-default for /api/*)
+    @blocked_private_api {
+        path /api/*
+        not path /api/public/*
+    }
+    respond @blocked_private_api "Access Denied: Private API endpoint" 403
+
+    # 4. WebSocket Gateway for real-time live feed (passes CF headers)
     handle /socket.io/* {
-        reverse_proxy localhost:24176
+        reverse_proxy localhost:24176 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up CF-Connecting-IP {header.CF-Connecting-IP}
+        }
     }
 
-    # 4. Public API endpoints (proxies to backend 24176)
+    # 5. Public gated API endpoints (passes CF headers for accurate rate-limiting)
     handle /api/public/* {
-        reverse_proxy localhost:24176
+        reverse_proxy localhost:24176 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up CF-Connecting-IP {header.CF-Connecting-IP}
+        }
     }
 
-    # 5. Root path rewrites to the dedicated public display page
+    # 6. Root URL automatically loads the dedicated public display page
     handle / {
         rewrite * /display
         reverse_proxy localhost:26816
     }
 
-    # 6. Next.js assets & display page
-    handle {
+    # 7. Allowed frontend routes & static assets for the display page & PWA installation
+    handle /display* {
         reverse_proxy localhost:26816
+    }
+    handle /_next/* {
+        reverse_proxy localhost:26816
+    }
+    handle /favicon.ico {
+        reverse_proxy localhost:26816
+    }
+    handle /icon.svg {
+        reverse_proxy localhost:26816
+    }
+    handle /apple-icon.png {
+        reverse_proxy localhost:26816
+    }
+    handle /apple-touch-icon.png {
+        reverse_proxy localhost:26816
+    }
+    handle /icon-192.png {
+        reverse_proxy localhost:26816
+    }
+    handle /icon-512.png {
+        reverse_proxy localhost:26816
+    }
+    handle /site.webmanifest {
+        reverse_proxy localhost:26816
+    }
+    handle /manifest.json {
+        reverse_proxy localhost:26816
+    }
+    handle /display.webmanifest {
+        reverse_proxy localhost:26816
+    }
+    handle /sw.js {
+        reverse_proxy localhost:26816
+    }
+    handle /offline.html {
+        reverse_proxy localhost:26816
+    }
+
+    # 8. Fallback: Block any other unknown route
+    handle {
+        respond "Access Denied: Resource restricted or not found" 404
     }
 }

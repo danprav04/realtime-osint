@@ -226,11 +226,14 @@ async def ingest_event(
                 "event_id": serialized["id"],
                 "id": serialized["id"],
                 "title": serialized["title"],
+                "headline": serialized.get("headline"),
                 "summary": serialized.get("summary") or serialized["title"],
                 "importance_score": score,
                 "source_name": serialized["source_name"],
                 "published_at": serialized["published_at"],
                 "source_url": serialized.get("source_url"),
+                "ai_provenance": serialized.get("ai_provenance"),
+                "metadata_json": serialized.get("metadata_json"),
             }
             await bus.publish(CHANNEL_EVENTS_ALERT, alert_payload)
     except Exception as exc:

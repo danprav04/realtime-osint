@@ -145,6 +145,13 @@ test('Types - AlertItem validates alerts data for AlertWheel component', async (
     summary: 'Yemeni Armed Forces successfully repelled a Saudi-backed advance on the Lahij-Bab el-Mandeb front...',
     importance_score: 9,
     source_name: 'Yemeni Armed Forces Spox Yahya Saree',
+    ai_provenance: {
+      scoring: { provider: 'Groq', model: 'qwen/qwen3.8-27b' },
+      summarization: { provider: 'Groq', model: 'openai/gpt-oss-120b' },
+    },
+    metadata_json: {
+      scoring_breakdown: { corroboration_count: 3 },
+    },
     published_at: '2026-10-09T18:24:46Z',
     timestamp: '2026-10-09T18:24:46Z',
   };
@@ -153,6 +160,8 @@ test('Types - AlertItem validates alerts data for AlertWheel component', async (
   assert.equal(sampleAlert.source_name, 'Yemeni Armed Forces Spox Yahya Saree');
   assert.ok(sampleAlert.title.includes('Bab el-Mandeb'));
   assert.ok(sampleAlert.published_at.includes('2026'));
+  assert.equal(sampleAlert.ai_provenance.scoring.model, 'qwen/qwen3.8-27b');
+  assert.equal(sampleAlert.ai_provenance.summarization.model, 'openai/gpt-oss-120b');
 });
 
 // Test 11: sortEvents - newest first order (prevents old events sandwiched between fresh ones)
@@ -461,6 +470,36 @@ test('Utils - getEventAIProvenance extracts stage models and provides stage fall
   const scoreProv = getEventAIProvenance(eventWithProv, 'scoring');
   assert.equal(scoreProv.provider, 'Gemini');
   assert.equal(scoreProv.model, 'gemini-3.5-flash-lite');
+
+  // Verify provenance extracted from AlertItem format
+  const alertItem = {
+    id: 'alt-5',
+    title: 'Drone intercept',
+    ai_provenance: {
+      scoring: { provider: 'Groq', model: 'qwen/qwen3.8-27b' },
+      summarization: { provider: 'Groq', model: 'openai/gpt-oss-120b' },
+    },
+  };
+  const alertScoreProv = getEventAIProvenance(alertItem, 'scoring');
+  assert.equal(alertScoreProv.provider, 'Groq');
+  assert.equal(alertScoreProv.model, 'qwen/qwen3.8-27b');
+
+  const alertSumProv = getEventAIProvenance(alertItem, 'summarization');
+  assert.equal(alertSumProv.provider, 'Groq');
+  assert.equal(alertSumProv.model, 'openai/gpt-oss-120b');
+
+  // Verify stringified metadata_json handling
+  const eventWithStringMeta = {
+    id: 'evt-2',
+    metadata_json: JSON.stringify({
+      ai_provenance: {
+        scoring: { provider: 'groq', model: 'qwen/qwen3.8-27b' },
+      },
+    }),
+  };
+  const stringScoreProv = getEventAIProvenance(eventWithStringMeta, 'scoring');
+  assert.equal(stringScoreProv.provider, 'Groq');
+  assert.equal(stringScoreProv.model, 'qwen/qwen3.8-27b');
 });
 
 // Test 25: AIModelBadge Component - file exists and exports AIModelBadge
@@ -475,6 +514,91 @@ test('AIModelBadge - exports component and renders brand badge styles', async ()
   assert.ok(badgeContent.includes('export function AIModelBadge'));
   assert.ok(badgeContent.includes('formatProviderName'));
   assert.ok(badgeContent.includes('getProviderBadgeStyles'));
+});
+
+// Test 26: PWA Manifests - verifies site.webmanifest, manifest.json, and display.webmanifest
+test('PWA Manifests - validates site.webmanifest, manifest.json, and display.webmanifest with shortcuts and display start_url', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  // 1. site.webmanifest
+  const siteManifestRaw = fs.readFileSync(path.resolve('public/site.webmanifest'), 'utf-8');
+  const siteManifest = JSON.parse(siteManifestRaw);
+  assert.equal(siteManifest.short_name, 'OSINT Realtime');
+  assert.equal(siteManifest.start_url, '/');
+  assert.equal(siteManifest.display, 'standalone');
+  assert.ok(Array.isArray(siteManifest.icons) && siteManifest.icons.length >= 4);
+  assert.ok(siteManifest.icons.some((i) => i.sizes === '192x192'));
+  assert.ok(siteManifest.icons.some((i) => i.sizes === '512x512'));
+  assert.ok(Array.isArray(siteManifest.shortcuts) && siteManifest.shortcuts.length >= 1);
+  assert.ok(siteManifest.shortcuts.some((s) => s.url === '/display'), 'site.webmanifest must include /display shortcut');
+
+  // 2. manifest.json compatibility alias
+  const jsonManifestRaw = fs.readFileSync(path.resolve('public/manifest.json'), 'utf-8');
+  const jsonManifest = JSON.parse(jsonManifestRaw);
+  assert.equal(jsonManifest.display, 'standalone');
+  assert.equal(jsonManifest.start_url, '/');
+
+  // 3. Dedicated Read-Only Display Webmanifest
+  const displayManifestRaw = fs.readFileSync(path.resolve('public/display.webmanifest'), 'utf-8');
+  const displayManifest = JSON.parse(displayManifestRaw);
+  assert.equal(displayManifest.short_name, 'OSINT Display');
+  assert.equal(displayManifest.start_url, '/display');
+  assert.equal(displayManifest.scope, '/display');
+  assert.equal(displayManifest.display, 'standalone');
+  assert.ok(Array.isArray(displayManifest.icons) && displayManifest.icons.length >= 4);
+});
+
+// Test 27: PWA Service Worker & Offline Fallback Shell
+test('PWA Service Worker & Offline - validates sw.js caching strategies, api exclusion, and offline.html', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const swPath = path.resolve('public/sw.js');
+  assert.ok(fs.existsSync(swPath), 'public/sw.js must exist');
+  const swContent = fs.readFileSync(swPath, 'utf-8');
+
+  assert.ok(swContent.includes("addEventListener('install'"), 'SW must register install listener');
+  assert.ok(swContent.includes("addEventListener('activate'"), 'SW must register activate listener');
+  assert.ok(swContent.includes("addEventListener('fetch'"), 'SW must register fetch listener');
+  assert.ok(swContent.includes('/display'), 'SW pre-cache must include /display route');
+  assert.ok(swContent.includes('/offline.html'), 'SW pre-cache must include offline fallback');
+  assert.ok(swContent.includes('/api/'), 'SW must exclude /api/ endpoints from cache');
+  assert.ok(swContent.includes('/socket.io'), 'SW must exclude WebSocket endpoints from cache');
+
+  const offlinePath = path.resolve('public/offline.html');
+  assert.ok(fs.existsSync(offlinePath), 'public/offline.html must exist');
+  const offlineContent = fs.readFileSync(offlinePath, 'utf-8');
+  assert.ok(offlineContent.includes('Network Connection Lost') || offlineContent.includes('Offline'));
+  assert.ok(offlineContent.includes('window.location.reload()'));
+});
+
+// Test 28: PWA UI Components & Display Layout Metadata
+test('PWA Components & Layout - validates usePwaInstall hook, InstallPwaButton, and display layout metadata', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const hookPath = path.resolve('src/lib/usePwaInstall.ts');
+  assert.ok(fs.existsSync(hookPath), 'src/lib/usePwaInstall.ts must exist');
+  const hookContent = fs.readFileSync(hookPath, 'utf-8');
+  assert.ok(hookContent.includes('export function usePwaInstall'));
+  assert.ok(hookContent.includes('export function registerServiceWorker'));
+  assert.ok(hookContent.includes('beforeinstallprompt'));
+
+  const btnPath = path.resolve('src/components/pwa/InstallPwaButton.tsx');
+  assert.ok(fs.existsSync(btnPath), 'InstallPwaButton.tsx must exist');
+  const btnContent = fs.readFileSync(btnPath, 'utf-8');
+  assert.ok(btnContent.includes('export function InstallPwaButton'));
+
+  const modalPath = path.resolve('src/components/pwa/PwaInstallModal.tsx');
+  assert.ok(fs.existsSync(modalPath), 'PwaInstallModal.tsx must exist');
+  const modalContent = fs.readFileSync(modalPath, 'utf-8');
+  assert.ok(modalContent.includes('export function PwaInstallModal'));
+
+  const displayLayoutPath = path.resolve('src/app/display/layout.tsx');
+  assert.ok(fs.existsSync(displayLayoutPath), 'src/app/display/layout.tsx must exist');
+  const displayLayoutContent = fs.readFileSync(displayLayoutPath, 'utf-8');
+  assert.ok(displayLayoutContent.includes('/display.webmanifest'), 'display layout must reference display.webmanifest');
 });
 
 console.log('Running frontend automated tests...');

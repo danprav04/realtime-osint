@@ -277,6 +277,14 @@ export function Navbar() {
               )}
             </div>
 
+            {/* Install PWA Button */}
+            <InstallPwaButton
+              label="Install App"
+              variant="compact"
+              appName="OSINT Realtime"
+              className="hidden sm:flex"
+            />
+
             {/* Auth Key config button */}
             <button
               onClick={() => setIsAuthOpen(true)}
@@ -289,7 +297,7 @@ export function Navbar() {
         </div>
 
         {/* Mobile Navigation bar */}
-        <div className="flex md:hidden border-t border-white/5 px-4 py-2 space-x-1 bg-canvas-base">
+        <div className="flex md:hidden border-t border-white/5 px-4 py-2 space-x-1 bg-canvas-base items-center">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = pathname === item.href;
@@ -309,6 +317,12 @@ export function Navbar() {
               </Link>
             );
           })}
+          <InstallPwaButton
+            label="Install"
+            variant="compact"
+            appName="OSINT Realtime"
+            className="px-2 py-1.5 text-xs shrink-0"
+          />
         </div>
       </header>
 

@@ -1,0 +1,84 @@
+{
+  "name": "Real-time OSINT Intelligence & Situational Dashboard",
+  "short_name": "OSINT Realtime",
+  "description": "Production-grade real-time OSINT intelligence dashboard with multi-source ingestion, consensus radar, and Gemini/Groq AI processing.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#090a0f",
+  "theme_color": "#06b6d4",
+  "categories": ["news", "utilities", "productivity"],
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "16x16 32x32 48x48",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Read-Only SITREP Display",
+      "short_name": "SITREP Display",
+      "description": "Open public read-only situational display and consensus radar",
+      "url": "/display",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Live Intelligence Feed",
+      "short_name": "Live Feed",
+      "description": "Open real-time OSINT event stream and alerts",
+      "url": "/",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "AI Situation Summary",
+      "short_name": "AI SITREP",
+      "description": "View synthesized executive BLUF and cluster analysis",
+      "url": "/summary",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Relevance Consensus Map",
+      "short_name": "Consensus Map",
+      "description": "2D Semantic projection and corroboration radar",
+      "url": "/map",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

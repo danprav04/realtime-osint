@@ -1,12 +1,26 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { Navbar } from '@/components/Navbar';
 import { AppIcon } from '@/components/AppIcon';
+import { PwaRegistration } from '@/components/pwa/PwaRegistration';
+
+export const viewport: Viewport = {
+  themeColor: '#090a0f',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+};
 
 export const metadata: Metadata = {
   title: 'Real-time OSINT Gathering Service',
   description:
     'Production-grade real-time OSINT intelligence dashboard with multi-source ingestion and Gemini/Groq AI processing.',
+  applicationName: 'OSINT Realtime',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'OSINT Realtime',
+  },
   icons: {
     icon: [
       { url: '/favicon.ico', sizes: 'any' },
@@ -17,6 +31,9 @@ export const metadata: Metadata = {
     ],
   },
   manifest: '/site.webmanifest',
+  other: {
+    'mobile-web-app-capable': 'yes',
+  },
 };
 
 export default function RootLayout({
@@ -27,6 +44,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="min-h-screen bg-canvas-base text-zinc-100 antialiased selection:bg-accent-cyan/20 selection:text-accent-cyan">
+        <PwaRegistration />
         <div className="flex min-h-screen flex-col">
           <Navbar />
           <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">

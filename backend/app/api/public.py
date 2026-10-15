@@ -36,7 +36,13 @@ class PublicAuthRequest(BaseModel):
 
 
 def _get_client_ip(request: Request) -> str:
-    """Extract client IP handling reverse proxy X-Forwarded-For header."""
+    """Extract client IP handling Cloudflare CF-Connecting-IP and standard reverse proxy headers."""
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip.strip()
+    x_real_ip = request.headers.get("X-Real-IP")
+    if x_real_ip:
+        return x_real_ip.strip()
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         return forwarded.split(",")[0].strip()

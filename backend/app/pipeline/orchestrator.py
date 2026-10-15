@@ -1325,6 +1325,7 @@ class PipelineOrchestrator:
         if should_alert:
             alert_payload = {
                 "event_id": analyzed.id,
+                "id": analyzed.id,
                 "title": analyzed.headline or analyzed.title,
                 "headline": analyzed.headline,
                 "summary": analyzed.summary,
@@ -1332,6 +1333,8 @@ class PipelineOrchestrator:
                 "source_name": analyzed.source_name,
                 "published_at": analyzed.published_at.isoformat() if analyzed.published_at else None,
                 "source_url": analyzed.source_url,
+                "ai_provenance": analyzed.ai_provenance,
+                "metadata_json": metadata,
             }
             await bus.publish(CHANNEL_EVENTS_ALERT, alert_payload)
 

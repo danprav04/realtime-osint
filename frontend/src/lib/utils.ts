@@ -491,7 +491,29 @@ export function getEventAIProvenance(
     return parseModelProvider('', 'AI');
   }
 
-  const prov = event.ai_provenance || event.metadata_json?.ai_provenance;
+  let metadataJson = event.metadata_json;
+  if (typeof metadataJson === 'string') {
+    try {
+      metadataJson = JSON.parse(metadataJson);
+    } catch {
+      metadataJson = undefined;
+    }
+  }
+
+  let prov =
+    event.ai_provenance ||
+    metadataJson?.ai_provenance ||
+    (event as any).metadata?.ai_provenance ||
+    (event as any).metadata_json?.ai_provenance;
+
+  if (typeof prov === 'string') {
+    try {
+      prov = JSON.parse(prov);
+    } catch {
+      prov = undefined;
+    }
+  }
+
   if (prov && prov[stage]) {
     const item = prov[stage]!;
     return {

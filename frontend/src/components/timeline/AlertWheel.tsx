@@ -12,12 +12,13 @@ import {
   ExternalLink,
   Layers,
 } from 'lucide-react';
-import { AlertItem } from '@/lib/types';
+import { AlertItem, NormalizedEvent } from '@/lib/types';
 import { formatAlertTime, cn, getEventAIProvenance } from '@/lib/utils';
 import { AIModelBadge } from '@/components/common/AIModelBadge';
 
 export interface AlertWheelProps {
   alerts: AlertItem[];
+  events?: NormalizedEvent[];
   onDismissAlert?: (alertId: string) => void;
   onDismissAll?: () => void;
   onOpenDetails?: (alert: AlertItem) => void;
@@ -27,6 +28,7 @@ export interface AlertWheelProps {
 
 export function AlertWheel({
   alerts,
+  events,
   onDismissAlert,
   onDismissAll,
   onOpenDetails,
@@ -125,8 +127,29 @@ export function AlertWheel({
     currentAlert.created_at ||
     currentAlert.received_at;
   const timeInfo = formatAlertTime(rawTime);
-  const scoringProv = getEventAIProvenance(currentAlert as any, 'scoring');
-  const summarizationProv = getEventAIProvenance(currentAlert as any, 'summarization');
+  const matchedEvent = events?.find(
+    (e) =>
+      (currentAlert.id && (e.id === currentAlert.id || e.external_id === currentAlert.id)) ||
+      (currentAlert.event_id && (e.id === currentAlert.event_id || e.external_id === currentAlert.event_id))
+  );
+
+  const eventForProvenance =
+    (currentAlert.ai_provenance || currentAlert.metadata_json?.ai_provenance)
+      ? (currentAlert as any)
+      : matchedEvent || (currentAlert as any);
+
+  const scoringProv = getEventAIProvenance(
+    eventForProvenance?.ai_provenance?.scoring || eventForProvenance?.metadata_json?.ai_provenance?.scoring
+      ? eventForProvenance
+      : (matchedEvent || eventForProvenance),
+    'scoring'
+  );
+  const summarizationProv = getEventAIProvenance(
+    eventForProvenance?.ai_provenance?.summarization || eventForProvenance?.metadata_json?.ai_provenance?.summarization
+      ? eventForProvenance
+      : (matchedEvent || eventForProvenance),
+    'summarization'
+  );
 
   // SVG circular progress ring calculations
   // radius 15, circumference = 2 * PI * 15 ≈ 94.25

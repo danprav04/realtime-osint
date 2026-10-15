@@ -59,6 +59,7 @@ import { AlertWheel } from '@/components/timeline/AlertWheel';
 import { RelevanceMap } from '@/components/map/RelevanceMap';
 import { AIModelBadge } from '@/components/common/AIModelBadge';
 import { AppIcon } from '@/components/AppIcon';
+import { InstallPwaButton } from '@/components/pwa/InstallPwaButton';
 import { cn, sortEvents, SortOption, formatRelativeTime, formatDateTime, parseModelProvider } from '@/lib/utils';
 
 const STORAGE_KEY = 'osint_viewer_token';
@@ -673,8 +674,13 @@ export default function PublicDisplayPage() {
             </button>
           </form>
 
-          <div className="pt-2 border-t border-white/5 text-center">
-            <span className="text-[11px] font-mono text-zinc-500">
+          <div className="pt-2 border-t border-white/5 space-y-3 text-center">
+            <InstallPwaButton
+              label="Install Display App (PWA)"
+              variant="prominent"
+              appName="OSINT Public Display"
+            />
+            <span className="text-[11px] font-mono text-zinc-500 block">
               Live Feed • AI SitRep • 2D Consensus Radar
             </span>
           </div>
@@ -748,6 +754,13 @@ export default function PublicDisplayPage() {
                 </>
               )}
             </div>
+
+            {/* Install Display App Button */}
+            <InstallPwaButton
+              label="Install App"
+              variant="compact"
+              appName="OSINT Public Display"
+            />
 
             {/* Exit / Lock Button */}
             <button
