@@ -86,7 +86,11 @@ export function AIModelBadge({
     </span>
   );
 
-  if (linkToSettings) {
+  const isDisplay =
+    typeof window !== 'undefined' &&
+    (window.location.pathname.startsWith('/display') || window.location.hostname.includes('ir-osint'));
+
+  if (linkToSettings && !isDisplay) {
     return (
       <Link href="/settings" title={`${tooltipText} (Click to configure in Settings)`}>
         {content}

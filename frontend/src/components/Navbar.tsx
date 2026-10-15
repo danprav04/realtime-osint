@@ -26,6 +26,7 @@ import { cn, getProviderRateLimitStatuses } from '@/lib/utils';
 
 import { AppIcon } from '@/components/AppIcon';
 import { InstallPwaButton } from '@/components/pwa/InstallPwaButton';
+import { PublicNavbar } from './PublicNavbar';
 
 export function Navbar() {
   const pathname = usePathname();
@@ -96,7 +97,7 @@ export function Navbar() {
   ];
 
   if (isDisplay) {
-    return null;
+    return <PublicNavbar />;
   }
 
   return (

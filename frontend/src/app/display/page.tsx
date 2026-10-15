@@ -242,6 +242,7 @@ export default function PublicDisplayPage() {
       localStorage.setItem(STORAGE_KEY, res.token);
       setToken(res.token);
       setPasswordInput('');
+      window.dispatchEvent(new Event('osint_viewer_login'));
     } catch (err: any) {
       if (err.status === 429) {
         const secs = err.retryAfter || 300;
@@ -267,7 +268,18 @@ export default function PublicDisplayPage() {
       clusters: [],
       stats: { total_nodes: 0, total_edges: 0, total_clusters: 0, active_model: 'gemini-embedding-001' },
     });
+    window.dispatchEvent(new Event('osint_viewer_logout'));
   };
+
+  useEffect(() => {
+    const handleRemoteLogout = () => {
+      setToken(null);
+      setSummary(null);
+      setEvents([]);
+    };
+    window.addEventListener('osint_viewer_logout', handleRemoteLogout);
+    return () => window.removeEventListener('osint_viewer_logout', handleRemoteLogout);
+  }, []);
 
   // 2. Fetch intelligence data when authenticated
   const loadIntelligenceData = useCallback(async () => {
@@ -694,86 +706,15 @@ export default function PublicDisplayPage() {
   // --------------------------------------------------------------------------
   const trajStyle = getTrajectoryStyles(summary?.threat_trajectory);
 
+  const synthesizerProv =
+    summary?.ai_provenance?.synthesizer ||
+    (summary?.active_ai_model ? parseModelProvider(summary.active_ai_model, 'situation_summary') : undefined);
+  const embeddingProv =
+    summary?.ai_provenance?.embedding ||
+    (summary?.active_embedding_model ? parseModelProvider(summary.active_embedding_model, 'embedding') : undefined);
+
   return (
-    <div className="space-y-6 pb-12 -mt-6">
-      {/* Public Top Header Bar */}
-      <header className="sticky top-0 z-40 w-full bg-canvas-subtle/95 backdrop-blur hairline-b px-4 py-2.5 -mx-4 sm:-mx-6 lg:-mx-8 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Brand & Read-Only Pill */}
-          <div className="flex items-center space-x-3">
-            <div className="relative flex items-center justify-center rounded-lg bg-surface-card hairline-border p-0.5">
-              <AppIcon size={30} withBeacon />
-            </div>
-            <div className="flex flex-col">
-              <div className="flex items-center space-x-2">
-                <span className="text-xs font-bold tracking-tight text-zinc-100 uppercase">
-                  OSINT <span className="text-accent-cyan">REALTIME</span>
-                </span>
-                <span className="px-2 py-0.2 rounded text-[10px] font-mono font-semibold bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/25">
-                  PUBLIC DISPLAY
-                </span>
-              </div>
-              <span className="text-[10px] text-zinc-400 font-mono">
-                READ-ONLY PORTAL • LIVE CITATIONS &amp; RADAR
-              </span>
-            </div>
-          </div>
-
-          {/* Right Status Controls */}
-          <div className="flex items-center space-x-2.5">
-            {/* Active Theme Badge */}
-            {activeTheme && (
-              <div className="hidden sm:flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-surface-card hairline-border text-[11px] text-zinc-300">
-                <Layers className="w-3 h-3 text-accent-amber" />
-                <span className="text-zinc-400">Theme:</span>
-                <span className="font-medium text-zinc-200">{activeTheme.name}</span>
-              </div>
-            )}
-
-            {/* WebSocket Live Status */}
-            <div
-              className={cn(
-                'flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono tracking-wide tabular hairline-border',
-                wsConnected
-                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                  : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-              )}
-            >
-              {wsConnected ? (
-                <>
-                  <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-beacon" />
-                  </span>
-                  <span className="font-semibold text-[10px]">LIVE</span>
-                </>
-              ) : (
-                <>
-                  <WifiOff className="w-3 h-3 text-rose-400 animate-pulse" />
-                  <span className="font-semibold text-[10px]">OFFLINE</span>
-                </>
-              )}
-            </div>
-
-            {/* Install Display App Button */}
-            <InstallPwaButton
-              label="Install App"
-              variant="compact"
-              appName="OSINT Public Display"
-            />
-
-            {/* Exit / Lock Button */}
-            <button
-              onClick={handleLogout}
-              title="Lock display / Log out"
-              className="flex items-center space-x-1 px-2.5 py-1 rounded-md bg-surface-card hover:bg-surface-raised hairline-border text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Lock</span>
-            </button>
-          </div>
-        </div>
-      </header>
+    <div className="space-y-6 pb-12">
 
       {/* Critical Flash Alert Wheel */}
       {alerts.length > 0 && (
@@ -917,17 +858,31 @@ export default function PublicDisplayPage() {
                   <Sparkles className="w-4 h-4" />
                 </div>
                 <div>
-                  <div className="flex items-center space-x-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-semibold text-zinc-100 tracking-tight uppercase font-mono">
                       Executive Situational Briefing (BLUF)
                     </h3>
                     <span className="text-[10px] font-mono text-accent-cyan bg-accent-cyan/10 px-2 py-0.5 rounded border border-accent-cyan/25">
                       30-MIN AUTO FUSION
                     </span>
+                    <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
                   </div>
                   <p className="text-[11px] text-zinc-400">
                     Synthesized across {summary.telemetry.total_events} reports, {summary.telemetry.total_clusters} clusters, and {summary.telemetry.cross_source_edges_count} corroboration links
                   </p>
+                  {/* Active AI Engine Badges */}
+                  <div className="flex flex-wrap items-center gap-2.5 pt-1.5 text-[11px] font-mono text-zinc-400 tabular">
+                    <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-surface-raised border border-white/5">
+                      <Sparkles className="w-3 h-3 text-accent-cyan" />
+                      <span>Synthesizer:</span>
+                      <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                    </div>
+                    <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-surface-raised border border-white/5">
+                      <Compass className="w-3 h-3 text-emerald-400" />
+                      <span>Embeddings:</span>
+                      <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings={false} />
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -966,9 +921,12 @@ export default function PublicDisplayPage() {
             {/* Strategic Assessment Callout */}
             {summary.strategic_assessment && (
               <div className="p-4 rounded-xl bg-surface-raised/70 border border-white/10 space-y-1.5">
-                <div className="flex items-center space-x-1.5 text-xs font-mono uppercase tracking-wider text-accent-cyan">
-                  <TrendingUp className="w-3.5 h-3.5" />
-                  <span>Strategic Telemetry Assessment</span>
+                <div className="flex items-center justify-between gap-2 text-xs font-mono uppercase tracking-wider text-accent-cyan">
+                  <div className="flex items-center space-x-1.5">
+                    <TrendingUp className="w-3.5 h-3.5" />
+                    <span>Strategic Telemetry Assessment</span>
+                  </div>
+                  <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
                 </div>
                 <p className="text-xs text-zinc-300 leading-relaxed">{summary.strategic_assessment}</p>
               </div>
@@ -977,10 +935,13 @@ export default function PublicDisplayPage() {
             {/* Key Verified Developments */}
             {summary.key_developments && summary.key_developments.length > 0 && (
               <div className="pt-2 space-y-3">
-                <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
-                  <Flame className="w-3.5 h-3.5 text-rose-400" />
-                  <span>Key High-Impact Developments</span>
-                </h4>
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
+                    <Flame className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Key High-Impact Developments</span>
+                  </h4>
+                  <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                </div>
                 <div className="space-y-2">
                   {summary.key_developments.map((dev, idx) => (
                     <div
@@ -1009,6 +970,13 @@ export default function PublicDisplayPage() {
                                 {dev.trustworthiness_label}
                               </span>
                             )}
+                            {dev.event_id && citationMap[dev.event_id]?.ai_provenance && (
+                              <AIModelBadge
+                                provenance={citationMap[dev.event_id]?.ai_provenance?.scoring}
+                                size="xs"
+                                linkToSettings={false}
+                              />
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1031,10 +999,16 @@ export default function PublicDisplayPage() {
             {/* Semantic Story Clusters Accordion */}
             {summary.clusters && summary.clusters.length > 0 && (
               <div className="pt-2 space-y-3">
-                <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
-                  <Layers className="w-3.5 h-3.5 text-accent-cyan" />
-                  <span>Semantic Storyline Clusters ({summary.clusters.length})</span>
-                </h4>
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
+                    <Layers className="w-3.5 h-3.5 text-accent-cyan" />
+                    <span>Semantic Storyline Clusters ({summary.clusters.length})</span>
+                  </h4>
+                  <div className="flex items-center space-x-2">
+                    <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                    <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings={false} />
+                  </div>
+                </div>
                 <div className="space-y-2.5">
                   {summary.clusters.map((c: SummaryClusterBreakdown) => {
                     const isExpanded = !!expandedClusters[c.cluster_id];
@@ -1050,9 +1024,12 @@ export default function PublicDisplayPage() {
                             </span>
                             <span className="text-xs font-semibold text-zinc-100">{c.title}</span>
                           </div>
-                          <span className="text-[11px] font-mono text-zinc-400">
-                            {c.report_count} reports • Trust {c.avg_trustworthiness_score}%
-                          </span>
+                          <div className="flex items-center space-x-2">
+                            <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                            <span className="text-[11px] font-mono text-zinc-400">
+                              {c.report_count} reports • Trust {c.avg_trustworthiness_score}%
+                            </span>
+                          </div>
                         </div>
                         <p className="text-xs text-zinc-300 leading-relaxed">{c.executive_summary}</p>
                         <div className="flex items-center justify-between pt-1 text-[11px] text-zinc-400">
@@ -1090,6 +1067,32 @@ export default function PublicDisplayPage() {
                     );
                   })}
                 </div>
+              </div>
+            )}
+
+            {/* 12-24h Tactical Watchlist Indicators */}
+            {summary.watchlist_indicators && summary.watchlist_indicators.length > 0 && (
+              <div className="pt-2 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
+                    <Clock className="w-3.5 h-3.5 text-accent-amber" />
+                    <span>12–24h Tactical Watchlist</span>
+                  </h4>
+                  <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                </div>
+                <ul className="space-y-2">
+                  {summary.watchlist_indicators.map((indicator, idx) => (
+                    <li
+                      key={idx}
+                      className="flex items-start space-x-2.5 p-2.5 rounded-lg bg-surface-card/90 hairline-border text-xs text-zinc-200 leading-relaxed"
+                    >
+                      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent-cyan/20 text-accent-cyan font-mono text-[10px] font-semibold tabular">
+                        {idx + 1}
+                      </span>
+                      <span>{indicator}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>
@@ -1227,9 +1230,12 @@ export default function PublicDisplayPage() {
                   Consensus &amp; Relevance Radar
                 </h3>
               </div>
-              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                CORE-TO-PERIPHERY
-              </span>
+              <div className="flex items-center space-x-2">
+                <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings={false} />
+                <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                  CORE-TO-PERIPHERY
+                </span>
+              </div>
             </div>
             <p className="text-[11px] text-zinc-400 leading-relaxed">
               Multi-source consensus radar. Confirmed high-agreement clusters anchor the core, while isolated single-source dispatches orbit the outer perimeter.
