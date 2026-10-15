@@ -5,7 +5,7 @@ importance score 10 bypass, 24-hour URL deduplication, and database alert tracki
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -14,10 +14,10 @@ import time
 from typing import Any, Dict, List, Optional
 import httpx
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.config import get_settings
-from backend.app.db.models import Alert, SystemSettings, utc_now
+from backend.app.db.models import Alert, Event, SystemSettings, Theme, utc_now
 from backend.app.db.session import get_session_factory
 from backend.app.services.redis_bus import (
     CHANNEL_CONFIG_RELOAD,
@@ -72,6 +72,8 @@ class TelegramBotService:
         self._http_client: Optional[httpx.AsyncClient] = None
         self._retry_lock: asyncio.Lock = asyncio.Lock()
         self.simulate_error: Optional[str] = None
+        self._polling_task: Optional[asyncio.Task] = None
+        self._last_update_id: int = 0
 
     @property
     def http_client(self) -> httpx.AsyncClient:
@@ -393,6 +395,447 @@ class TelegramBotService:
             )
             return {"status": "failed", "error": str(exc)}
 
+    def _chunk_text(self, text: str, max_chars: int = 4000) -> List[str]:
+        """Split text into chunks smaller than max_chars, preferably along newline boundaries."""
+        if len(text) <= max_chars:
+            return [text]
+
+        chunks: List[str] = []
+        lines = text.split("\n")
+        current_chunk: List[str] = []
+        current_len = 0
+
+        for line in lines:
+            line_len = len(line) + 1
+            if current_len + line_len > max_chars:
+                if current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                    current_chunk = []
+                    current_len = 0
+                while len(line) > max_chars:
+                    chunks.append(line[:max_chars])
+                    line = line[max_chars:]
+                    line_len = len(line) + 1
+            current_chunk.append(line)
+            current_len += line_len
+
+        if current_chunk:
+            chunks.append("\n".join(current_chunk))
+
+        return chunks or [text]
+
+    async def send_chat_action(self, action: str = "typing", chat_id: Optional[str] = None) -> bool:
+        """Send chat action (e.g. 'typing') to display user activity indicator."""
+        target_chat_id = str(chat_id or self.chat_id or "")
+        if not self.bot_token or not target_chat_id:
+            return True
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendChatAction"
+            body = {"chat_id": target_chat_id, "action": action}
+            await self.http_client.post(url, json=body, timeout=5.0)
+            return True
+        except Exception as exc:
+            logger.debug(f"Failed to send Telegram chat action: {exc}")
+            return False
+
+    async def send_text_message(
+        self,
+        text: str,
+        chat_id: Optional[str] = None,
+        parse_mode: str = "Markdown",
+    ) -> Dict[str, Any]:
+        """
+        Deliver a text message to Telegram with automatic message chunking
+        (4096 character ceiling) and Markdown parse fallback resilience.
+        """
+        target_chat_id = str(chat_id or self.chat_id or "")
+        if not target_chat_id:
+            logger.warning("send_text_message called without destination chat_id")
+            return {"status": "failed", "error": "missing_chat_id"}
+
+        chunks = self._chunk_text(text, max_chars=4000)
+        last_res: Dict[str, Any] = {"status": "delivered"}
+
+        for chunk in chunks:
+            if self.bot_token and not self.chat_id and not os.environ.get("PYTEST_CURRENT_TEST"):
+                await self.auto_discover_chat_id()
+
+            if not self.bot_token or not self.chat_id:
+                message_record = {
+                    "message_id": len(self.sent_messages) + 1,
+                    "chat_id": target_chat_id,
+                    "text": chunk,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "parse_mode": parse_mode,
+                    "simulated": True,
+                }
+                self.sent_messages.append(message_record)
+                last_res = {
+                    "status": "delivered",
+                    "message_id": message_record["message_id"],
+                    "simulated": True,
+                }
+                continue
+
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            body = {
+                "chat_id": target_chat_id,
+                "text": chunk,
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": False,
+            }
+
+            try:
+                response = await self.http_client.post(url, json=body)
+                if response.status_code == 400 and ("parse" in response.text.lower() or "entity" in response.text.lower()):
+                    logger.warning(
+                        f"Telegram Markdown parse failed: {response.text}. Retrying with clean plain text..."
+                    )
+                    plain_text = chunk.replace("*", "").replace("`", "").replace("_", "")
+                    plain_body = {
+                        "chat_id": target_chat_id,
+                        "text": plain_text,
+                        "disable_web_page_preview": False,
+                    }
+                    response = await self.http_client.post(url, json=plain_body)
+
+                if response.status_code == 200:
+                    resp_json = response.json()
+                    msg_id = resp_json.get("result", {}).get("message_id", 0)
+                    message_record = {
+                        "message_id": msg_id,
+                        "chat_id": target_chat_id,
+                        "text": chunk,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "parse_mode": parse_mode,
+                    }
+                    self.sent_messages.append(message_record)
+                    last_res = {"status": "delivered", "message_id": msg_id}
+                else:
+                    err_msg = f"Telegram Bot API returned HTTP {response.status_code}: {response.text}"
+                    logger.error(err_msg)
+                    last_res = {"status": "failed", "error": err_msg}
+            except Exception as exc:
+                logger.error(f"Telegram text dispatch error: {exc}")
+                last_res = {"status": "failed", "error": str(exc)}
+
+        return last_res
+
+    def format_summary_message(self, summary_data: Dict[str, Any]) -> str:
+        """
+        Format full-spectrum AI Situational Summary into Telegram Markdown SitRep.
+        """
+        theme_name = summary_data.get("theme_name") or "All Monitored Themes"
+        time_range = str(summary_data.get("time_range") or "24h").upper()
+        trajectory = str(summary_data.get("threat_trajectory") or "STABLE").upper()
+        threat_score = summary_data.get("threat_level_score", 5)
+
+        telemetry = summary_data.get("telemetry") or {}
+        velocity = telemetry.get("velocity_status", "Normal")
+        total_events = telemetry.get("total_events", 0)
+        corrob_rate = telemetry.get("corroboration_rate_pct", 0)
+        critical_count = telemetry.get("critical_alerts_count", 0)
+
+        lines = [
+            "📊 *OSINT SITUATIONAL SUMMARY (SitRep)*",
+            f"🎯 *Theme:* {theme_name} | ⏱️ *Window:* {time_range}",
+            f"⚠️ *Threat Posture:* {trajectory} [{threat_score}/10]",
+            f"📡 *Telemetry:* Velocity: {velocity} | Events: {total_events} | Corroboration: {corrob_rate}% | Critical: {critical_count}",
+            "",
+        ]
+
+        bluf = (summary_data.get("executive_bluf") or "").strip()
+        if bluf:
+            lines.extend(["*BLUF (Bottom Line Up Front):*", bluf, ""])
+
+        # Key developments
+        key_devs = summary_data.get("key_developments") or []
+        dev_bullets = []
+        for d in key_devs[:5]:
+            if isinstance(d, dict):
+                bullet_text = d.get("bullet") or d.get("headline") or ""
+                score = d.get("importance_score")
+                prefix = f"[{score}/10] " if score is not None else ""
+                if bullet_text:
+                    dev_bullets.append(f"• {prefix}{bullet_text}".strip())
+            elif isinstance(d, str) and d.strip():
+                dev_bullets.append(f"• {d.strip()}")
+
+        if dev_bullets:
+            lines.extend(["*Key Operational Developments:*"] + dev_bullets + [""])
+
+        # Strategic assessment
+        strat = (summary_data.get("strategic_assessment") or "").strip()
+        if strat:
+            lines.extend(["*Strategic Assessment:*", strat, ""])
+
+        # Watchlist indicators
+        indicators = summary_data.get("watchlist_indicators") or []
+        indicator_bullets = []
+        for ind in indicators[:4]:
+            if isinstance(ind, str) and ind.strip():
+                indicator_bullets.append(f"• {ind.strip()}")
+            elif isinstance(ind, dict) and ind.get("indicator"):
+                indicator_bullets.append(f"• {ind['indicator'].strip()}")
+
+        if indicator_bullets:
+            lines.extend(["*Watchlist Indicators (12-24h):*"] + indicator_bullets + [""])
+
+        # Footer
+        active_model = summary_data.get("active_ai_model") or "OSINT Synthesis Engine"
+        gen_at = summary_data.get("generated_at")
+        if gen_at:
+            try:
+                dt = datetime.fromisoformat(str(gen_at).replace("Z", "+00:00"))
+                time_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+            except Exception:
+                time_str = str(gen_at)
+        else:
+            time_str = utc_now().strftime("%Y-%m-%d %H:%M UTC")
+
+        lines.append(f"🤖 _Synthesized by {active_model} at {time_str}_")
+
+        return "\n".join(lines)
+
+    async def handle_command(
+        self,
+        command_text: str,
+        chat_id: str,
+        message_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Parse and execute incoming Telegram bot commands (/summary, /status, /help, etc.).
+        Enforces chat_id authorization and auto-discovers if not configured.
+        """
+        chat_id_str = str(chat_id)
+
+        # 1. Chat Authorization & Auto-Discovery
+        if not self.chat_id:
+            logger.info(f"Auto-discovering and binding Telegram chat_id: {chat_id_str} via command '{command_text}'")
+            self.chat_id = chat_id_str
+            os.environ["TELEGRAM_CHAT_ID"] = chat_id_str
+            try:
+                from sqlalchemy.orm.attributes import flag_modified
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    res = await session.execute(
+                        select(SystemSettings).where(SystemSettings.key == "api_keys")
+                    )
+                    existing = res.scalars().first()
+                    if existing and isinstance(existing.value_json, dict):
+                        updated = dict(existing.value_json)
+                        updated["telegram_chat_id"] = chat_id_str
+                        existing.value_json = updated
+                        flag_modified(existing, "value_json")
+                    else:
+                        session.add(
+                            SystemSettings(
+                                key="api_keys",
+                                value_json={"telegram_chat_id": chat_id_str},
+                            )
+                        )
+                    await session.commit()
+            except Exception as db_exc:
+                logger.debug(f"Could not persist discovered chat_id to DB: {db_exc}")
+        elif str(self.chat_id) != chat_id_str:
+            logger.warning(
+                f"Unauthorized command '{command_text}' from chat_id {chat_id_str} (configured: {self.chat_id})"
+            )
+            await self.send_text_message(
+                "⛔ *Access Denied*\nThis OSINT Alert Bot is restricted to authorized intelligence watch channels.",
+                chat_id=chat_id_str,
+            )
+            return {"status": "unauthorized", "chat_id": chat_id_str}
+
+        # 2. Parse command and arguments
+        parts = command_text.strip().split()
+        if not parts:
+            return {"status": "empty"}
+
+        cmd = parts[0].lower().split("@")[0]
+        args = [p.lower() for p in parts[1:]]
+
+        # Command: /start or /help
+        if cmd in ("/start", "/help"):
+            help_msg = (
+                "🛡️ *OSINT Intelligence Alert Bot*\n\n"
+                "Available Commands:\n"
+                "• `/summary [window] [refresh]` - Generate or retrieve AI Situational Summary (SitRep)\n"
+                "  _Windows:_ `6h`, `24h`, `3d`, `7d`, `all` (default: `24h`)\n"
+                "  _Examples:_ `/summary`, `/summary 6h`, `/summary all refresh`\n"
+                "• `/briefing` or `/sitrep` - Aliases for `/summary`\n"
+                "• `/status` - View current monitoring telemetry, active theme, and alert velocity\n"
+                "• `/help` - Show this guidance menu"
+            )
+            await self.send_text_message(help_msg, chat_id=chat_id_str)
+            return {"status": "delivered", "command": "help"}
+
+        # Command: /status
+        elif cmd in ("/status", "/health"):
+            theme_name = "All Monitored Themes"
+            alert_thresh = 7
+            ev_count = 0
+            try:
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    theme_stmt = select(Theme).where(Theme.is_active == True).limit(1)
+                    active_t = (await session.execute(theme_stmt)).scalars().first()
+                    if active_t:
+                        theme_name = active_t.name
+                        alert_thresh = active_t.alert_threshold or 7
+
+                    now = utc_now()
+                    since_24h = now - timedelta(hours=24)
+                    count_stmt = select(func.count(Event.id)).where(Event.published_at >= since_24h)
+                    ev_count = (await session.execute(count_stmt)).scalar() or 0
+            except Exception as exc:
+                logger.debug(f"Status query error: {exc}")
+
+            status_msg = (
+                f"🛰️ *OSINT Watch Station Status*\n\n"
+                f"🎯 *Active Theme:* {theme_name}\n"
+                f"🚨 *Alert Threshold:* ≥{alert_thresh}/10\n"
+                f"⏱️ *Rate Limit Cooldown:* {self.rate_limit_seconds}s\n"
+                f"📊 *Reports Ingested (Last 24h):* {ev_count}\n"
+                f"🤖 *Alert Dispatcher:* Operational"
+            )
+            await self.send_text_message(status_msg, chat_id=chat_id_str)
+            return {"status": "delivered", "command": "status"}
+
+        # Command: /summary, /briefing, /sitrep, /ai_summary
+        elif cmd in ("/summary", "/briefing", "/sitrep", "/ai_summary"):
+            time_range = "24h"
+            force_refresh = False
+
+            for a in args:
+                if a in ("6h", "24h", "3d", "7d", "all"):
+                    time_range = a
+                elif a in ("refresh", "fresh", "force", "reload"):
+                    force_refresh = True
+
+            # Indicate bot activity
+            await self.send_chat_action(action="typing", chat_id=chat_id_str)
+            await self.send_text_message(
+                f"🔄 *Generating AI Situational Summary ({time_range.upper()})...*\n"
+                "_Synthesizing semantic storyline clusters, multi-source corroboration, and live telemetry..._",
+                chat_id=chat_id_str,
+            )
+
+            try:
+                from backend.app.services.summary_service import get_summary_service
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    summary_svc = get_summary_service()
+                    summary_data = await summary_svc.generate_or_get_summary(
+                        session=session,
+                        theme_id=None,
+                        time_range=time_range,
+                        force_refresh=force_refresh,
+                    )
+
+                formatted_sitrep = self.format_summary_message(summary_data)
+                res = await self.send_text_message(formatted_sitrep, chat_id=chat_id_str)
+                return {
+                    "status": res.get("status", "delivered"),
+                    "command": "summary",
+                    "time_range": time_range,
+                    "force_refresh": force_refresh,
+                    "summary": summary_data,
+                }
+            except Exception as exc:
+                logger.error(f"Failed to generate situational summary for Telegram: {exc}", exc_info=True)
+                err_msg = (
+                    f"⚠️ *Failed to generate AI Situational Summary:*\n"
+                    f"`{str(exc)}`\n"
+                    "Please verify system status or try again shortly."
+                )
+                await self.send_text_message(err_msg, chat_id=chat_id_str)
+                return {"status": "failed", "command": "summary", "error": str(exc)}
+
+        # Unrecognized command
+        elif cmd.startswith("/"):
+            unknown_msg = f"❓ Unknown command `{cmd}`. Use /help to see available commands or /summary to request an AI SitRep."
+            await self.send_text_message(unknown_msg, chat_id=chat_id_str)
+            return {"status": "unknown_command", "command": cmd}
+
+        return {"status": "ignored"}
+
+    async def handle_update(self, update: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Process an incoming update object from Telegram getUpdates API."""
+        if not isinstance(update, dict):
+            return None
+
+        msg = update.get("message") or update.get("channel_post")
+        if not msg or not isinstance(msg, dict):
+            return None
+
+        text = str(msg.get("text") or msg.get("caption") or "").strip()
+        chat = msg.get("chat") or {}
+        chat_id = str(chat.get("id")) if chat.get("id") is not None else None
+        msg_id = msg.get("message_id")
+
+        if not chat_id or not text:
+            return None
+
+        if text.startswith("/"):
+            return await self.handle_command(command_text=text, chat_id=chat_id, message_id=msg_id)
+
+        return None
+
+    async def _poll_updates_loop(self) -> None:
+        """
+        Continuous long-polling loop fetching Telegram updates and dispatching commands.
+        """
+        logger.info("Telegram update polling loop started.")
+        consecutive_errors = 0
+        while self._is_running:
+            if not self.bot_token:
+                await asyncio.sleep(5.0)
+                continue
+            try:
+                url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+                params = {
+                    "offset": self._last_update_id + 1,
+                    "timeout": 20,
+                    "allowed_updates": json.dumps(["message", "channel_post"]),
+                }
+                resp = await self.http_client.get(url, params=params, timeout=25.0)
+                if resp.status_code == 200:
+                    consecutive_errors = 0
+                    data = resp.json()
+                    updates = data.get("result", [])
+                    for upd in updates:
+                        upd_id = upd.get("update_id", 0)
+                        if upd_id > self._last_update_id:
+                            self._last_update_id = upd_id
+                        try:
+                            await self.handle_update(upd)
+                        except Exception as upd_exc:
+                            logger.error(f"Error handling Telegram update {upd_id}: {upd_exc}", exc_info=True)
+                elif resp.status_code in (401, 404):
+                    logger.warning(f"Telegram polling unauthorized/invalid token (HTTP {resp.status_code}). Backing off.")
+                    await asyncio.sleep(30.0)
+                elif resp.status_code == 409:
+                    logger.warning("Telegram polling conflict (HTTP 409: another instance polling). Backing off 10s.")
+                    await asyncio.sleep(10.0)
+                else:
+                    logger.warning(f"Telegram getUpdates returned HTTP {resp.status_code}. Backing off.")
+                    await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                logger.info("Telegram polling loop cancelled.")
+                break
+            except (httpx.TimeoutException, httpx.ReadTimeout):
+                continue
+            except Exception as exc:
+                consecutive_errors += 1
+                backoff = min(30.0, 2.0 * consecutive_errors)
+                logger.debug(f"Telegram polling error ({exc}). Backing off {backoff:.1f}s.")
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:
+                    break
+        logger.info("Telegram update polling loop terminated.")
+
     async def _handle_bus_alert(self, channel: str, data: Any) -> None:
         """Process incoming alerts from the Redis event bus."""
         try:
@@ -466,6 +909,9 @@ class TelegramBotService:
                         if keys.get("telegram_chat_id"):
                             self.chat_id = keys["telegram_chat_id"]
                 logger.info("Hot-reloaded Telegram bot settings from DB.")
+                if self._is_running and self.bot_token and not os.environ.get("PYTEST_CURRENT_TEST"):
+                    if self._polling_task is None or self._polling_task.done():
+                        self._polling_task = asyncio.create_task(self._poll_updates_loop())
         except Exception as exc:
             logger.debug(f"Failed to hot-reload bot settings from DB: {exc}")
 
@@ -480,17 +926,31 @@ class TelegramBotService:
         self.redis_bus.subscribe(CHANNEL_EVENTS_ALERT, self._handle_bus_alert)
         self.redis_bus.subscribe(CHANNEL_CONFIG_RELOAD, self._handle_bus_config_reload)
         self._is_running = True
+
+        if not os.environ.get("PYTEST_CURRENT_TEST") and self.bot_token:
+            if self._polling_task is None or self._polling_task.done():
+                self._polling_task = asyncio.create_task(self._poll_updates_loop())
+
         logger.info("TelegramBotService started and subscribed to alert channels.")
 
     async def stop(self) -> None:
-        """Stop listening and cleanly close HTTP client."""
+        """Stop listening and cleanly close HTTP client and polling task."""
         if not self._is_running:
             return
+        self._is_running = False
         self.redis_bus.unsubscribe(CHANNEL_EVENTS_ALERT, self._handle_bus_alert)
         self.redis_bus.unsubscribe(CHANNEL_CONFIG_RELOAD, self._handle_bus_config_reload)
+
+        if self._polling_task and not self._polling_task.done():
+            self._polling_task.cancel()
+            try:
+                await self._polling_task
+            except asyncio.CancelledError:
+                pass
+            self._polling_task = None
+
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
-        self._is_running = False
         logger.info("TelegramBotService stopped.")
 
 

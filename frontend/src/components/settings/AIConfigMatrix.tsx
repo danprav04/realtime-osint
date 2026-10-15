@@ -14,9 +14,10 @@ import {
   ShieldAlert,
   ExternalLink,
   Gauge,
+  RotateCcw,
 } from 'lucide-react';
 import { AIPipelineSettings, AIStageConfig, AIFallbackConfig, SystemSettings } from '@/lib/types';
-import { updateAIPipelineSettings } from '@/lib/api';
+import { updateAIPipelineSettings, resetAIPipelineSettings } from '@/lib/api';
 
 interface AIConfigMatrixProps {
   initialSettings: AIPipelineSettings | null;
@@ -63,19 +64,18 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           ]),
           scoring: defaultStage('gemini', 'gemini-3.5-flash-lite', [
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.1 },
+            { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.1 },
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.1 },
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.1 },
-            { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.1 },
           ]),
           summarization: defaultStage('groq', 'openai/gpt-oss-120b', [
-            { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
-            { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
-            { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.2 },
-          ]),
-          visuals: defaultStage('groq', 'openai/gpt-oss-20b', [
             { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.2 },
+            { provider: 'aihubmix', model_name: 'coding-glm-5.3-flash-free', temperature: 0.2 },
+          ]),
+          visuals: defaultStage('groq', 'openai/qwen3.8-27b', [
+            { provider: 'groq', model_name: 'qwen/gpt-oss-20b', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
@@ -309,6 +309,27 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     }
   };
 
+  const handleReset = async () => {
+    if (!window.confirm('Reset all AI Pipeline stage models and fallbacks to default system configurations?')) {
+      return;
+    }
+    setLoading(true);
+    setFeedback(null);
+    try {
+      const res = await resetAIPipelineSettings();
+      setSettings(res);
+      setFeedback({
+        type: 'success',
+        message: 'AI Pipeline configuration reset to code defaults and hot-reloaded!',
+      });
+      onRefresh();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Failed to reset AI settings' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="card-slick rounded-xl p-6 space-y-6">
       {/* Header */}
@@ -327,14 +348,26 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           </div>
         </div>
 
-        <button
-          onClick={handleSave}
-          disabled={loading}
-          className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-accent-indigo hover:bg-accent-indigo/90 rounded-lg pressable shadow-sm"
-        >
-          <Save className="w-4 h-4" />
-          <span>{loading ? 'Saving...' : 'Save AI Matrix'}</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            type="button"
+            onClick={handleReset}
+            disabled={loading}
+            className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-lg pressable border border-zinc-700 shadow-sm"
+            title="Reset matrix to system code defaults"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Reset Defaults</span>
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={loading}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-accent-indigo hover:bg-accent-indigo/90 rounded-lg pressable shadow-sm"
+          >
+            <Save className="w-4 h-4" />
+            <span>{loading ? 'Saving...' : 'Save AI Matrix'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Connected AI Provider Rate Limit Shortcuts */}
@@ -897,14 +930,26 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           <span className="text-zinc-500 font-mono text-[11px]">
             Changes apply dynamically on the next processed event batch via Redis reload signal.
           </span>
-          <button
-            type="submit"
-            disabled={loading}
-            className="inline-flex items-center space-x-1.5 px-4 py-2 text-xs font-semibold text-white bg-accent-indigo hover:bg-accent-indigo/90 rounded-lg pressable shadow-sm"
-          >
-            <Check className="w-4 h-4" />
-            <span>{loading ? 'Updating...' : 'Save AI Configuration'}</span>
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={loading}
+              className="inline-flex items-center space-x-1.5 px-3 py-2 text-xs font-medium text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-lg pressable border border-zinc-700 shadow-sm"
+              title="Reset matrix to system code defaults"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Reset Defaults</span>
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="inline-flex items-center space-x-1.5 px-4 py-2 text-xs font-semibold text-white bg-accent-indigo hover:bg-accent-indigo/90 rounded-lg pressable shadow-sm"
+            >
+              <Check className="w-4 h-4" />
+              <span>{loading ? 'Updating...' : 'Save AI Configuration'}</span>
+            </button>
+          </div>
         </div>
       </form>
     </div>

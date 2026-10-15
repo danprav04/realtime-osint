@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.app.api.settings import DEFAULT_AI_STAGES
 from backend.app.db.models import Theme, Source, SystemSettings
 
 logger = logging.getLogger("osint.seed")
@@ -582,73 +583,12 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
     },
 ]
 
-DEFAULT_SETTINGS_DATA: Dict[str, Dict[str, Any]] = {
+DEFAULT_SETTINGS_DATA: Dict[str, Any] = {
     "ai_pipeline_stages": {
-        "gatekeeper": {
-            "stage_id": "gatekeeper",
-            "provider": "gemini",
-            "model": "gemma-4-26b-a4b-it",
-            "temperature": 0.0,
-            "enabled": True,
-            "fallbacks": [
-                {"provider": "gemini", "model": "gemma-4-31b-it", "temperature": 0.0},
-                {"provider": "groq", "model": "openai/gpt-oss-20b", "temperature": 0.0},
-                {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.0},
-            ],
-        },
-        "extraction_translation": {
-            "stage_id": "extraction_translation",
-            "provider": "groq",
-            "model": "qwen/qwen3.8-27b",
-            "temperature": 0.2,
-            "enabled": True,
-            "fallbacks": [
-                {"provider": "gemini", "model": "gemini-3.5-flash-lite", "temperature": 0.2},
-                {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.2},
-                {"provider": "gemini", "model": "gemma-4-26b-a4b-it", "temperature": 0.2},
-                {"provider": "groq", "model": "openai/gpt-oss-120b", "temperature": 0.2},
-            ],
-        },
-        "importance_scoring": {
-            "stage_id": "importance_scoring",
-            "provider": "gemini",
-            "model": "gemini-3.5-flash-lite",
-            "temperature": 0.1,
-            "enabled": True,
-            "fallbacks": [
-                {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.1},
-                {"provider": "gemini", "model": "gemma-4-26b-a4b-it", "temperature": 0.1},
-                {"provider": "groq", "model": "openai/gpt-oss-120b", "temperature": 0.1},
-                {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.1},
-            ],
-        },
-        "summarization": {
-            "stage_id": "summarization",
-            "provider": "groq",
-            "model": "openai/gpt-oss-120b",
-            "temperature": 0.2,
-            "enabled": True,
-            "fallbacks": [
-                {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.2},
-                {"provider": "gemini", "model": "gemini-3.5-flash-lite", "temperature": 0.2},
-                {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.2},
-                {"provider": "gemini", "model": "gemma-4-26b-a4b-it", "temperature": 0.2},
-                {"provider": "groq", "model": "openai/gpt-oss-20b", "temperature": 0.2},
-            ],
-        },
-        "visual_generation": {
-            "stage_id": "visual_generation",
-            "provider": "groq",
-            "model": "openai/gpt-oss-20b",
-            "temperature": 0.2,
-            "enabled": True,
-            "fallbacks": [
-                {"provider": "groq", "model": "qwen/qwen3.8-27b", "temperature": 0.2},
-                {"provider": "gemini", "model": "gemini-3.5-flash-lite", "temperature": 0.2},
-                {"provider": "gemini", "model": "gemini-3.1-flash-lite", "temperature": 0.2},
-                {"provider": "gemini", "model": "gemma-4-26b-a4b-it", "temperature": 0.2},
-            ],
-        },
+        **DEFAULT_AI_STAGES,
+        "extraction_translation": DEFAULT_AI_STAGES["extraction"],
+        "importance_scoring": DEFAULT_AI_STAGES["scoring"],
+        "visual_generation": DEFAULT_AI_STAGES["visuals"],
     },
     "notification_settings": {
         "default_alert_threshold": 7,
@@ -759,59 +699,66 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
             seeded_counts["settings"] += 1
             logger.info(f"Seeded system setting: {key}")
         elif key == "ai_pipeline_stages" and existing_setting and isinstance(existing_setting.value_json, dict):
-            # Auto-repair existing setting if fallback chains are missing, empty, or use deprecated models
-            cur_stages = copy.deepcopy(existing_setting.value_json)
-            repaired = False
-            for s_key, s_def in val.items():
-                matched_cur = None
-                for cur_k in cur_stages:
-                    if (
-                        s_key in cur_k
-                        or cur_k in s_key
-                        or ("score" in s_key and "score" in cur_k)
-                        or ("extract" in s_key and "extract" in cur_k)
-                        or ("summar" in s_key and "summar" in cur_k)
-                        or ("vis" in s_key and "vis" in cur_k)
-                    ):
-                        matched_cur = cur_k
-                        break
-                if matched_cur:
-                    target_stage = cur_stages[matched_cur]
-                    # Check and migrate primary model if deprecated
-                    for m_field in ("model", "model_name"):
-                        if target_stage.get(m_field) == "llama-3.3-70b-versatile":
-                            target_stage[m_field] = "openai/gpt-oss-120b"
-                            repaired = True
-                    # Check fallbacks
-                    if not target_stage.get("fallbacks"):
-                        target_stage["fallbacks"] = list(s_def.get("fallbacks", []))
-                        repaired = True
-                    else:
-                        for fb in target_stage["fallbacks"]:
-                            for m_field in ("model", "model_name"):
-                                if fb.get(m_field) == "llama-3.3-70b-versatile":
-                                    fb[m_field] = "openai/gpt-oss-120b"
-                                    repaired = True
-                        # Ensure Gemma 4 is present at every fallback chain at least somewhere (highest RPD: 14,400)
-                        has_gemma = any(
-                            "gemma" in str(fb.get("model_name") or fb.get("model", "")).lower()
-                            for fb in target_stage["fallbacks"]
-                        )
-                        if not has_gemma:
-                            target_stage["fallbacks"].append({
-                                "provider": "gemini",
-                                "model": "gemma-4-26b-a4b-it",
-                                "temperature": target_stage.get("temperature", 0.2),
-                            })
-                            repaired = True
-                else:
-                    cur_stages[s_key] = s_def
-                    repaired = True
-            if repaired:
-                existing_setting.value_json = cur_stages
+            # If not explicitly customized via UI, keep synchronized with DEFAULT_AI_STAGES
+            if not existing_setting.value_json.get("_customized", False):
+                existing_setting.value_json = copy.deepcopy(DEFAULT_AI_STAGES)
                 flag_modified(existing_setting, "value_json")
                 session.add(existing_setting)
-                logger.info("Auto-repaired AI pipeline fallback chains (including Gemma 4 presence) and replaced deprecated models in existing database settings.")
+                logger.info("Synchronized ai_pipeline_stages with code defaults (DEFAULT_AI_STAGES).")
+            else:
+                # Auto-repair existing customized setting if fallback chains are missing, empty, or use deprecated models
+                cur_stages = copy.deepcopy(existing_setting.value_json)
+                repaired = False
+                for s_key, s_def in val.items():
+                    matched_cur = None
+                    for cur_k in cur_stages:
+                        if (
+                            s_key in cur_k
+                            or cur_k in s_key
+                            or ("score" in s_key and "score" in cur_k)
+                            or ("extract" in s_key and "extract" in cur_k)
+                            or ("summar" in s_key and "summar" in cur_k)
+                            or ("vis" in s_key and "vis" in cur_k)
+                        ):
+                            matched_cur = cur_k
+                            break
+                    if matched_cur:
+                        target_stage = cur_stages[matched_cur]
+                        # Check and migrate primary model if deprecated
+                        for m_field in ("model", "model_name"):
+                            if target_stage.get(m_field) == "llama-3.3-70b-versatile":
+                                target_stage[m_field] = "openai/gpt-oss-120b"
+                                repaired = True
+                        # Check fallbacks
+                        if not target_stage.get("fallbacks"):
+                            target_stage["fallbacks"] = list(s_def.get("fallbacks", []))
+                            repaired = True
+                        else:
+                            for fb in target_stage["fallbacks"]:
+                                for m_field in ("model", "model_name"):
+                                    if fb.get(m_field) == "llama-3.3-70b-versatile":
+                                        fb[m_field] = "openai/gpt-oss-120b"
+                                        repaired = True
+                            # Ensure Gemma 4 is present at every fallback chain at least somewhere (highest RPD: 14,400)
+                            has_gemma = any(
+                                "gemma" in str(fb.get("model_name") or fb.get("model", "")).lower()
+                                for fb in target_stage["fallbacks"]
+                            )
+                            if not has_gemma:
+                                target_stage["fallbacks"].append({
+                                    "provider": "gemini",
+                                    "model": "gemma-4-26b-a4b-it",
+                                    "temperature": target_stage.get("temperature", 0.2),
+                                })
+                                repaired = True
+                    else:
+                        cur_stages[s_key] = s_def
+                        repaired = True
+                if repaired:
+                    existing_setting.value_json = cur_stages
+                    flag_modified(existing_setting, "value_json")
+                    session.add(existing_setting)
+                    logger.info("Auto-repaired AI pipeline fallback chains (including Gemma 4 presence) and replaced deprecated models in existing database settings.")
 
     # 4. Sync persisted UI api_keys into runtime environment if not already provided via .env
     import os

@@ -519,48 +519,59 @@ export function getEventAIProvenance(
 
 /**
  * Returns Tailwind CSS classes for an AI provider badge.
+ * Designed to be mild, subtle, and understated so it acts as metadata
+ * rather than competing with operational severity alerts (Escalating, Critical, etc).
  */
 export function getProviderBadgeStyles(provider?: string) {
   const p = (provider || '').toLowerCase().trim();
+  const baseBadge =
+    'bg-zinc-900/60 hover:bg-zinc-850/80 border-white/10 hover:border-white/20 text-zinc-400 hover:text-zinc-200';
+
   if (p.includes('gemini') || p.includes('google')) {
     return {
-      badge: 'bg-sky-500/10 text-sky-300 border-sky-500/25 hover:border-sky-500/40',
-      dot: 'bg-sky-400',
-      textAccent: 'text-sky-300 font-medium',
+      badge: `${baseBadge} hover:border-sky-500/30`,
+      icon: 'text-sky-400/70',
+      dot: 'bg-sky-400/50',
+      textAccent: 'text-zinc-300',
     };
   }
   if (p.includes('groq')) {
     return {
-      badge: 'bg-amber-500/10 text-amber-300 border-amber-500/25 hover:border-amber-500/40',
-      dot: 'bg-amber-400',
-      textAccent: 'text-amber-300 font-medium',
+      badge: `${baseBadge} hover:border-amber-500/30`,
+      icon: 'text-amber-400/70',
+      dot: 'bg-amber-400/50',
+      textAccent: 'text-zinc-300',
     };
   }
   if (p.includes('aihubmix') || p.includes('aihub')) {
     return {
-      badge: 'bg-purple-500/10 text-purple-300 border-purple-500/25 hover:border-purple-500/40',
-      dot: 'bg-purple-400',
-      textAccent: 'text-purple-300 font-medium',
+      badge: `${baseBadge} hover:border-purple-500/30`,
+      icon: 'text-purple-400/70',
+      dot: 'bg-purple-400/50',
+      textAccent: 'text-zinc-300',
     };
   }
   if (p.includes('hugging') || p.includes('hf')) {
     return {
-      badge: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/25 hover:border-yellow-500/40',
-      dot: 'bg-yellow-400',
-      textAccent: 'text-yellow-300 font-medium',
+      badge: `${baseBadge} hover:border-yellow-500/30`,
+      icon: 'text-yellow-400/70',
+      dot: 'bg-yellow-400/50',
+      textAccent: 'text-zinc-300',
     };
   }
   if (p.includes('rule') || p.includes('heuristic') || p.includes('system') || p.includes('offline')) {
     return {
-      badge: 'bg-zinc-800/80 text-zinc-300 border-zinc-700/50 hover:border-zinc-600',
-      dot: 'bg-zinc-400',
-      textAccent: 'text-zinc-300 font-medium',
+      badge: `${baseBadge} hover:border-zinc-500/30`,
+      icon: 'text-zinc-400',
+      dot: 'bg-zinc-400/50',
+      textAccent: 'text-zinc-300',
     };
   }
   return {
-    badge: 'bg-accent-cyan/10 text-accent-cyan border-accent-cyan/25 hover:border-accent-cyan/40',
-    dot: 'bg-accent-cyan',
-    textAccent: 'text-accent-cyan font-medium',
+    badge: `${baseBadge} hover:border-cyan-500/30`,
+    icon: 'text-cyan-400/70',
+    dot: 'bg-cyan-400/50',
+    textAccent: 'text-zinc-300',
   };
 }
 

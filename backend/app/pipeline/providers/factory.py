@@ -30,9 +30,14 @@ def get_shared_groq_pool(keys: Optional[List[str]] = None) -> GroqKeyPool:
     """
     global _shared_groq_pool
     if _shared_groq_pool is None:
-        _shared_groq_pool = GroqKeyPool(keys=keys)
+        init_keys = keys if keys is not None else resolve_api_keys("groq")
+        _shared_groq_pool = GroqKeyPool(keys=init_keys)
     elif keys:
         _shared_groq_pool.set_keys(keys)
+    elif not _shared_groq_pool.total_keys:
+        fallback_keys = resolve_api_keys("groq")
+        if fallback_keys:
+            _shared_groq_pool.set_keys(fallback_keys)
     return _shared_groq_pool
 
 
@@ -183,12 +188,17 @@ class ProviderRegistry:
                     default_model=model_name,
                 )
             elif p_norm == "groq":
+                all_resolved_keys = resolve_api_keys("groq")
                 parsed_keys = parse_key_list(api_key) if api_key else []
-                if parsed_keys:
-                    pool = get_shared_groq_pool(keys=parsed_keys)
+                if len(parsed_keys) > 1:
+                    pool_keys = parsed_keys
+                elif all_resolved_keys:
+                    pool_keys = all_resolved_keys
+                elif parsed_keys:
+                    pool_keys = parsed_keys
                 else:
-                    resolved = resolve_api_keys("groq")
-                    pool = get_shared_groq_pool(keys=resolved if resolved else None)
+                    pool_keys = None
+                pool = get_shared_groq_pool(keys=pool_keys)
                 self._providers[key] = GroqProvider(
                     api_key=api_key,
                     key_pool=pool,

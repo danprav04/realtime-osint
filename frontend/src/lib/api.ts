@@ -188,6 +188,12 @@ export async function updateAIPipelineSettings(settings: AIPipelineSettings): Pr
   });
 }
 
+export async function resetAIPipelineSettings(): Promise<AIPipelineSettings> {
+  return fetchApi<AIPipelineSettings>('/api/settings/ai-pipeline/reset', {
+    method: 'POST',
+  });
+}
+
 // Embeddings Relevance Map
 export async function getEmbeddingsMap(params?: {
   theme_id?: string;

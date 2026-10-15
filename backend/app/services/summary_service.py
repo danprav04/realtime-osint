@@ -860,7 +860,7 @@ class SituationSummaryService:
             })
 
         synth_parts = active_ai_model.split(":", 1) if ":" in active_ai_model else [
-            "system" if active_ai_model == "deterministic-fusion-engine" else "gemini",
+            "system" if "deterministic" in active_ai_model.lower() else "gemini",
             active_ai_model,
         ]
         synth_prov = {"provider": synth_parts[0], "model": synth_parts[1]}

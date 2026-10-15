@@ -127,6 +127,14 @@ function Compress-Tar {
 $TarFilesToClean = @()
 
 try {
+    # Always keep configuration (.env and docker-compose.yml) in sync on production
+    if (Test-Path .env) {
+        Write-Step "Synchronizing .env configuration to $RemoteTarget..."
+        scp .env "${RemoteTarget}:${RemoteDir}/.env"
+        if ($LASTEXITCODE -ne 0) { throw "SCP failed for .env" }
+        Write-Success ".env configuration synced to production."
+    }
+
     # Always keep the remote compose file in sync when deploying the full stack or config.
     if ($Service -eq "all" -or $Service -eq "config") {
         Write-Step "Synchronizing docker-compose.yml to $RemoteTarget..."

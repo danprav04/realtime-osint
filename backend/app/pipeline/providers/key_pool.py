@@ -278,6 +278,11 @@ class GroqKeyPool:
     def total_keys(self) -> int:
         return len(self._keys)
 
+    @property
+    def keys(self) -> List[str]:
+        """Return the list of raw API keys in this pool."""
+        return [k.key for k in self._keys]
+
     def set_keys(self, raw_keys: Any) -> None:
         """Set or update the active list of keys, preserving metrics for existing keys."""
         parsed = parse_key_list(raw_keys)

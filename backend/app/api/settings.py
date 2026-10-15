@@ -86,6 +86,8 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
         key=lambda item: 1 if item[0].lower().strip() in DEFAULT_AI_STAGES else 0,
     )
     for k, v in sorted_items:
+        if k.startswith("_"):
+            continue
         norm_k = k.lower().strip()
         if "gate" in norm_k or "stage0" in norm_k:
             norm_k = "gatekeeper"
@@ -116,10 +118,10 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
             elif "fallbacks" not in cfg and norm_k in DEFAULT_AI_STAGES:
                 cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[norm_k].get("fallbacks", []))
         else:
-            # 2. Token-heavy Stage 3 (Summarization): Use single strongest model (coding-glm-5.3-free).
+            # 2. Token-heavy Stage 3 (Summarization): Use single strongest model (coding-glm-5.3-flash-free or coding-glm-5.3-free).
             # No duplicate intra-provider AI Hub Mix fallbacks since rate limits are shared globally.
             if cfg.get("provider") == "aihubmix":
-                cfg["model_name"] = "coding-glm-5.3-free"
+                cfg["model_name"] = "coding-glm-5.3-flash-free" if "flash" in str(cfg.get("model_name") or cfg.get("model", "")) else "coding-glm-5.3-free"
                 # Strip any aihubmix fallbacks if primary is already aihubmix
                 if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
                     cfg["fallbacks"] = [
@@ -130,7 +132,7 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
                 elif "fallbacks" not in cfg:
                     cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES["summarization"]["fallbacks"])
             else:
-                # Primary is not aihubmix: allow at most ONE aihubmix fallback using coding-glm-5.3-free
+                # Primary is not aihubmix: allow at most ONE aihubmix fallback using coding-glm-5.3-flash-free
                 if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
                     filtered_fb = []
                     has_aihubmix = False
@@ -141,7 +143,8 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
                                 fb_copy["model_name"] = fb_copy["model"]
                             if fb_copy.get("provider") == "aihubmix":
                                 if not has_aihubmix:
-                                    fb_copy["model_name"] = "coding-glm-5.3-free"
+                                    if not fb_copy.get("model_name"):
+                                        fb_copy["model_name"] = "coding-glm-5.3-flash-free"
                                     filtered_fb.append(fb_copy)
                                     has_aihubmix = True
                                 # Drop subsequent aihubmix models: shared quota makes them redundant
@@ -365,7 +368,8 @@ async def get_ai_pipeline_stages(
     )
     setting = res.scalars().first()
     if setting and setting.value_json:
-        return _normalize_stage_dict(setting.value_json)
+        clean = {k: v for k, v in setting.value_json.items() if not k.startswith("_")}
+        return _normalize_stage_dict(clean)
     return DEFAULT_AI_STAGES
 
 
@@ -385,6 +389,8 @@ async def update_ai_pipeline_stages(
     current = copy.deepcopy(setting.value_json) if setting and setting.value_json else copy.deepcopy(DEFAULT_AI_STAGES)
 
     for stage_id, cfg in payload.items():
+        if stage_id.startswith("_"):
+            continue
         norm_id = stage_id.lower().strip()
         if "gate" in norm_id or "stage0" in norm_id:
             norm_id = "gatekeeper"
@@ -404,12 +410,14 @@ async def update_ai_pipeline_stages(
             current[norm_id]["model_name"] = cfg["model"]
 
     normalized = _normalize_stage_dict(current)
+    persisted = copy.deepcopy(normalized)
+    persisted["_customized"] = True
 
     if setting:
-        setting.value_json = copy.deepcopy(normalized)
+        setting.value_json = persisted
         flag_modified(setting, "value_json")
     else:
-        session.add(SystemSettings(key="ai_pipeline_stages", value_json=copy.deepcopy(normalized)))
+        session.add(SystemSettings(key="ai_pipeline_stages", value_json=persisted))
 
     await session.commit()
 
@@ -448,3 +456,58 @@ async def update_ai_pipeline_stages(
     await bus.publish(CHANNEL_CONFIG_RELOAD, {"action": "ai_config_update"})
 
     return normalized
+
+
+@router.post("/ai-pipeline/reset", dependencies=[Depends(require_api_key)])
+async def reset_ai_pipeline_stages(
+    session: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Reset AI pipeline stages back to code defaults (DEFAULT_AI_STAGES)."""
+    import copy
+    from sqlalchemy.orm.attributes import flag_modified
+
+    res = await session.execute(
+        select(SystemSettings).where(SystemSettings.key == "ai_pipeline_stages")
+    )
+    setting = res.scalars().first()
+    defaults = copy.deepcopy(DEFAULT_AI_STAGES)
+
+    if setting:
+        setting.value_json = copy.deepcopy(defaults)
+        flag_modified(setting, "value_json")
+    else:
+        session.add(SystemSettings(key="ai_pipeline_stages", value_json=copy.deepcopy(defaults)))
+
+    await session.commit()
+
+    orchestrator = get_pipeline_orchestrator()
+    for s_id, s_cfg in defaults.items():
+        from backend.app.pipeline.models import AIStageConfig, AIFallbackConfig
+        raw_fb = s_cfg.get("fallbacks", [])
+        parsed_fb = [
+            AIFallbackConfig(
+                provider=fb.get("provider", "gemini"),
+                model_name=fb.get("model_name") or fb.get("model", "gemini-3.1-flash-lite"),
+                temperature=fb.get("temperature"),
+                api_key_override=fb.get("api_key_override"),
+            )
+            for fb in raw_fb
+            if isinstance(fb, dict)
+        ]
+        orchestrator.set_stage_config(
+            s_id,
+            AIStageConfig(
+                stage_id=s_id,  # type: ignore
+                provider=s_cfg.get("provider", "gemini"),
+                model_name=s_cfg.get("model_name") or s_cfg.get("model", "gemini-3.5-flash-lite"),
+                temperature=s_cfg.get("temperature", 0.2),
+                api_key_override=s_cfg.get("api_key_override"),
+                fallbacks=parsed_fb,
+            ),
+        )
+    orchestrator.clear_cooldowns()
+
+    bus = get_redis_bus()
+    await bus.publish(CHANNEL_CONFIG_RELOAD, {"action": "ai_config_reset"})
+
+    return defaults

@@ -60,7 +60,7 @@ export function AIModelBadge({
   const content = (
     <span
       className={cn(
-        'inline-flex items-center rounded border font-mono transition-colors tracking-tight select-none',
+        'inline-flex items-center rounded border font-mono transition-colors normal-case tracking-normal select-none',
         styles.badge,
         size === 'xs' ? 'text-[9.5px] px-1.5 py-0.5 gap-1' : 'text-[11px] px-2 py-0.5 gap-1.5',
         linkToSettings && 'cursor-pointer hover:opacity-90',
@@ -72,14 +72,15 @@ export function AIModelBadge({
         <IconComponent
           className={cn(
             'shrink-0',
+            styles.icon || 'text-zinc-400',
             size === 'xs' ? 'w-2.5 h-2.5' : 'w-3 h-3'
           )}
         />
       )}
-      {labelPrefix && <span className="opacity-70 font-normal">{labelPrefix}</span>}
-      <span className="font-semibold">{cleanProvider}</span>
-      <span className="opacity-40">·</span>
-      <span className="truncate max-w-[150px] sm:max-w-[220px]" title={cleanModel}>
+      {labelPrefix && <span className="text-zinc-500 font-normal">{labelPrefix}</span>}
+      <span className={cn('font-medium', styles.textAccent || 'text-zinc-300')}>{cleanProvider}</span>
+      <span className="text-zinc-600">·</span>
+      <span className="truncate max-w-[150px] sm:max-w-[220px] text-zinc-400 font-normal" title={cleanModel}>
         {cleanModel}
       </span>
     </span>
