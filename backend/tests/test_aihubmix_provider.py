@@ -83,6 +83,21 @@ async def test_quota_tracker_tpd_cap():
 
 
 @pytest.mark.asyncio
+async def test_aihubmix_429_quota_classification():
+    """Verify that AIHubMix 'free model quota' error is classified as hard quota exhaustion."""
+    from backend.app.pipeline.providers.base import classify_rate_limit_429
+    
+    mock_resp = httpx.Response(
+        status_code=429,
+        json={"error": {"message": "Sorry, you have reached the limit of the free model quota. Please switch to a paid model to enjoy unlimited concurrency.", "type": "Aihubmix_api_error"}},
+        request=httpx.Request("POST", "https://aihubmix.com/v1/chat/completions"),
+    )
+    is_daily, retry_delay, reason = classify_rate_limit_429(mock_resp, provider_name="aihubmix")
+    assert is_daily is True
+    assert "daily quota" in reason.lower() or "free model" in reason.lower()
+
+
+@pytest.mark.asyncio
 async def test_pacing_configuration():
     """Verify 10 RPM pacing rules (6.0s spacing)."""
     provider = AIHubMixProvider(api_key="mock-key", default_model="coding-glm-5.3-free")
@@ -143,7 +158,7 @@ async def test_live_aihubmix_completion():
 
     provider = AIHubMixProvider(
         api_key=api_key,
-        default_model="coding-glm-5.3-free",
+        default_model="coding-glm-5.3-flash-free",
     )
     try:
         reply = await provider.generate_text(

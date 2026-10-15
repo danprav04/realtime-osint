@@ -141,6 +141,10 @@ def classify_rate_limit_429(
             "generaterequestsperday",
             "requestsperday",
             "tokensperday",
+            "free model quota",
+            "reached the limit of the free model",
+            "switch to a paid model",
+            "unlimited concurrency",
         )
     ) or (
         rem_requests is not None
@@ -341,6 +345,10 @@ class BaseAIProvider(abc.ABC):
                             raise RuntimeError(
                                 f"Gemini ResourceExhausted: 429 Quota Exceeded ({reason})"
                             )
+                        elif self.provider_name.lower() == "aihubmix":
+                            raise RuntimeError(
+                                f"AIHubMix ResourceExhausted: 429 Quota Exceeded ({reason})"
+                            )
                         else:
                             raise RuntimeError(
                                 f"Groq RateLimitError: 429 Rate limit reached ({reason})"
@@ -352,9 +360,31 @@ class BaseAIProvider(abc.ABC):
                             raise RuntimeError(
                                 f"Gemini ResourceExhausted: 429 Quota Exceeded ({reason})"
                             )
+                        elif self.provider_name.lower() == "aihubmix":
+                            raise RuntimeError(
+                                f"AIHubMix ResourceExhausted: 429 Quota Exceeded ({reason})"
+                            )
                         else:
                             raise RuntimeError(
                                 f"Groq RateLimitError: 429 Rate limit reached ({reason})"
+                            )
+
+                    # If the rate limit requires a long wait (>30s), fail fast to let orchestrator switch models
+                    if retry_delay_sec is not None and retry_delay_sec > 30.0:
+                        logger.warning(
+                            f"[{self.provider_name}:{self.default_model}] 429 requires long wait ({retry_delay_sec:.1f}s > 30s) - failing over immediately"
+                        )
+                        if self.provider_name.lower() == "gemini":
+                            raise RuntimeError(
+                                f"Gemini ResourceExhausted: 429 Minute rate limit requires long wait ({retry_delay_sec:.1f}s > 30s) ({reason})"
+                            )
+                        elif self.provider_name.lower() == "aihubmix":
+                            raise RuntimeError(
+                                f"AIHubMix ResourceExhausted: 429 Minute rate limit requires long wait ({retry_delay_sec:.1f}s > 30s) ({reason})"
+                            )
+                        else:
+                            raise RuntimeError(
+                                f"Groq RateLimitError: 429 Minute rate limit requires long wait ({retry_delay_sec:.1f}s > 30s) ({reason})"
                             )
 
                     now = asyncio.get_event_loop().time()
@@ -418,9 +448,10 @@ class BaseAIProvider(abc.ABC):
 
             except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as net_err:
                 last_error = net_err
-                if attempt == self.max_retries:
+                err_label = "ReadTimeout" if isinstance(net_err, httpx.ReadTimeout) else str(net_err)
+                if isinstance(net_err, httpx.ReadTimeout) or attempt == self.max_retries:
                     raise RuntimeError(
-                        f"[{self.provider_name}] Network error after {self.max_retries} retries: {net_err}"
+                        f"[{self.provider_name}] Network error after {attempt + 1} attempt(s): {err_label}"
                     )
                 delay = self.base_backoff * (2 ** attempt) + random.uniform(0.1, self.jitter)
                 await asyncio.sleep(delay)

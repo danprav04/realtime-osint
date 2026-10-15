@@ -543,6 +543,7 @@ class AnalyzedEvent(BaseModel):
     entities: List[str] = Field(default_factory=list)
     entities_json: List[str] = Field(default_factory=list)
     trend_category: Optional[str] = None
+    ai_provenance: Optional[Dict[str, Any]] = None
     notification_dispatched: bool = False
     notification_dispatched_at: Optional[Union[datetime, str]] = None
     is_analyzed: bool = True

@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import type { AIModelInfo, NormalizedEvent } from './types';
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
@@ -415,6 +416,152 @@ export function getProviderRateLimitStatuses(options?: {
       connectionLabel: 'Not Connected',
     };
   });
+}
+
+/**
+ * Standardize and format provider names into clean brand display labels.
+ */
+export function formatProviderName(provider?: string): string {
+  const p = (provider || '').toLowerCase().trim();
+  if (p === 'gemini' || p === 'google') return 'Gemini';
+  if (p === 'groq') return 'Groq';
+  if (p === 'aihubmix' || p === 'aihub' || p === 'inferera') return 'AIHubMix';
+  if (p === 'huggingface' || p === 'hf') return 'Hugging Face';
+  if (p === 'heuristic' || p === 'rule-based') return 'Rule-Based';
+  if (p === 'system' || p === 'offline') return 'System';
+  if (p === 'mock') return 'Mock Engine';
+  return provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : 'AI';
+}
+
+/**
+ * Parse an AI model string (like "groq:qwen/qwen3.8-27b" or "gemini-3.5-flash-lite")
+ * into normalized provider and model info.
+ */
+export function parseModelProvider(
+  modelString?: string,
+  defaultProvider?: string
+): AIModelInfo {
+  if (!modelString) {
+    return {
+      provider: formatProviderName(defaultProvider || 'AI'),
+      model: 'pipeline-default',
+    };
+  }
+
+  const s = modelString.trim();
+  if (s.includes(':')) {
+    const parts = s.split(':');
+    const prov = parts[0].trim();
+    const mdl = parts.slice(1).join(':').trim();
+    return {
+      provider: formatProviderName(prov),
+      model: mdl,
+    };
+  }
+
+  // Infer provider from model name if bare model string
+  const lower = s.toLowerCase();
+  let inferredProvider = defaultProvider || 'AI';
+  if (lower.includes('gemini') || lower.includes('gemma')) {
+    inferredProvider = 'Gemini';
+  } else if (lower.includes('qwen') || lower.includes('gpt-oss') || lower.includes('llama') || lower.includes('mixtral')) {
+    inferredProvider = 'Groq';
+  } else if (lower.includes('coding-glm') || lower.includes('minimax') || lower.includes('nemotron')) {
+    inferredProvider = 'AIHubMix';
+  } else if (lower.includes('all-minilm') || lower.includes('bge') || lower.includes('sentence-transformers')) {
+    inferredProvider = 'Hugging Face';
+  } else if (lower.includes('deterministic') || lower.includes('heuristic') || lower.includes('rule')) {
+    inferredProvider = 'Rule-Based';
+  }
+
+  return {
+    provider: formatProviderName(inferredProvider),
+    model: s,
+  };
+}
+
+/**
+ * Retrieve AI model and provider provenance for a specific pipeline stage of an event.
+ */
+export function getEventAIProvenance(
+  event?: NormalizedEvent | null,
+  stage: 'extraction' | 'scoring' | 'summarization' | 'visuals' | 'embedding' = 'summarization'
+): AIModelInfo {
+  if (!event) {
+    return parseModelProvider('', 'AI');
+  }
+
+  const prov = event.ai_provenance || event.metadata_json?.ai_provenance;
+  if (prov && prov[stage]) {
+    const item = prov[stage]!;
+    return {
+      provider: formatProviderName(item.provider),
+      model: item.model,
+    };
+  }
+
+  // Graceful stage defaults based on production configuration matrix
+  switch (stage) {
+    case 'extraction':
+      return { provider: 'Groq', model: 'qwen/qwen3.8-27b' };
+    case 'scoring':
+      return { provider: 'Gemini', model: 'gemini-3.5-flash-lite' };
+    case 'summarization':
+      return { provider: 'AIHubMix', model: 'coding-glm-5.3-free' };
+    case 'visuals':
+      return { provider: 'Groq', model: 'openai/gpt-oss-20b' };
+    case 'embedding':
+      return { provider: 'Gemini', model: 'gemini-embedding-001' };
+    default:
+      return { provider: 'Gemini', model: 'gemini-3.5-flash-lite' };
+  }
+}
+
+/**
+ * Returns Tailwind CSS classes for an AI provider badge.
+ */
+export function getProviderBadgeStyles(provider?: string) {
+  const p = (provider || '').toLowerCase().trim();
+  if (p.includes('gemini') || p.includes('google')) {
+    return {
+      badge: 'bg-sky-500/10 text-sky-300 border-sky-500/25 hover:border-sky-500/40',
+      dot: 'bg-sky-400',
+      textAccent: 'text-sky-300 font-medium',
+    };
+  }
+  if (p.includes('groq')) {
+    return {
+      badge: 'bg-amber-500/10 text-amber-300 border-amber-500/25 hover:border-amber-500/40',
+      dot: 'bg-amber-400',
+      textAccent: 'text-amber-300 font-medium',
+    };
+  }
+  if (p.includes('aihubmix') || p.includes('aihub')) {
+    return {
+      badge: 'bg-purple-500/10 text-purple-300 border-purple-500/25 hover:border-purple-500/40',
+      dot: 'bg-purple-400',
+      textAccent: 'text-purple-300 font-medium',
+    };
+  }
+  if (p.includes('hugging') || p.includes('hf')) {
+    return {
+      badge: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/25 hover:border-yellow-500/40',
+      dot: 'bg-yellow-400',
+      textAccent: 'text-yellow-300 font-medium',
+    };
+  }
+  if (p.includes('rule') || p.includes('heuristic') || p.includes('system') || p.includes('offline')) {
+    return {
+      badge: 'bg-zinc-800/80 text-zinc-300 border-zinc-700/50 hover:border-zinc-600',
+      dot: 'bg-zinc-400',
+      textAccent: 'text-zinc-300 font-medium',
+    };
+  }
+  return {
+    badge: 'bg-accent-cyan/10 text-accent-cyan border-accent-cyan/25 hover:border-accent-cyan/40',
+    dot: 'bg-accent-cyan',
+    textAccent: 'text-accent-cyan font-medium',
+  };
 }
 
 

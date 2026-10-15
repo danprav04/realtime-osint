@@ -125,7 +125,7 @@ class AIHubMixProvider(BaseAIProvider):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        default_model: str = "coding-glm-5.3-free",
+        default_model: str = "coding-glm-5.3-flash-free",
         base_url: Optional[str] = None,
         timeout_seconds: float = 35.0,
         max_retries: int = 3,
@@ -185,7 +185,7 @@ class AIHubMixProvider(BaseAIProvider):
         max_tokens: int = 2048,
         json_mode: bool = False,
     ) -> str:
-        model_name = self.validate_free_model(model or self.default_model or "coding-glm-5.3-free")
+        model_name = self.validate_free_model(model or self.default_model or "coding-glm-5.3-flash-free")
         client = await self.get_client()
 
         # Check and record request in daily quota tracker
@@ -274,7 +274,7 @@ class AIHubMixProvider(BaseAIProvider):
     ) -> Dict[str, Any]:
         """Structured stage processing for AI Hub Mix."""
         ctx = context or {}
-        model_name = self.validate_free_model(model or self.default_model or "coding-glm-5.3-free")
+        model_name = self.validate_free_model(model or self.default_model or "coding-glm-5.3-flash-free")
         temp = temperature if temperature is not None else 0.2
 
         if stage in ("extraction", "extraction_translation"):

@@ -13,7 +13,8 @@ import {
   Layers,
 } from 'lucide-react';
 import { AlertItem } from '@/lib/types';
-import { formatAlertTime, cn } from '@/lib/utils';
+import { formatAlertTime, cn, getEventAIProvenance } from '@/lib/utils';
+import { AIModelBadge } from '@/components/common/AIModelBadge';
 
 export interface AlertWheelProps {
   alerts: AlertItem[];
@@ -124,6 +125,8 @@ export function AlertWheel({
     currentAlert.created_at ||
     currentAlert.received_at;
   const timeInfo = formatAlertTime(rawTime);
+  const scoringProv = getEventAIProvenance(currentAlert as any, 'scoring');
+  const summarizationProv = getEventAIProvenance(currentAlert as any, 'summarization');
 
   // SVG circular progress ring calculations
   // radius 15, circumference = 2 * PI * 15 ≈ 94.25
@@ -199,6 +202,7 @@ export function AlertWheel({
             <span className="font-bold font-mono tracking-wider text-rose-400 uppercase">
               CRITICAL FLASH ALERT • SCORE {currentAlert.importance_score || 9}/10
             </span>
+            <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />
 
             <span className="text-zinc-500 hidden sm:inline">•</span>
 
@@ -224,11 +228,12 @@ export function AlertWheel({
           {/* Headline / Title */}
           <div
             onClick={() => onOpenDetails?.(currentAlert)}
-            className="group/title flex items-center gap-1.5 cursor-pointer"
+            className="group/title flex items-center gap-1.5 cursor-pointer flex-wrap"
           >
             <p className="text-sm font-semibold text-zinc-100 group-hover/title:text-white transition-colors">
               {currentAlert.headline || currentAlert.title}
             </p>
+            <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
             {onOpenDetails && (
               <ExternalLink className="w-3.5 h-3.5 text-zinc-400 opacity-0 group-hover/title:opacity-100 transition-opacity flex-shrink-0" />
             )}

@@ -203,6 +203,7 @@ class Event(Base):
             "summary": self.summary,
             "headline": self.headline,
             "entities_json": self.entities_json or [],
+            "ai_provenance": (self.metadata_json or {}).get("ai_provenance"),
             "is_analyzed": getattr(self, "is_analyzed", self.importance_score is not None),
             "processed_at": self.processed_at.isoformat() if getattr(self, "processed_at", None) else None,
             "published_at": self.published_at.isoformat() if self.published_at else None,

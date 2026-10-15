@@ -15,7 +15,8 @@ import {
   Link as LinkIcon,
 } from 'lucide-react';
 import { MapNode, MapNeighbor } from '@/lib/types';
-import { cn, formatRelativeTime } from '@/lib/utils';
+import { cn, formatRelativeTime, getEventAIProvenance } from '@/lib/utils';
+import { AIModelBadge } from '@/components/common/AIModelBadge';
 
 interface EventInspectorProps {
   node: MapNode | null;
@@ -35,6 +36,10 @@ export function EventInspector({
   const isMedTrust = trust.score >= 60 && trust.score < 80;
   const isUnverified = trust.score >= 40 && trust.score < 60;
   const isOutlier = trust.score < 40;
+
+  const summarizationProv = getEventAIProvenance(node as any, 'summarization');
+  const scoringProv = getEventAIProvenance(node as any, 'scoring');
+  const embeddingProv = getEventAIProvenance(node as any, 'embedding');
 
   const badgeColor = isHighTrust
     ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
@@ -82,10 +87,13 @@ export function EventInspector({
       <div className="flex-1 overflow-y-auto p-5 space-y-5">
         {/* Trustworthiness Assessment Card */}
         <div className="card-slick rounded-xl p-4 space-y-3 bg-surface-card/70 border border-white/5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-300">
-              Trustworthiness & Corroboration
-            </span>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-semibold text-zinc-300">
+                Trustworthiness & Corroboration
+              </span>
+              <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />
+            </div>
             <span
               className={cn(
                 'px-2 py-0.5 rounded-md text-[11px] font-semibold border',
@@ -139,9 +147,12 @@ export function EventInspector({
 
         {/* Article Headline & Summary */}
         <div className="space-y-3">
-          <h3 className="text-base font-semibold text-zinc-100 leading-snug">
-            {node.headline || node.title}
-          </h3>
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="text-base font-semibold text-zinc-100 leading-snug">
+              {node.headline || node.title}
+            </h3>
+            <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
+          </div>
 
           <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-400">
             <div className="flex items-center space-x-1">
@@ -167,8 +178,11 @@ export function EventInspector({
           </div>
 
           <div className="p-3.5 rounded-lg bg-surface-raised/60 border border-white/5 text-xs text-zinc-300 leading-relaxed space-y-2">
-            <div className="font-semibold text-zinc-400 text-[11px] uppercase tracking-wider">
-              Intelligence Summary
+            <div className="flex items-center justify-between gap-2">
+              <div className="font-semibold text-zinc-400 text-[11px] uppercase tracking-wider">
+                Intelligence Summary
+              </div>
+              <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
             </div>
             <p>{node.summary}</p>
           </div>
@@ -189,9 +203,12 @@ export function EventInspector({
         {/* Nearest Corroborating Neighbors */}
         {node.nearest_neighbors && node.nearest_neighbors.length > 0 && (
           <div className="space-y-2.5 pt-2 border-t border-white/5">
-            <div className="flex items-center space-x-1.5 text-xs font-semibold text-zinc-200">
-              <LinkIcon className="w-3.5 h-3.5 text-accent-cyan" />
-              <span>Semantically Linked Reports ({node.nearest_neighbors.length})</span>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center space-x-1.5 text-xs font-semibold text-zinc-200">
+                <LinkIcon className="w-3.5 h-3.5 text-accent-cyan" />
+                <span>Semantically Linked Reports ({node.nearest_neighbors.length})</span>
+              </div>
+              <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings />
             </div>
 
             <div className="space-y-2">

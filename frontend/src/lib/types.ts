@@ -31,6 +31,20 @@ export interface ScoringBreakdown {
   retroactively_corroborated?: boolean;
 }
 
+export interface AIModelInfo {
+  provider: 'gemini' | 'groq' | 'aihubmix' | 'huggingface' | 'heuristic' | 'system' | string;
+  model: string;
+}
+
+export interface AIProvenance {
+  extraction?: AIModelInfo;
+  scoring?: AIModelInfo;
+  summarization?: AIModelInfo;
+  visuals?: AIModelInfo;
+  embedding?: AIModelInfo;
+  synthesizer?: AIModelInfo;
+}
+
 export interface NormalizedEvent {
   id: string;
   theme_id: string;
@@ -48,8 +62,10 @@ export interface NormalizedEvent {
   metadata_json?: {
     scoring_breakdown?: ScoringBreakdown;
     trend_category?: string;
+    ai_provenance?: AIProvenance;
     [key: string]: any;
   };
+  ai_provenance?: AIProvenance;
   importance_score?: number | null;
   score_rationale?: string | null;
   summary?: string | null;
@@ -78,6 +94,7 @@ export interface AlertItem {
   importance_score?: number | null;
   source_name?: string | null;
   source_url?: string | null;
+  ai_provenance?: AIProvenance;
   published_at?: string | null;
   timestamp?: string | null;
   created_at?: string | null;
@@ -229,6 +246,7 @@ export interface MapNode {
   centrality?: number;
   trustworthiness: MapTrustworthiness;
   nearest_neighbors: MapNeighbor[];
+  ai_provenance?: AIProvenance;
 }
 
 export interface MapEdge {
@@ -310,6 +328,7 @@ export interface SummaryCitationEvent {
   trustworthiness_label: string;
   corroboration_count: number;
   corroborating_sources?: string[];
+  ai_provenance?: AIProvenance;
 }
 
 export interface SummaryClusterBreakdown {
@@ -351,6 +370,7 @@ export interface SituationSummaryData {
   time_range: string;
   active_ai_model: string;
   active_embedding_model: string;
+  ai_provenance?: AIProvenance;
   threat_trajectory: 'Escalating' | 'Elevated' | 'Stable' | 'De-escalating' | 'Volatile';
   threat_level_score: number;
   executive_bluf: string;

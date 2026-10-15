@@ -140,9 +140,10 @@ class PipelineOrchestrator:
             "summarization": AIStageConfig(
                 stage_id="summarization",
                 provider="aihubmix",
-                model_name="coding-glm-5.3-free",
+                model_name="coding-glm-5.3-flash-free",
                 temperature=0.2,
                 fallbacks=[
+                    AIFallbackConfig(provider="aihubmix", model_name="qwen3.8-flash-free", temperature=0.2),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
@@ -541,6 +542,7 @@ class PipelineOrchestrator:
         stage_id: str,
         runner_fn: Any,
         fallback_heuristic_fn: Any,
+        return_provenance: bool = False,
     ) -> Any:
         """
         Executes a pipeline stage across its primary model and configured fallback chain.
@@ -615,6 +617,8 @@ class PipelineOrchestrator:
                         f"[Pipeline Fallback] Stage '{stage_id}': Succeeded using fallback #{idx} "
                         f"('{p_name}:{m_name}')."
                     )
+                if return_provenance:
+                    return result, {"provider": p_name, "model": m_name}
                 return result
             except PermissionError:
                 raise
@@ -677,6 +681,8 @@ class PipelineOrchestrator:
                             f"[Pipeline Minute Rate Limit] Stage '{stage_id}': Model '{p_name}:{m_name}' "
                             f"succeeded after minute rate-limit window reset."
                         )
+                        if return_provenance:
+                            return result, {"provider": p_name, "model": m_name}
                         return result
                     except Exception as retry_exc:
                         exc = retry_exc
@@ -697,7 +703,10 @@ class PipelineOrchestrator:
                         f"Last error: {exc}. Invoking deterministic offline heuristics."
                     )
 
-        return fallback_heuristic_fn()
+        heuristic_res = fallback_heuristic_fn()
+        if return_provenance:
+            return heuristic_res, {"provider": "heuristic", "model": "rule-based"}
+        return heuristic_res
 
     async def filter_events_batch(
         self,
@@ -905,10 +914,11 @@ class PipelineOrchestrator:
         title_val = getattr(event, "title", "") or (event.get("title", "") if isinstance(event, dict) else "")
 
         # Stage 1: Extraction & Translation (Must complete first)
-        res_s1: Stage1Result = await self._execute_stage_with_fallbacks(
+        res_s1, prov_s1 = await self._execute_stage_with_fallbacks(
             stage_id="extraction",
             runner_fn=lambda **kw: run_stage1_extract(event=event, **kw),
             fallback_heuristic_fn=lambda: _heuristic_stage1_fallback(raw_text=raw_text_val, title=title_val),
+            return_provenance=True,
         )
 
         intelligence_text = res_s1.translated_text or raw_text_val
@@ -937,6 +947,7 @@ class PipelineOrchestrator:
                 **kw,
             ),
             fallback_heuristic_fn=stage2_fallback,
+            return_provenance=True,
         )
 
         task_s3 = self._execute_stage_with_fallbacks(
@@ -950,6 +961,7 @@ class PipelineOrchestrator:
                 summary="Intelligence update logged and monitored.",
                 headline=title_val[:75] or "Event Update",
             ),
+            return_provenance=True,
         )
 
         task_s4 = self._execute_stage_with_fallbacks(
@@ -965,24 +977,39 @@ class PipelineOrchestrator:
                 cluster_tags=["Intelligence"],
                 narrative_insight="Event logged.",
             ),
+            return_provenance=True,
         )
 
         if parallel_stages:
             results = await asyncio.gather(task_s2, task_s3, task_s4, return_exceptions=True)
-            res_s2: Stage2Result = results[0] if not isinstance(results[0], Exception) else stage2_fallback()
-            res_s3: Stage3Result = results[1] if not isinstance(results[1], Exception) else Stage3Result(
-                summary="Intelligence update logged and monitored.",
-                headline=title_val[:75] or "Event Update",
-            )
-            res_s4: Stage4Result = results[2] if not isinstance(results[2], Exception) else Stage4Result(
-                trend_category="Geopolitical Development",
-                cluster_tags=["Intelligence"],
-                narrative_insight="Event logged.",
-            )
+            if not isinstance(results[0], Exception) and isinstance(results[0], tuple):
+                res_s2, prov_s2 = results[0]
+            else:
+                res_s2 = stage2_fallback()
+                prov_s2 = {"provider": "heuristic", "model": "rule-based"}
+
+            if not isinstance(results[1], Exception) and isinstance(results[1], tuple):
+                res_s3, prov_s3 = results[1]
+            else:
+                res_s3 = Stage3Result(
+                    summary="Intelligence update logged and monitored.",
+                    headline=title_val[:75] or "Event Update",
+                )
+                prov_s3 = {"provider": "heuristic", "model": "rule-based"}
+
+            if not isinstance(results[2], Exception) and isinstance(results[2], tuple):
+                res_s4, prov_s4 = results[2]
+            else:
+                res_s4 = Stage4Result(
+                    trend_category="Geopolitical Development",
+                    cluster_tags=["Intelligence"],
+                    narrative_insight="Event logged.",
+                )
+                prov_s4 = {"provider": "heuristic", "model": "rule-based"}
         else:
-            res_s2 = await task_s2
-            res_s3 = await task_s3
-            res_s4 = await task_s4
+            res_s2, prov_s2 = await task_s2
+            res_s3, prov_s3 = await task_s3
+            res_s4, prov_s4 = await task_s4
 
         threshold = int(theme_ctx.get("alert_threshold", theme_ctx.get("importance_threshold", 7)))
         should_alert = bool(res_s2.importance_score >= threshold and not scoring_ctx.get("is_same_source_echo"))
@@ -1012,6 +1039,18 @@ class PipelineOrchestrator:
         metadata["scoring_breakdown"] = res_s2.to_breakdown_dict(scoring_ctx)
         if res_s4.trend_category:
             metadata["trend_category"] = res_s4.trend_category
+
+        ai_provenance = {
+            "extraction": prov_s1,
+            "scoring": prov_s2,
+            "summarization": prov_s3,
+            "visuals": prov_s4,
+            "embedding": {
+                "provider": "gemini",
+                "model": scoring_ctx.get("embedding_model_name") or "gemini-embedding-001",
+            },
+        }
+        metadata["ai_provenance"] = ai_provenance
 
         pub_at = getattr(event, "published_at", None) or (event.get("published_at") if isinstance(event, dict) else datetime.now(timezone.utc))
         if isinstance(pub_at, str):
@@ -1065,6 +1104,7 @@ class PipelineOrchestrator:
             entities=res_s1.extracted_entities,
             entities_json=res_s1.extracted_entities,
             trend_category=res_s4.trend_category,
+            ai_provenance=ai_provenance,
             notification_dispatched=should_alert,
             notification_dispatched_at=datetime.now(timezone.utc) if should_alert else None,
             is_analyzed=True,

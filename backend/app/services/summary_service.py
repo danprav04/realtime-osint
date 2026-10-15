@@ -7,6 +7,7 @@ system telemetry (velocity, entities, locations, alerts) into
 an executive operational briefing (SitRep).
 """
 
+import asyncio
 import logging
 import uuid
 from collections import Counter
@@ -761,11 +762,20 @@ class SituationSummaryService:
                 )
 
             try:
-                llm_output: SituationBriefingLLMOutput = await orchestrator._execute_stage_with_fallbacks(
-                    stage_id="summarization",
-                    runner_fn=_runner,
-                    fallback_heuristic_fn=fallback_fn,
+                llm_output: SituationBriefingLLMOutput = await asyncio.wait_for(
+                    orchestrator._execute_stage_with_fallbacks(
+                        stage_id="summarization",
+                        runner_fn=_runner,
+                        fallback_heuristic_fn=fallback_fn,
+                    ),
+                    timeout=18.0,
                 )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Situation summary LLM synthesis exceeded 18s budget — cleanly failing over to deterministic engine."
+                )
+                llm_output = fallback_fn()
+                active_ai_model = "deterministic-fusion-engine (timeout fallback)"
             except Exception as exc:
                 logger.warning(f"Situation summary LLM synthesis fell back to deterministic engine: {exc}")
                 llm_output = fallback_fn()
@@ -849,6 +859,18 @@ class SituationSummaryService:
                 "trustworthiness_score": matched_ev["trustworthiness_score"] if matched_ev else None,
             })
 
+        synth_parts = active_ai_model.split(":", 1) if ":" in active_ai_model else [
+            "system" if active_ai_model == "deterministic-fusion-engine" else "gemini",
+            active_ai_model,
+        ]
+        synth_prov = {"provider": synth_parts[0], "model": synth_parts[1]}
+
+        emb_parts = active_embedding_model.split(":", 1) if ":" in active_embedding_model else [
+            "huggingface" if ("all-MiniLM" in active_embedding_model or "/" in active_embedding_model) else "gemini",
+            active_embedding_model,
+        ]
+        emb_prov = {"provider": emb_parts[0], "model": emb_parts[1]}
+
         result_payload: Dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "generated_at": utc_now().isoformat(),
@@ -858,6 +880,10 @@ class SituationSummaryService:
             "time_range": norm_time_range,
             "active_ai_model": active_ai_model,
             "active_embedding_model": active_embedding_model,
+            "ai_provenance": {
+                "synthesizer": synth_prov,
+                "embedding": emb_prov,
+            },
             "threat_trajectory": llm_output.threat_trajectory or deterministic_ref.threat_trajectory,
             "threat_level_score": llm_output.threat_level_score or deterministic_ref.threat_level_score,
             "executive_bluf": llm_output.executive_bluf or deterministic_ref.executive_bluf,

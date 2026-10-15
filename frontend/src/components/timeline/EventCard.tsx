@@ -14,7 +14,8 @@ import {
 import { NormalizedEvent, ScoringBreakdown } from '@/lib/types';
 import { ImportanceBadge } from './ImportanceBadge';
 import { SourceBadge } from './SourceBadge';
-import { formatRelativeTime, formatDateTime } from '@/lib/utils';
+import { AIModelBadge } from '../common/AIModelBadge';
+import { formatRelativeTime, formatDateTime, getEventAIProvenance } from '@/lib/utils';
 
 interface EventCardProps {
   event: NormalizedEvent;
@@ -63,6 +64,10 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
     return event.summary || event.raw_text;
   })();
 
+  const summarizationProv = getEventAIProvenance(event, 'summarization');
+  const scoringProv = getEventAIProvenance(event, 'scoring');
+  const extractionProv = getEventAIProvenance(event, 'extraction');
+
   return (
     <article className="card-slick rounded-xl p-4 sm:p-5 relative transition-all duration-150">
       {/* Top attribution bar */}
@@ -105,19 +110,23 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
             <span>{formatRelativeTime(event.published_at)}</span>
           </div>
           <ImportanceBadge score={event.importance_score} isPending={isPending} size="sm" />
+          <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />
         </div>
       </div>
 
       {/* Main Title / Headline */}
-      <h3
-        onClick={() => onOpenDetails(event)}
-        className="text-sm sm:text-base font-semibold text-zinc-100 hover:text-accent-cyan transition-colors tracking-tight cursor-pointer leading-snug mb-2"
-      >
-        {displayTitle}
-      </h3>
+      <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+        <h3
+          onClick={() => onOpenDetails(event)}
+          className="text-sm sm:text-base font-semibold text-zinc-100 hover:text-accent-cyan transition-colors tracking-tight cursor-pointer leading-snug flex-1 min-w-0"
+        >
+          {displayTitle}
+        </h3>
+        <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
+      </div>
 
       {/* AI Intelligence Summary */}
-      <div className="text-xs sm:text-sm text-zinc-300 leading-relaxed mb-3">
+      <div className="text-xs sm:text-sm text-zinc-300 leading-relaxed mb-3 space-y-1">
         {event.summary || event.translated_text ? (
           <p className="line-clamp-3">{displaySummary}</p>
         ) : (
@@ -146,6 +155,9 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
             +{entities.length - 4} more
           </span>
         )}
+        {entities.length > 0 && (
+          <AIModelBadge provenance={extractionProv} size="xs" labelPrefix="Entities:" linkToSettings />
+        )}
       </div>
 
       {/* Expandable in-card details accordion */}
@@ -154,9 +166,12 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
           {(event.score_rationale || scoringBreakdown) && (
             <div className="p-3 rounded-lg bg-canvas-recessed hairline-border space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-semibold text-accent-amber text-[11px]">
-                  AI SCORING RATIONALE & CALIBRATION
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-accent-amber text-[11px]">
+                    AI SCORING RATIONALE & CALIBRATION
+                  </span>
+                  <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />
+                </div>
                 {scoringBreakdown?.corroboration_status && (
                   <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-raised hairline-border text-zinc-300">
                     {scoringBreakdown.corroboration_status}
@@ -200,9 +215,12 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
 
           {isTranslated && event.translated_text && (
             <div className="p-3 rounded-lg bg-canvas-recessed hairline-border">
-              <span className="font-semibold text-accent-indigo text-[11px] block mb-1">
-                TRANSLATED CONTENT
-              </span>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="font-semibold text-accent-indigo text-[11px]">
+                  TRANSLATED CONTENT
+                </span>
+                <AIModelBadge provenance={extractionProv} size="xs" linkToSettings />
+              </div>
               <p className="text-zinc-300 text-xs leading-relaxed">{event.translated_text}</p>
             </div>
           )}

@@ -17,7 +17,8 @@ import {
 import { NormalizedEvent, ScoringBreakdown } from '@/lib/types';
 import { ImportanceBadge } from './ImportanceBadge';
 import { SourceBadge } from './SourceBadge';
-import { formatDateTime } from '@/lib/utils';
+import { AIModelBadge } from '../common/AIModelBadge';
+import { formatDateTime, getEventAIProvenance } from '@/lib/utils';
 
 interface EventDetailsModalProps {
   event: NormalizedEvent | null;
@@ -76,12 +77,17 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
     return event.summary || event.raw_text;
   })();
 
+  const summarizationProv = getEventAIProvenance(event, 'summarization');
+  const scoringProv = getEventAIProvenance(event, 'scoring');
+  const extractionProv = getEventAIProvenance(event, 'extraction');
+  const embeddingProv = getEventAIProvenance(event, 'embedding');
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/75 backdrop-blur-sm overflow-y-auto">
       <div className="relative w-full max-w-3xl rounded-xl bg-surface-overlay p-6 hairline-border shadow-2xl my-auto">
         {/* Header */}
         <div className="flex items-start justify-between pb-4 hairline-b">
-          <div className="space-y-2 pr-4">
+          <div className="space-y-2 pr-4 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <ImportanceBadge score={event.importance_score} isPending={isPending} size="md" />
               <SourceBadge sourceType={event.source_type} sourceName={event.source_name} />
@@ -102,9 +108,12 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                 </span>
               )}
             </div>
-            <h2 className="text-lg font-semibold text-zinc-100 tracking-tight leading-snug">
-              {displayTitle}
-            </h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold text-zinc-100 tracking-tight leading-snug flex-1 min-w-0">
+                {displayTitle}
+              </h2>
+              <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -185,9 +194,12 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
             <>
               {/* AI Summary Section */}
               <div className="p-3.5 rounded-lg bg-surface-card hairline-border">
-                <div className="flex items-center space-x-2 text-xs font-semibold text-accent-cyan mb-2">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>AI INTELLIGENCE SUMMARY</span>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center space-x-2 text-xs font-semibold text-accent-cyan">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>AI INTELLIGENCE SUMMARY</span>
+                  </div>
+                  <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
                 </div>
                 <p className="text-sm text-zinc-200 leading-relaxed">
                   {displaySummary || 'Summary pending processing...'}
@@ -198,8 +210,11 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
               {(event.score_rationale || scoringBreakdown) && (
                 <div className="p-3.5 rounded-lg bg-surface-card hairline-border space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-xs font-semibold text-accent-amber">
-                      IMPORTANCE SCORING RATIONALE & CALIBRATION
+                    <div className="flex items-center gap-2">
+                      <div className="text-xs font-semibold text-accent-amber">
+                        IMPORTANCE SCORING RATIONALE & CALIBRATION
+                      </div>
+                      <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />
                     </div>
                     {scoringBreakdown?.source_reliability_label && (
                       <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-surface-raised hairline-border text-zinc-300">
@@ -300,9 +315,12 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                       {/* Related & Corroborating Reports from Vector Embedding Space */}
                       {scoringBreakdown.related_reports && scoringBreakdown.related_reports.length > 0 && (
                         <div className="p-2.5 rounded-md bg-canvas-recessed hairline-border space-y-2">
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-accent-cyan block">
-                            Semantically Related Recent Reports (Vector Embedding Matches)
-                          </span>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-accent-cyan block">
+                              Semantically Related Recent Reports (Vector Embedding Matches)
+                            </span>
+                            <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings />
+                          </div>
                           <div className="space-y-1.5">
                             {scoringBreakdown.related_reports.map((rel, idx) => (
                               <div
@@ -334,9 +352,12 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
               {/* Translation block if applicable */}
               {isTranslated && event.translated_text && (
                 <div className="p-3.5 rounded-lg bg-surface-card hairline-border">
-                  <div className="text-xs font-semibold text-accent-indigo mb-1.5 flex items-center space-x-1.5">
-                    <Globe className="w-3.5 h-3.5" />
-                    <span>ENGLISH TRANSLATION</span>
+                  <div className="text-xs font-semibold text-accent-indigo mb-1.5 flex items-center justify-between gap-2">
+                    <div className="flex items-center space-x-1.5">
+                      <Globe className="w-3.5 h-3.5" />
+                      <span>ENGLISH TRANSLATION</span>
+                    </div>
+                    <AIModelBadge provenance={extractionProv} size="xs" linkToSettings />
                   </div>
                   <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap">
                     {event.translated_text}
@@ -347,9 +368,12 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
               {/* Extracted Entities */}
               {entities.length > 0 && (
                 <div className="p-3.5 rounded-lg bg-surface-card hairline-border">
-                  <div className="flex items-center space-x-1.5 text-xs font-semibold text-zinc-400 mb-2">
-                    <Tag className="w-3.5 h-3.5" />
-                    <span>DETECTED ENTITIES & KEYWORDS</span>
+                  <div className="flex items-center justify-between gap-2 text-xs font-semibold text-zinc-400 mb-2">
+                    <div className="flex items-center space-x-1.5">
+                      <Tag className="w-3.5 h-3.5" />
+                      <span>DETECTED ENTITIES & KEYWORDS</span>
+                    </div>
+                    <AIModelBadge provenance={extractionProv} size="xs" linkToSettings />
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {entities.map((ent, idx) => (

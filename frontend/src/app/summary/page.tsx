@@ -42,8 +42,9 @@ import { useRealtimeFeed, useSocketConnection } from '@/lib/socket';
 import { EventDetailsModal } from '@/components/timeline/EventDetailsModal';
 import { ImportanceBadge } from '@/components/timeline/ImportanceBadge';
 import { SourceBadge } from '@/components/timeline/SourceBadge';
+import { AIModelBadge } from '@/components/common/AIModelBadge';
 import { AppIcon } from '@/components/AppIcon';
-import { cn, formatRelativeTime, formatDateTime } from '@/lib/utils';
+import { cn, formatRelativeTime, formatDateTime, parseModelProvider } from '@/lib/utils';
 
 function getTrajectoryStyles(trajectory?: string) {
   switch (trajectory) {
@@ -272,6 +273,13 @@ export default function AISummaryPage() {
 
   const trajStyle = getTrajectoryStyles(summary?.threat_trajectory);
 
+  const synthesizerProv =
+    summary?.ai_provenance?.synthesizer ||
+    (summary?.active_ai_model ? parseModelProvider(summary.active_ai_model, 'situation_summary') : undefined);
+  const embeddingProv =
+    summary?.ai_provenance?.embedding ||
+    (summary?.active_embedding_model ? parseModelProvider(summary.active_embedding_model, 'embedding') : undefined);
+
   return (
     <div className="space-y-5">
       {/* Page Header & Action Bar */}
@@ -386,16 +394,12 @@ export default function AISummaryPage() {
           <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-surface-raised border border-white/5">
             <Sparkles className="w-3 h-3 text-accent-cyan" />
             <span>Synthesizer:</span>
-            <span className="text-zinc-200 font-medium">
-              {summary?.active_ai_model || 'Pipeline Summarizer'}
-            </span>
+            <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings />
           </div>
           <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-surface-raised border border-white/5">
             <Server className="w-3 h-3 text-emerald-400" />
             <span>Embeddings:</span>
-            <span className="text-zinc-200 font-medium">
-              {summary?.active_embedding_model || 'gemini-embedding-001'}
-            </span>
+            <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings />
           </div>
           {summary?.generated_at && (
             <div className="flex items-center space-x-1 text-zinc-400">
@@ -585,9 +589,12 @@ export default function AISummaryPage() {
                       <Sparkles className="w-4 h-4" />
                     </div>
                     <div>
-                      <h3 className="text-sm font-semibold text-zinc-100 tracking-tight uppercase font-mono">
-                        Executive Situational Briefing (BLUF)
-                      </h3>
+                      <div className="flex items-center space-x-2">
+                        <h3 className="text-sm font-semibold text-zinc-100 tracking-tight uppercase font-mono">
+                          Executive Situational Briefing (BLUF)
+                        </h3>
+                        <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings />
+                      </div>
                       <p className="text-[11px] text-zinc-400">
                         Synthesized across {summary.telemetry.total_events} reports,{' '}
                         {summary.telemetry.total_clusters} embedding clusters, and{' '}
@@ -613,9 +620,12 @@ export default function AISummaryPage() {
                 {/* Strategic & Telemetry Assessment Callout */}
                 {summary.strategic_assessment && (
                   <div className="p-4 rounded-xl bg-surface-raised/70 border border-white/10 space-y-1.5">
-                    <div className="flex items-center space-x-1.5 text-xs font-mono uppercase tracking-wider text-accent-cyan">
-                      <TrendingUp className="w-3.5 h-3.5" />
-                      <span>Cross-Cluster Dynamics & Telemetry Assessment</span>
+                    <div className="flex items-center justify-between gap-2 text-xs font-mono uppercase tracking-wider text-accent-cyan">
+                      <div className="flex items-center space-x-1.5">
+                        <TrendingUp className="w-3.5 h-3.5" />
+                        <span>Cross-Cluster Dynamics & Telemetry Assessment</span>
+                      </div>
+                      <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings />
                     </div>
                     <p className="text-xs text-zinc-300 leading-relaxed">
                       {summary.strategic_assessment}
@@ -627,9 +637,12 @@ export default function AISummaryPage() {
                 {summary.key_developments && summary.key_developments.length > 0 && (
                   <div className="pt-2 space-y-3">
                     <div className="flex items-center justify-between">
-                      <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
-                        <Flame className="w-3.5 h-3.5 text-rose-400" />
-                        <span>Key High-Impact Developments</span>
+                      <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-2">
+                        <span className="flex items-center space-x-1.5">
+                          <Flame className="w-3.5 h-3.5 text-rose-400" />
+                          <span>Key High-Impact Developments</span>
+                        </span>
+                        <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings />
                       </h4>
                       <span className="text-[11px] text-zinc-500 font-mono">
                         Click Inspect to view source intelligence
@@ -697,9 +710,12 @@ export default function AISummaryPage() {
                       <Layers className="w-4 h-4" />
                     </div>
                     <div>
-                      <h3 className="text-sm font-semibold text-zinc-100 tracking-tight">
-                        Semantic Embedding Storyline Clusters ({summary.clusters.length})
-                      </h3>
+                      <div className="flex items-center space-x-2">
+                        <h3 className="text-sm font-semibold text-zinc-100 tracking-tight">
+                          Semantic Embedding Storyline Clusters ({summary.clusters.length})
+                        </h3>
+                        <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings />
+                      </div>
                       <p className="text-xs text-zinc-400">
                         Reports grouped by high-dimensional vector proximity and weighted by cross-source corroboration
                       </p>
@@ -789,12 +805,15 @@ export default function AISummaryPage() {
 
                           {/* Operational Implication Box */}
                           {cluster.operational_implication && (
-                            <div className="p-3 rounded-lg bg-surface-raised/60 border border-white/5 flex items-start space-x-2">
-                              <Crosshair className="w-3.5 h-3.5 text-accent-amber shrink-0 mt-0.5" />
-                              <div className="text-xs text-zinc-300">
-                                <span className="font-semibold text-zinc-100">Operational Implication: </span>
-                                {cluster.operational_implication}
+                            <div className="p-3 rounded-lg bg-surface-raised/60 border border-white/5 flex items-start justify-between gap-2">
+                              <div className="flex items-start space-x-2">
+                                <Crosshair className="w-3.5 h-3.5 text-accent-amber shrink-0 mt-0.5" />
+                                <div className="text-xs text-zinc-300">
+                                  <span className="font-semibold text-zinc-100">Operational Implication: </span>
+                                  {cluster.operational_implication}
+                                </div>
                               </div>
+                              <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings />
                             </div>
                           )}
 
@@ -901,9 +920,12 @@ export default function AISummaryPage() {
                       <ShieldAlert className="w-4 h-4" />
                     </div>
                     <div>
-                      <h3 className="text-sm font-semibold text-zinc-100 tracking-tight">
-                        Single-Source & Isolated Outlier Watch
-                      </h3>
+                      <div className="flex items-center space-x-2">
+                        <h3 className="text-sm font-semibold text-zinc-100 tracking-tight">
+                          Single-Source & Isolated Outlier Watch
+                        </h3>
+                        <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings />
+                      </div>
                       <p className="text-xs text-zinc-400">
                         Reports flagged by embedding vector distance as lacking independent multi-source corroboration
                       </p>
@@ -972,9 +994,12 @@ export default function AISummaryPage() {
                     <Crosshair className="w-4 h-4" />
                   </div>
                   <div>
-                    <h4 className="text-sm font-semibold text-zinc-100 tracking-tight">
-                      12–24h Tactical Watchlist
-                    </h4>
+                    <div className="flex items-center space-x-2">
+                      <h4 className="text-sm font-semibold text-zinc-100 tracking-tight">
+                        12–24h Tactical Watchlist
+                      </h4>
+                      <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings />
+                    </div>
                     <p className="text-[11px] text-zinc-400">
                       AI-identified triggers & escalation indicators
                     </p>

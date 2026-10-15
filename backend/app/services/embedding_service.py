@@ -14,6 +14,7 @@ import math
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -789,20 +790,50 @@ class EmbeddingService:
             texts=texts, use_mock=use_mock, session=session
         )
 
-        new_records: List[EventEmbedding] = []
-        for event, vec in zip(pending_events, vectors):
-            rec = EventEmbedding(
-                event_id=event.id,
-                embedding_vector=vec,
-                model_name=model_name,
-                embedded_at=utc_now(),
-            )
-            session.add(rec)
-            new_records.append(rec)
+        bind = session.get_bind()
+        dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+        if dialect_name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        await session.commit()
+            values_to_insert = [
+                {
+                    "id": str(uuid.uuid4()),
+                    "event_id": event.id,
+                    "embedding_vector": vec,
+                    "model_name": model_name,
+                    "embedded_at": utc_now(),
+                }
+                for event, vec in zip(pending_events, vectors)
+            ]
+            if values_to_insert:
+                stmt_insert = (
+                    pg_insert(EventEmbedding)
+                    .values(values_to_insert)
+                    .on_conflict_do_nothing(index_elements=["event_id"])
+                )
+                await session.execute(stmt_insert)
+                await session.commit()
+        else:
+            new_records: List[EventEmbedding] = []
+            for event, vec in zip(pending_events, vectors):
+                try:
+                    async with session.begin_nested():
+                        rec = EventEmbedding(
+                            id=str(uuid.uuid4()),
+                            event_id=event.id,
+                            embedding_vector=vec,
+                            model_name=model_name,
+                            embedded_at=utc_now(),
+                        )
+                        session.add(rec)
+                        await session.flush()
+                        new_records.append(rec)
+                except Exception:
+                    pass
+            await session.commit()
+
         logger.info(
-            f"Successfully stored {len(new_records)} new embeddings via {model_name}."
+            f"Successfully processed {len(pending_events)} new embeddings via {model_name}."
         )
 
         # Retrieve all requested records

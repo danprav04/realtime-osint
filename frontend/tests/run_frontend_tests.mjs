@@ -411,6 +411,72 @@ test('ProviderRateLimitsBar - exports component and links to provider rate limit
   assert.ok(barContent.includes('View Rate Limits'));
 });
 
+// Test 23: Utils - parseModelProvider & formatProviderName
+test('Utils - parseModelProvider correctly parses prefixed and bare model names', async () => {
+  const { parseModelProvider, formatProviderName } = await import('../src/lib/utils.ts');
+
+  assert.equal(formatProviderName('gemini'), 'Gemini');
+  assert.equal(formatProviderName('groq'), 'Groq');
+  assert.equal(formatProviderName('aihubmix'), 'AIHubMix');
+  assert.equal(formatProviderName('heuristic'), 'Rule-Based');
+
+  const p1 = parseModelProvider('groq:qwen/qwen3.8-27b');
+  assert.equal(p1.provider, 'Groq');
+  assert.equal(p1.model, 'qwen/qwen3.8-27b');
+
+  const p2 = parseModelProvider('aihubmix:coding-glm-5.3-free');
+  assert.equal(p2.provider, 'AIHubMix');
+  assert.equal(p2.model, 'coding-glm-5.3-free');
+
+  const p3 = parseModelProvider('gemini-3.5-flash-lite');
+  assert.equal(p3.provider, 'Gemini');
+  assert.equal(p3.model, 'gemini-3.5-flash-lite');
+
+  const p4 = parseModelProvider('deterministic-fusion-engine');
+  assert.equal(p4.provider, 'Rule-Based');
+  assert.equal(p4.model, 'deterministic-fusion-engine');
+});
+
+// Test 24: Utils - getEventAIProvenance resolves event stage provenance and fallbacks
+test('Utils - getEventAIProvenance extracts stage models and provides stage fallbacks', async () => {
+  const { getEventAIProvenance } = await import('../src/lib/utils.ts');
+
+  const eventWithProv = {
+    id: 'evt-1',
+    ai_provenance: {
+      extraction: { provider: 'groq', model: 'qwen/qwen3.8-27b' },
+      summarization: { provider: 'aihubmix', model: 'coding-glm-5.3-free' },
+    },
+  };
+
+  const extProv = getEventAIProvenance(eventWithProv, 'extraction');
+  assert.equal(extProv.provider, 'Groq');
+  assert.equal(extProv.model, 'qwen/qwen3.8-27b');
+
+  const sumProv = getEventAIProvenance(eventWithProv, 'summarization');
+  assert.equal(sumProv.provider, 'AIHubMix');
+  assert.equal(sumProv.model, 'coding-glm-5.3-free');
+
+  // Fallback for stage not in event
+  const scoreProv = getEventAIProvenance(eventWithProv, 'scoring');
+  assert.equal(scoreProv.provider, 'Gemini');
+  assert.equal(scoreProv.model, 'gemini-3.5-flash-lite');
+});
+
+// Test 25: AIModelBadge Component - file exists and exports AIModelBadge
+test('AIModelBadge - exports component and renders brand badge styles', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const badgePath = path.resolve('src/components/common/AIModelBadge.tsx');
+  assert.ok(fs.existsSync(badgePath), 'AIModelBadge.tsx must exist');
+
+  const badgeContent = fs.readFileSync(badgePath, 'utf-8');
+  assert.ok(badgeContent.includes('export function AIModelBadge'));
+  assert.ok(badgeContent.includes('formatProviderName'));
+  assert.ok(badgeContent.includes('getProviderBadgeStyles'));
+});
+
 console.log('Running frontend automated tests...');
 
 

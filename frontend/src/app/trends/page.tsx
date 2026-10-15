@@ -19,8 +19,9 @@ import { SourceActivityChart } from '@/components/charts/SourceActivityChart';
 import { EventDetailsModal } from '@/components/timeline/EventDetailsModal';
 import { ImportanceBadge } from '@/components/timeline/ImportanceBadge';
 import { SourceBadge } from '@/components/timeline/SourceBadge';
+import { AIModelBadge } from '@/components/common/AIModelBadge';
 import { AppIcon } from '@/components/AppIcon';
-import { formatRelativeTime } from '@/lib/utils';
+import { formatRelativeTime, getEventAIProvenance } from '@/lib/utils';
 
 export default function TrendsPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -97,9 +98,16 @@ export default function TrendsPage() {
             <Tag className="w-4 h-4" />
           </div>
           <div>
-            <h4 className="text-sm font-semibold text-zinc-100 tracking-tight">
-              Active Threat Entities & Regional Hotspots
-            </h4>
+            <div className="flex items-center space-x-2">
+              <h4 className="text-sm font-semibold text-zinc-100 tracking-tight">
+                Active Threat Entities & Regional Hotspots
+              </h4>
+              <AIModelBadge
+                provenance={getEventAIProvenance(highPriorityEvents[0] as any, 'extraction')}
+                size="xs"
+                linkToSettings
+              />
+            </div>
             <p className="text-xs text-zinc-500">
               High-frequency entities detected across critical intelligence events
             </p>
@@ -135,9 +143,16 @@ export default function TrendsPage() {
               <Flame className="w-4 h-4" />
             </div>
             <div>
-              <h4 className="text-sm font-semibold text-zinc-100 tracking-tight">
-                Recent High-Priority Flash Events (Score ≥ 7)
-              </h4>
+              <div className="flex items-center space-x-2">
+                <h4 className="text-sm font-semibold text-zinc-100 tracking-tight">
+                  Recent High-Priority Flash Events (Score ≥ 7)
+                </h4>
+                <AIModelBadge
+                  provenance={getEventAIProvenance(highPriorityEvents[0] as any, 'scoring')}
+                  size="xs"
+                  linkToSettings
+                />
+              </div>
               <p className="text-xs text-zinc-500">Events that triggered automated alert evaluation</p>
             </div>
           </div>
@@ -167,7 +182,10 @@ export default function TrendsPage() {
                     <SourceBadge sourceType={ev.source_type} sourceName={ev.source_name} />
                   </td>
                   <td className="py-3 pr-4 max-w-md">
-                    <p className="font-semibold text-zinc-200 truncate">{ev.headline || ev.title}</p>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <p className="font-semibold text-zinc-200 truncate">{ev.headline || ev.title}</p>
+                      <AIModelBadge provenance={getEventAIProvenance(ev, 'summarization')} size="xs" linkToSettings />
+                    </div>
                     <p className="text-[11px] text-zinc-400 line-clamp-1">{ev.summary}</p>
                   </td>
                   <td className="py-3 pr-4 font-mono text-zinc-400 tabular whitespace-nowrap">
