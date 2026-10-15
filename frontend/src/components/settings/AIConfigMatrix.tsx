@@ -518,7 +518,9 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                       >
                         <option value="gemini">Google Gemini API</option>
                         <option value="groq">Groq Cloud (LPU Inference)</option>
-                        <option value="aihubmix">AI Hub Mix (Free Flagships)</option>
+                        {stage.key === 'summarization' && (
+                          <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
+                        )}
                       </select>
                     </div>
 
@@ -576,11 +578,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                           </>
                         ) : (
                           <>
-                            <option value="coding-glm-5.3-free">coding-glm-5.3-free (Flagship Reasoning | 1.05M Context)</option>
-                            <option value="coding-minimax-m3-free">coding-minimax-m3-free (Flagship Synthesis | 1M Context)</option>
-                            <option value="nemotron-3-super-120b-a12b-free">nemotron-3-super-120b-a12b-free (120B Frontier | 1.05M Context)</option>
-                            <option value="coding-glm-5.2-free">coding-glm-5.2-free (High Capacity | 1M Context)</option>
-                            <option value="qwen3.8-flash-free">qwen3.8-flash-free (Low Latency Free Triage)</option>
+                            <option value="coding-glm-5.3-free">coding-glm-5.3-free (Strongest Flagship Reasoning | 1.05M Context)</option>
                           </>
                         )}
                       </datalist>
@@ -634,36 +632,13 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                             </button>
                           </>
                         ) : (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleModelChange(stage.key, 'coding-glm-5.3-free')}
-                              className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan transition-colors"
-                            >
-                              🧠 glm-5.3 (1.05M)
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleModelChange(stage.key, 'coding-minimax-m3-free')}
-                              className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan transition-colors"
-                            >
-                              📖 minimax-m3 (1M)
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleModelChange(stage.key, 'nemotron-3-super-120b-a12b-free')}
-                              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
-                            >
-                              🚀 nemotron-120b
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleModelChange(stage.key, 'qwen3.8-flash-free')}
-                              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
-                            >
-                              ⚡ qwen3.8-flash
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            onClick={() => handleModelChange(stage.key, 'coding-glm-5.3-free')}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/15 hover:bg-accent-cyan/25 text-accent-cyan font-semibold transition-colors"
+                          >
+                            🧠 coding-glm-5.3-free (Strongest Flagship • 1.05M)
+                          </button>
                         )}
                       </div>
                     </div>
@@ -721,35 +696,15 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                           <span>+ Add 3.1 Flash Lite</span>
                         </button>
                       )}
-                      {/* Quick preset buttons for AI Hub Mix free flagships */}
-                      {stage.key === 'summarization' && !fallbacks.some((f) => f.model_name === 'coding-glm-5.3-free') && (
+                      {/* Quick preset button for AI Hub Mix free flagship: ONLY on summarization, and ONLY if primary is not AI Hub Mix and no AI Hub Mix in fallbacks */}
+                      {stage.key === 'summarization' && currentStageConfig.provider !== 'aihubmix' && !fallbacks.some((f) => f.provider === 'aihubmix') && (
                         <button
                           type="button"
                           onClick={() => handleAddFallback(stage.key, 'aihubmix', 'coding-glm-5.3-free')}
                           className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/30 rounded-md transition-colors"
-                          title="AI Hub Mix GLM-5.3 Flagship: 1.05M Context reasoning model"
+                          title="AI Hub Mix GLM-5.3 Flagship: Strongest model with 1.05M context reasoning"
                         >
                           <span>+ Add GLM-5.3 (1.05M Free)</span>
-                        </button>
-                      )}
-                      {stage.key === 'summarization' && !fallbacks.some((f) => f.model_name === 'coding-minimax-m3-free') && (
-                        <button
-                          type="button"
-                          onClick={() => handleAddFallback(stage.key, 'aihubmix', 'coding-minimax-m3-free')}
-                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/30 rounded-md transition-colors"
-                          title="AI Hub Mix MiniMax-M3: 1M Context synthesis model"
-                        >
-                          <span>+ Add MiniMax-M3 (1M Free)</span>
-                        </button>
-                      )}
-                      {stage.key !== 'summarization' && !fallbacks.some((f) => f.provider === 'aihubmix') && (
-                        <button
-                          type="button"
-                          onClick={() => handleAddFallback(stage.key, 'aihubmix', 'nemotron-3-super-120b-a12b-free')}
-                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/30 rounded-md transition-colors"
-                          title="AI Hub Mix Nemotron-3 120B Frontier Model (Free)"
-                        >
-                          <span>+ Add Nemotron-120B (Free)</span>
                         </button>
                       )}
                       <button
@@ -802,7 +757,9 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               >
                                 <option value="gemini">Gemini API</option>
                                 <option value="groq">Groq Cloud</option>
-                                <option value="aihubmix">AI Hub Mix (Free)</option>
+                                {stage.key === 'summarization' && currentStageConfig.provider !== 'aihubmix' && (
+                                  <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
+                                )}
                               </select>
                             </div>
 
@@ -868,29 +825,13 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                       </button>
                                     </>
                                   ) : (
-                                    <>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'coding-glm-5.3-free')}
-                                        className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan"
-                                      >
-                                        glm-5.3 (1.05M)
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'coding-minimax-m3-free')}
-                                        className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan"
-                                      >
-                                        minimax-m3 (1M)
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'nemotron-3-super-120b-a12b-free')}
-                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
-                                      >
-                                        nemotron-120b
-                                      </button>
-                                    </>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'coding-glm-5.3-free')}
+                                      className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/15 hover:bg-accent-cyan/25 text-accent-cyan font-semibold"
+                                    >
+                                      🧠 coding-glm-5.3-free (1.05M)
+                                    </button>
                                   )}
                                 </div>
                                 <a
