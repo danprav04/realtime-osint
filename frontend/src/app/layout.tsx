@@ -44,14 +44,14 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className="min-h-screen bg-canvas-base text-zinc-100 antialiased selection:bg-accent-cyan/20 selection:text-accent-cyan">
+      <body className="min-h-[100dvh] bg-canvas-base text-zinc-100 antialiased selection:bg-accent-cyan/20 selection:text-accent-cyan">
         <PwaRegistration />
-        <div className="flex min-h-screen flex-col">
+        <div className="flex min-h-[100dvh] flex-col">
           <Navbar />
           <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-6">
             {children}
           </main>
-          <footer className="w-full border-t border-white/5 py-4 text-center text-[11px] text-zinc-500 font-mono pb-[calc(4.5rem+env(safe-area-inset-bottom))] lg:pb-4">
+          <footer className="w-full border-t border-white/5 py-4 text-center text-[11px] text-zinc-500 font-mono pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:pb-4">
             <div className="flex items-center justify-center space-x-2">
               <AppIcon size={16} variant="minimal" />
               <span>REAL-TIME OSINT PLATFORM • ZERO-CODE THEME ENGINE • MULTI-PROVIDER AI PIPELINE</span>
