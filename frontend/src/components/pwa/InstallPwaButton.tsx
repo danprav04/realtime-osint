@@ -12,6 +12,7 @@ interface InstallPwaButtonProps {
   appName?: string;
   className?: string;
   showWhenStandalone?: boolean;
+  hideLabelOnMobile?: boolean;
 }
 
 export function InstallPwaButton({
@@ -20,6 +21,7 @@ export function InstallPwaButton({
   appName = 'OSINT Realtime',
   className,
   showWhenStandalone = false,
+  hideLabelOnMobile = false,
 }: InstallPwaButtonProps) {
   const {
     canInstall,
@@ -77,17 +79,17 @@ export function InstallPwaButton({
         {installSuccess ? (
           <>
             <Check className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="text-emerald-400 font-medium">Installed!</span>
+            <span className={cn("text-emerald-400 font-medium", hideLabelOnMobile && "hidden sm:inline")}>Installed!</span>
           </>
         ) : isStandalone ? (
           <>
             <Check className="w-3.5 h-3.5 text-accent-cyan" />
-            <span>PWA Active</span>
+            <span className={cn(hideLabelOnMobile && "hidden sm:inline")}>PWA Active</span>
           </>
         ) : (
           <>
             <Download className="w-3.5 h-3.5 text-accent-cyan" />
-            <span>{label}</span>
+            <span className={cn(hideLabelOnMobile && "hidden sm:inline")}>{label}</span>
           </>
         )}
       </button>

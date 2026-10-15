@@ -185,6 +185,9 @@ export default function PublicDisplayPage() {
   const [expandedClusters, setExpandedClusters] = useState<Record<number, boolean>>({});
   const [wsConnected, setWsConnected] = useState<boolean>(false);
 
+  // Mobile Display Tab Navigation ('sitrep' | 'feed' | 'radar')
+  const [mobileTab, setMobileTab] = useState<'sitrep' | 'feed' | 'radar'>('sitrep');
+
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSource, setSelectedSource] = useState<string>('all');
@@ -642,7 +645,7 @@ export default function PublicDisplayPage() {
                   onChange={(e) => setPasswordInput(e.target.value)}
                   placeholder="Enter password..."
                   disabled={isSubmittingAuth || (rateLimitTimer !== null && rateLimitTimer > 0)}
-                  className="w-full rounded-xl bg-canvas-recessed pl-10 pr-4 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 border border-white/10 focus:outline-none focus:border-accent-cyan transition-colors disabled:opacity-50"
+                  className="w-full rounded-xl bg-canvas-recessed pl-10 pr-4 py-2.5 text-base sm:text-xs text-zinc-100 placeholder-zinc-500 border border-white/10 focus:outline-none focus:border-accent-cyan transition-colors disabled:opacity-50"
                   autoFocus
                 />
                 <Lock className="absolute left-3.5 top-3 w-4 h-4 text-zinc-500" />
@@ -751,508 +754,794 @@ export default function PublicDisplayPage() {
       )}
 
       {/* -------------------------------------------------------------------- */}
-      {/* SECTION 1: AI SITREP BRIEFING & TOP KPI CARDS                        */}
+      {/* MODULAR COMPONENT RENDERERS                                          */}
       {/* -------------------------------------------------------------------- */}
-      {summary && (
-        <div className="space-y-4">
-          {/* Top 4 KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* 1. Threat Trajectory */}
-            <div className={cn('card-slick rounded-xl p-4 flex flex-col justify-between border', trajStyle.border)}>
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">Threat Trajectory</span>
-                <span className={cn('inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border', trajStyle.badge)}>
-                  <span className={cn('w-1.5 h-1.5 rounded-full', trajStyle.dot)} />
-                  <span>{summary.threat_trajectory}</span>
-                </span>
-              </div>
-              <div className="mt-3 flex items-baseline justify-between">
-                <div>
-                  <span className={cn('text-2xl font-semibold tracking-tight font-mono tabular', trajStyle.accent)}>
-                    {summary.threat_level_score}
+
+      {/* Helper: KPI Cards (2x2 on mobile, 4-col on desktop) */}
+      {(() => {
+        const renderKpiCards = (isMobile = false) => {
+          if (!summary) return null;
+          return (
+            <div
+              className={cn(
+                isMobile
+                  ? 'grid grid-cols-2 gap-2.5'
+                  : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4'
+              )}
+            >
+              {/* 1. Threat Trajectory */}
+              <div
+                className={cn(
+                  'card-slick rounded-xl flex flex-col justify-between border',
+                  isMobile ? 'p-3 space-y-2' : 'p-4',
+                  trajStyle.border
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] sm:text-[11px] font-mono uppercase tracking-wider text-zinc-400">
+                    Trajectory
                   </span>
-                  <span className="text-xs text-zinc-500 font-mono"> / 10</span>
-                </div>
-                <span className="text-[11px] text-zinc-400 font-mono tabular">
-                  Peak Event: {summary.telemetry.max_importance_score}/10
-                </span>
-              </div>
-              <div className="mt-2 text-[11px] text-zinc-400 truncate">
-                Theme: <span className="text-zinc-200 font-medium">{summary.theme_name}</span>
-              </div>
-            </div>
-
-            {/* 2. Embedding Corroboration */}
-            <div className="card-slick rounded-xl p-4 flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">Embedding Corroboration</span>
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              </div>
-              <div className="mt-3 flex items-baseline justify-between">
-                <div className="flex items-baseline space-x-1.5">
-                  <span className="text-2xl font-semibold tracking-tight text-emerald-400 font-mono tabular">
-                    {summary.telemetry.corroboration_rate_pct}%
+                  <span
+                    className={cn(
+                      'inline-flex items-center space-x-1 sm:space-x-1.5 px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-semibold border',
+                      trajStyle.badge
+                    )}
+                  >
+                    <span className={cn('w-1.5 h-1.5 rounded-full', trajStyle.dot)} />
+                    <span className="truncate max-w-[85px] sm:max-w-none">{summary.threat_trajectory}</span>
                   </span>
-                  <span className="text-[11px] text-zinc-400">verified</span>
                 </div>
-                <span className="text-[11px] font-mono text-zinc-400 tabular">
-                  {summary.telemetry.cross_source_edges_count} similarity links
-                </span>
-              </div>
-              <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-400 font-mono tabular">
-                <span>{summary.telemetry.corroborated_reports_count}/{summary.telemetry.total_events} corroborated</span>
-                <span className="text-emerald-400/90">{summary.telemetry.embedding_coverage_pct}% embedded</span>
-              </div>
-            </div>
-
-            {/* 3. Story Clusters & Alerts */}
-            <div className="card-slick rounded-xl p-4 flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">Story Clusters &amp; Alerts</span>
-                <Compass className="w-4 h-4 text-accent-cyan" />
-              </div>
-              <div className="mt-3 flex items-baseline justify-between">
-                <div className="flex items-baseline space-x-1.5">
-                  <span className="text-2xl font-semibold tracking-tight text-accent-cyan font-mono tabular">
-                    {summary.telemetry.total_clusters}
-                  </span>
-                  <span className="text-[11px] text-zinc-400">clusters</span>
-                </div>
-                <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 text-rose-400 text-[11px] font-mono tabular">
-                  <Flame className="w-3 h-3" />
-                  <span>{summary.telemetry.critical_alerts_count} critical</span>
-                </span>
-              </div>
-              <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-400 font-mono tabular">
-                <span>{summary.telemetry.total_events} reports analyzed</span>
-                <span>{summary.telemetry.isolated_outliers_count} outliers</span>
-              </div>
-            </div>
-
-            {/* 4. Operational Tempo */}
-            <div className="card-slick rounded-xl p-4 flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-400">Operational Tempo</span>
-                <Activity className="w-4 h-4 text-accent-amber" />
-              </div>
-              <div className="mt-3 flex items-baseline justify-between">
-                <span className="text-xl font-semibold tracking-tight text-zinc-100">
-                  {summary.telemetry.velocity_status}
-                </span>
-                <span className="text-[11px] font-mono text-zinc-400 tabular">
-                  {summary.telemetry.events_last_6h} in 6h / {summary.telemetry.events_prev_18h} prev 18h
-                </span>
-              </div>
-              <div className="mt-2 flex items-center justify-between text-[11px] font-mono tabular">
-                <span className="text-zinc-400">Avg Score:</span>
-                <span className="text-zinc-200">{summary.telemetry.avg_importance_score} / 10</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Executive BLUF Card */}
-          <div className="card-slick rounded-xl p-6 space-y-5">
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 hairline-b">
-              <div className="flex items-center space-x-2.5">
-                <div className="p-2 rounded-lg bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/25">
-                  <Sparkles className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-sm font-semibold text-zinc-100 tracking-tight uppercase font-mono">
-                      Executive Situational Briefing (BLUF)
-                    </h3>
-                    <span className="text-[10px] font-mono text-accent-cyan bg-accent-cyan/10 px-2 py-0.5 rounded border border-accent-cyan/25">
-                      30-MIN AUTO FUSION
+                <div className="flex items-baseline justify-between mt-1 sm:mt-3">
+                  <div>
+                    <span
+                      className={cn(
+                        'text-xl sm:text-2xl font-semibold tracking-tight font-mono tabular',
+                        trajStyle.accent
+                      )}
+                    >
+                      {summary.threat_level_score}
                     </span>
-                    <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                    <span className="text-[10px] sm:text-xs text-zinc-500 font-mono"> / 10</span>
                   </div>
-                  <p className="text-[11px] text-zinc-400">
-                    Synthesized across {summary.telemetry.total_events} reports, {summary.telemetry.total_clusters} clusters, and {summary.telemetry.cross_source_edges_count} corroboration links
-                  </p>
-                  {/* Active AI Engine Badges */}
-                  <div className="flex flex-wrap items-center gap-2.5 pt-1.5 text-[11px] font-mono text-zinc-400 tabular">
-                    <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-surface-raised border border-white/5">
-                      <Sparkles className="w-3 h-3 text-accent-cyan" />
-                      <span>Synthesizer:</span>
+                  <span className="text-[10px] sm:text-[11px] text-zinc-400 font-mono tabular">
+                    Peak {summary.telemetry.max_importance_score}/10
+                  </span>
+                </div>
+                <div className="text-[10px] sm:text-[11px] text-zinc-400 truncate pt-1 border-t border-white/5">
+                  Theme: <span className="text-zinc-200 font-medium">{summary.theme_name}</span>
+                </div>
+              </div>
+
+              {/* 2. Embedding Corroboration */}
+              <div
+                className={cn(
+                  'card-slick rounded-xl flex flex-col justify-between',
+                  isMobile ? 'p-3 space-y-2' : 'p-4'
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] sm:text-[11px] font-mono uppercase tracking-wider text-zinc-400">
+                    Corroboration
+                  </span>
+                  <ShieldCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
+                </div>
+                <div className="flex items-baseline justify-between mt-1 sm:mt-3">
+                  <div className="flex items-baseline space-x-1 sm:space-x-1.5">
+                    <span className="text-xl sm:text-2xl font-semibold tracking-tight text-emerald-400 font-mono tabular">
+                      {summary.telemetry.corroboration_rate_pct}%
+                    </span>
+                    <span className="text-[10px] sm:text-[11px] text-zinc-400">verified</span>
+                  </div>
+                  <span className="text-[10px] sm:text-[11px] font-mono text-zinc-400 tabular truncate max-w-[90px] sm:max-w-none">
+                    {summary.telemetry.cross_source_edges_count} links
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[10px] sm:text-[11px] text-zinc-400 font-mono tabular pt-1 border-t border-white/5">
+                  <span>{summary.telemetry.corroborated_reports_count}/{summary.telemetry.total_events} confirmed</span>
+                  <span className="text-emerald-400/90 hidden sm:inline">{summary.telemetry.embedding_coverage_pct}% embedded</span>
+                </div>
+              </div>
+
+              {/* 3. Story Clusters & Alerts */}
+              <div
+                className={cn(
+                  'card-slick rounded-xl flex flex-col justify-between',
+                  isMobile ? 'p-3 space-y-2' : 'p-4'
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] sm:text-[11px] font-mono uppercase tracking-wider text-zinc-400">
+                    Clusters &amp; Alerts
+                  </span>
+                  <Compass className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-accent-cyan" />
+                </div>
+                <div className="flex items-baseline justify-between mt-1 sm:mt-3">
+                  <div className="flex items-baseline space-x-1 sm:space-x-1.5">
+                    <span className="text-xl sm:text-2xl font-semibold tracking-tight text-accent-cyan font-mono tabular">
+                      {summary.telemetry.total_clusters}
+                    </span>
+                    <span className="text-[10px] sm:text-[11px] text-zinc-400">clusters</span>
+                  </div>
+                  <span className="inline-flex items-center space-x-1 px-1.5 sm:px-2 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 text-rose-400 text-[10px] sm:text-[11px] font-mono tabular">
+                    <Flame className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+                    <span>{summary.telemetry.critical_alerts_count} crit</span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[10px] sm:text-[11px] text-zinc-400 font-mono tabular pt-1 border-t border-white/5">
+                  <span>{summary.telemetry.total_events} reports</span>
+                  <span>{summary.telemetry.isolated_outliers_count} outliers</span>
+                </div>
+              </div>
+
+              {/* 4. Operational Tempo */}
+              <div
+                className={cn(
+                  'card-slick rounded-xl flex flex-col justify-between',
+                  isMobile ? 'p-3 space-y-2' : 'p-4'
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] sm:text-[11px] font-mono uppercase tracking-wider text-zinc-400">
+                    Operational Tempo
+                  </span>
+                  <Activity className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-accent-amber" />
+                </div>
+                <div className="flex items-baseline justify-between mt-1 sm:mt-3">
+                  <span className="text-lg sm:text-xl font-semibold tracking-tight text-zinc-100 truncate max-w-[110px] sm:max-w-none">
+                    {summary.telemetry.velocity_status}
+                  </span>
+                  <span className="text-[10px] sm:text-[11px] font-mono text-zinc-400 tabular">
+                    {summary.telemetry.events_last_6h} in 6h
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[10px] sm:text-[11px] font-mono tabular pt-1 border-t border-white/5">
+                  <span className="text-zinc-400">Avg Score:</span>
+                  <span className="text-zinc-200">{summary.telemetry.avg_importance_score} / 10</span>
+                </div>
+              </div>
+            </div>
+          );
+        };
+
+        const renderSitRepContent = () => {
+          if (!summary) {
+            return (
+              <div className="card-slick rounded-xl p-8 text-center space-y-3">
+                <RefreshCw className="w-6 h-6 text-accent-cyan animate-spin mx-auto" />
+                <p className="text-sm font-medium text-zinc-200">Synthesizing Situational Briefing...</p>
+                <p className="text-xs text-zinc-400">Automatic AI synthesis generates every 30 minutes.</p>
+              </div>
+            );
+          }
+
+          return (
+            <div className="card-slick rounded-xl p-4 sm:p-6 space-y-5">
+              {/* Header: Title, Engine Badges, Copy SitRep */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 hairline-b">
+                <div className="flex items-center space-x-2.5 min-w-0">
+                  <div className="p-2 rounded-lg bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/25 shrink-0">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-xs sm:text-sm font-semibold text-zinc-100 tracking-tight uppercase font-mono">
+                        Executive Situational Briefing (BLUF)
+                      </h3>
+                      <span className="text-[9px] sm:text-[10px] font-mono text-accent-cyan bg-accent-cyan/10 px-2 py-0.5 rounded border border-accent-cyan/25 whitespace-nowrap">
+                        30-MIN AUTO FUSION
+                      </span>
                       <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
                     </div>
-                    <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-surface-raised border border-white/5">
-                      <Compass className="w-3 h-3 text-emerald-400" />
-                      <span>Embeddings:</span>
+                    <p className="text-[10px] sm:text-[11px] text-zinc-400 mt-0.5">
+                      Synthesized across {summary.telemetry.total_events} reports, {summary.telemetry.total_clusters} clusters, and {summary.telemetry.cross_source_edges_count} corroboration links
+                    </p>
+                    {/* Active AI Engine Badges */}
+                    <div className="flex flex-wrap items-center gap-2 pt-1.5 text-[10px] sm:text-[11px] font-mono text-zinc-400 tabular">
+                      <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-surface-raised border border-white/5">
+                        <Sparkles className="w-3 h-3 text-accent-cyan" />
+                        <span>Synthesizer:</span>
+                        <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                      </div>
+                      <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-surface-raised border border-white/5">
+                        <Compass className="w-3 h-3 text-emerald-400" />
+                        <span>Embeddings:</span>
+                        <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings={false} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 sm:space-x-3 ml-auto sm:ml-0">
+                  <span className="text-[10px] sm:text-[11px] font-mono text-zinc-400 tabular">
+                    Updated {formatRelativeTime(summary.generated_at)}
+                  </span>
+                  <button
+                    onClick={handleCopyMarkdown}
+                    className="flex items-center space-x-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised hairline-border text-xs font-medium text-zinc-200 transition-colors pressable"
+                  >
+                    {copiedMarkdown ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-emerald-400">Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-zinc-400" />
+                        <span className="hidden sm:inline">Export SitRep</span>
+                        <span className="sm:hidden">Export</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* BLUF Text */}
+              <div className="space-y-3 text-sm text-zinc-200 leading-relaxed">
+                {summary.executive_bluf.split('\n\n').map((para, idx) => (
+                  <p key={idx} className="text-xs sm:text-[13.5px] leading-relaxed text-zinc-200">
+                    {para}
+                  </p>
+                ))}
+              </div>
+
+              {/* Strategic Assessment Callout */}
+              {summary.strategic_assessment && (
+                <div className="p-3.5 sm:p-4 rounded-xl bg-surface-raised/70 border border-white/10 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 text-xs font-mono uppercase tracking-wider text-accent-cyan">
+                    <div className="flex items-center space-x-1.5">
+                      <TrendingUp className="w-3.5 h-3.5" />
+                      <span>Strategic Telemetry Assessment</span>
+                    </div>
+                    <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed">{summary.strategic_assessment}</p>
+                </div>
+              )}
+
+              {/* Key Verified Developments */}
+              {summary.key_developments && summary.key_developments.length > 0 && (
+                <div className="pt-2 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
+                      <Flame className="w-3.5 h-3.5 text-rose-400" />
+                      <span>Key High-Impact Developments</span>
+                    </h4>
+                    <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                  </div>
+                  <div className="space-y-2">
+                    {summary.key_developments.map((dev, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-start justify-between gap-2.5 sm:gap-3 p-3 rounded-lg bg-surface-card/90 hairline-border"
+                      >
+                        <div className="flex items-start space-x-2 sm:space-x-2.5 min-w-0">
+                          <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-accent-cyan/10 border border-accent-cyan/25 text-[11px] font-mono text-accent-cyan tabular">
+                            {idx + 1}
+                          </span>
+                          <div className="space-y-1 min-w-0">
+                            <p className="text-xs text-zinc-200 leading-relaxed">{dev.bullet}</p>
+                            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                              {dev.source_name && (
+                                <span className="text-[10px] font-mono text-zinc-400 bg-zinc-800/80 px-1.5 py-0.5 rounded">
+                                  {dev.source_name}
+                                </span>
+                              )}
+                              {dev.importance_score && (
+                                <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded tabular">
+                                  Score {dev.importance_score}/10
+                                </span>
+                              )}
+                              {dev.trustworthiness_label && (
+                                <span className={cn('text-[10px] font-mono px-1.5 py-0.5 rounded border', getTrustBadgeStyles(dev.trustworthiness_label))}>
+                                  {dev.trustworthiness_label}
+                                </span>
+                              )}
+                              {dev.event_id && citationMap[dev.event_id]?.ai_provenance && (
+                                <AIModelBadge
+                                  provenance={citationMap[dev.event_id]?.ai_provenance?.scoring}
+                                  size="xs"
+                                  linkToSettings={false}
+                                />
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {dev.event_id && citationMap[dev.event_id] && (
+                          <button
+                            onClick={() => handleInspectEventId(dev.event_id)}
+                            className="shrink-0 flex items-center space-x-1 px-2 sm:px-2.5 py-1 rounded bg-surface-raised hover:bg-surface-overlay hairline-border text-[11px] font-medium text-accent-cyan transition-colors pressable"
+                          >
+                            <Eye className="w-3 h-3" />
+                            <span className="hidden sm:inline">Inspect</span>
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Semantic Story Clusters Accordion */}
+              {summary.clusters && summary.clusters.length > 0 && (
+                <div className="pt-2 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
+                      <Layers className="w-3.5 h-3.5 text-accent-cyan" />
+                      <span>Semantic Storyline Clusters ({summary.clusters.length})</span>
+                    </h4>
+                    <div className="flex items-center space-x-2">
+                      <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
                       <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings={false} />
                     </div>
                   </div>
+                  <div className="space-y-2.5">
+                    {summary.clusters.map((c: SummaryClusterBreakdown) => {
+                      const isExpanded = !!expandedClusters[c.cluster_id];
+                      return (
+                        <div key={c.cluster_id} className="p-3.5 sm:p-4 rounded-xl bg-surface-card/60 hairline-border space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center space-x-2">
+                              <span className="px-2 py-0.5 rounded bg-accent-cyan/10 border border-accent-cyan/25 text-accent-cyan font-mono text-[10px] sm:text-[11px] font-semibold">
+                                CLUSTER #{c.cluster_id}
+                              </span>
+                              <span className={cn('px-2 py-0.5 rounded border text-[10px] font-mono uppercase font-semibold', getThreatLevelBadge(c.threat_level))}>
+                                {c.threat_level}
+                              </span>
+                              <span className="text-xs font-semibold text-zinc-100">{c.title}</span>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                              <span className="text-[10px] sm:text-[11px] font-mono text-zinc-400">
+                                {c.report_count} reports • Trust {c.avg_trustworthiness_score}%
+                              </span>
+                            </div>
+                          </div>
+                          <p className="text-xs text-zinc-300 leading-relaxed">{c.executive_summary}</p>
+                          <div className="flex items-center justify-between pt-1 text-[11px] text-zinc-400">
+                            <span><strong>Implication:</strong> {c.operational_implication}</span>
+                            <button
+                              onClick={() => toggleClusterExpand(c.cluster_id)}
+                              className="text-accent-cyan hover:underline inline-flex items-center space-x-1"
+                            >
+                              <span>{isExpanded ? 'Hide reports' : `View ${c.events.length} reports`}</span>
+                              {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                            </button>
+                          </div>
+                          {isExpanded && (
+                            <div className="pt-2 space-y-1.5 border-t border-white/5">
+                              {c.events.map((ev) => (
+                                <div
+                                  key={ev.id}
+                                  className="flex items-center justify-between p-2 rounded bg-surface-raised/60 text-xs"
+                                >
+                                  <div className="min-w-0 pr-2">
+                                    <span className="font-medium text-zinc-200 block truncate">{ev.headline || ev.title}</span>
+                                    <span className="text-[10px] font-mono text-zinc-500">{ev.source_name} • Score {ev.importance_score}/10</span>
+                                  </div>
+                                  <button
+                                    onClick={() => setSelectedEvent(citationToNormalizedEvent(ev, summary.theme_id))}
+                                    className="shrink-0 text-accent-cyan hover:underline text-[11px]"
+                                  >
+                                    Inspect
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
 
-              <div className="flex items-center space-x-3">
-                <span className="text-[11px] font-mono text-zinc-400 tabular">
-                  Updated {formatRelativeTime(summary.generated_at)}
-                </span>
+              {/* 12-24h Tactical Watchlist Indicators */}
+              {summary.watchlist_indicators && summary.watchlist_indicators.length > 0 && (
+                <div className="pt-2 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
+                      <Clock className="w-3.5 h-3.5 text-accent-amber" />
+                      <span>12–24h Tactical Watchlist</span>
+                    </h4>
+                    <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
+                  </div>
+                  <ul className="space-y-2">
+                    {summary.watchlist_indicators.map((indicator, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-start space-x-2.5 p-2.5 rounded-lg bg-surface-card/90 hairline-border text-xs text-zinc-200 leading-relaxed"
+                      >
+                        <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent-cyan/20 text-accent-cyan font-mono text-[10px] font-semibold tabular">
+                          {idx + 1}
+                        </span>
+                        <span>{indicator}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Quick Jump actions for mobile at the bottom of the SitRep card */}
+              <div className="lg:hidden grid grid-cols-2 gap-2 pt-3 border-t border-white/5">
                 <button
-                  onClick={handleCopyMarkdown}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised hairline-border text-xs font-medium text-zinc-200 transition-colors"
+                  onClick={() => {
+                    setMobileTab('feed');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="flex items-center justify-center space-x-1.5 p-2.5 rounded-xl bg-surface-raised hairline-border text-xs font-medium text-zinc-200 hover:text-accent-cyan transition-colors pressable"
                 >
-                  {copiedMarkdown ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-emerald-400">Copied</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5 text-zinc-400" />
-                      <span>Export SitRep</span>
-                    </>
-                  )}
+                  <Radio className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Live Stream &rarr;</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setMobileTab('radar');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="flex items-center justify-center space-x-1.5 p-2.5 rounded-xl bg-surface-raised hairline-border text-xs font-medium text-zinc-200 hover:text-accent-cyan transition-colors pressable"
+                >
+                  <Compass className="w-3.5 h-3.5 text-accent-cyan" />
+                  <span>Radar Map &rarr;</span>
                 </button>
               </div>
             </div>
+          );
+        };
 
-            {/* BLUF Text */}
-            <div className="space-y-3 text-sm text-zinc-200 leading-relaxed">
-              {summary.executive_bluf.split('\n\n').map((para, idx) => (
-                <p key={idx} className="text-[13.5px] leading-relaxed text-zinc-200">
-                  {para}
-                </p>
-              ))}
-            </div>
-
-            {/* Strategic Assessment Callout */}
-            {summary.strategic_assessment && (
-              <div className="p-4 rounded-xl bg-surface-raised/70 border border-white/10 space-y-1.5">
-                <div className="flex items-center justify-between gap-2 text-xs font-mono uppercase tracking-wider text-accent-cyan">
-                  <div className="flex items-center space-x-1.5">
-                    <TrendingUp className="w-3.5 h-3.5" />
-                    <span>Strategic Telemetry Assessment</span>
+        const renderFeedContent = (isMobile = false) => {
+          return (
+            <div className="space-y-4">
+              {/* Feed Filter & Control Toolbar */}
+              <div className="card-slick rounded-xl p-3.5 sm:p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3">
+                  {/* Search Input */}
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search intelligence reports..."
+                      className="w-full rounded-lg bg-canvas-recessed pl-9 pr-3.5 py-2 sm:py-1.5 text-base sm:text-xs text-zinc-100 placeholder-zinc-500 hairline-border focus:outline-none focus:border-accent-cyan"
+                    />
+                    <Search className="absolute left-3 top-2.5 sm:top-2 w-3.5 h-3.5 text-zinc-500" />
+                    {searchQuery && (
+                      <button onClick={() => setSearchQuery('')} className="absolute right-3 top-2.5 sm:top-2 text-zinc-500 hover:text-zinc-300">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
-                  <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
-                </div>
-                <p className="text-xs text-zinc-300 leading-relaxed">{summary.strategic_assessment}</p>
-              </div>
-            )}
 
-            {/* Key Verified Developments */}
-            {summary.key_developments && summary.key_developments.length > 0 && (
-              <div className="pt-2 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
-                    <Flame className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Key High-Impact Developments</span>
-                  </h4>
-                  <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
-                </div>
-                <div className="space-y-2">
-                  {summary.key_developments.map((dev, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-start justify-between gap-3 p-3 rounded-lg bg-surface-card/90 hairline-border"
-                    >
-                      <div className="flex items-start space-x-2.5 min-w-0">
-                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-accent-cyan/10 border border-accent-cyan/25 text-[11px] font-mono text-accent-cyan tabular">
-                          {idx + 1}
-                        </span>
-                        <div className="space-y-1 min-w-0">
-                          <p className="text-xs text-zinc-200 leading-relaxed">{dev.bullet}</p>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {dev.source_name && (
-                              <span className="text-[10px] font-mono text-zinc-400 bg-zinc-800/80 px-1.5 py-0.5 rounded">
-                                {dev.source_name}
-                              </span>
-                            )}
-                            {dev.importance_score && (
-                              <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded tabular">
-                                Score {dev.importance_score}/10
-                              </span>
-                            )}
-                            {dev.trustworthiness_label && (
-                              <span className={cn('text-[10px] font-mono px-1.5 py-0.5 rounded border', getTrustBadgeStyles(dev.trustworthiness_label))}>
-                                {dev.trustworthiness_label}
-                              </span>
-                            )}
-                            {dev.event_id && citationMap[dev.event_id]?.ai_provenance && (
-                              <AIModelBadge
-                                provenance={citationMap[dev.event_id]?.ai_provenance?.scoring}
-                                size="xs"
-                                linkToSettings={false}
-                              />
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {dev.event_id && citationMap[dev.event_id] && (
-                        <button
-                          onClick={() => handleInspectEventId(dev.event_id)}
-                          className="shrink-0 flex items-center space-x-1 px-2.5 py-1 rounded bg-surface-raised hover:bg-surface-overlay hairline-border text-[11px] font-medium text-accent-cyan transition-colors"
-                        >
-                          <Eye className="w-3 h-3" />
-                          <span>Inspect</span>
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Semantic Story Clusters Accordion */}
-            {summary.clusters && summary.clusters.length > 0 && (
-              <div className="pt-2 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
-                    <Layers className="w-3.5 h-3.5 text-accent-cyan" />
-                    <span>Semantic Storyline Clusters ({summary.clusters.length})</span>
-                  </h4>
-                  <div className="flex items-center space-x-2">
-                    <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
-                    <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings={false} />
-                  </div>
-                </div>
-                <div className="space-y-2.5">
-                  {summary.clusters.map((c: SummaryClusterBreakdown) => {
-                    const isExpanded = !!expandedClusters[c.cluster_id];
-                    return (
-                      <div key={c.cluster_id} className="p-4 rounded-xl bg-surface-card/60 hairline-border space-y-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center space-x-2">
-                            <span className="px-2 py-0.5 rounded bg-accent-cyan/10 border border-accent-cyan/25 text-accent-cyan font-mono text-[11px] font-semibold">
-                              CLUSTER #{c.cluster_id}
-                            </span>
-                            <span className={cn('px-2 py-0.5 rounded border text-[10px] font-mono uppercase font-semibold', getThreatLevelBadge(c.threat_level))}>
-                              {c.threat_level}
-                            </span>
-                            <span className="text-xs font-semibold text-zinc-100">{c.title}</span>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
-                            <span className="text-[11px] font-mono text-zinc-400">
-                              {c.report_count} reports • Trust {c.avg_trustworthiness_score}%
-                            </span>
-                          </div>
-                        </div>
-                        <p className="text-xs text-zinc-300 leading-relaxed">{c.executive_summary}</p>
-                        <div className="flex items-center justify-between pt-1 text-[11px] text-zinc-400">
-                          <span><strong>Implication:</strong> {c.operational_implication}</span>
-                          <button
-                            onClick={() => toggleClusterExpand(c.cluster_id)}
-                            className="text-accent-cyan hover:underline inline-flex items-center space-x-1"
-                          >
-                            <span>{isExpanded ? 'Hide reports' : `View ${c.events.length} reports`}</span>
-                            {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                          </button>
-                        </div>
-                        {isExpanded && (
-                          <div className="pt-2 space-y-1.5 border-t border-white/5">
-                            {c.events.map((ev) => (
-                              <div
-                                key={ev.id}
-                                className="flex items-center justify-between p-2 rounded bg-surface-raised/60 text-xs"
-                              >
-                                <div className="min-w-0 pr-2">
-                                  <span className="font-medium text-zinc-200 block truncate">{ev.headline || ev.title}</span>
-                                  <span className="text-[10px] font-mono text-zinc-500">{ev.source_name} • Score {ev.importance_score}/10</span>
-                                </div>
-                                <button
-                                  onClick={() => setSelectedEvent(citationToNormalizedEvent(ev, summary.theme_id))}
-                                  className="shrink-0 text-accent-cyan hover:underline text-[11px]"
-                                >
-                                  Inspect
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* 12-24h Tactical Watchlist Indicators */}
-            {summary.watchlist_indicators && summary.watchlist_indicators.length > 0 && (
-              <div className="pt-2 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
-                    <Clock className="w-3.5 h-3.5 text-accent-amber" />
-                    <span>12–24h Tactical Watchlist</span>
-                  </h4>
-                  <AIModelBadge provenance={synthesizerProv} size="xs" linkToSettings={false} />
-                </div>
-                <ul className="space-y-2">
-                  {summary.watchlist_indicators.map((indicator, idx) => (
-                    <li
-                      key={idx}
-                      className="flex items-start space-x-2.5 p-2.5 rounded-lg bg-surface-card/90 hairline-border text-xs text-zinc-200 leading-relaxed"
-                    >
-                      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent-cyan/20 text-accent-cyan font-mono text-[10px] font-semibold tabular">
-                        {idx + 1}
+                  {/* Controls: Score Slider, Pause Stream, Refresh */}
+                  <div className="flex items-center justify-between sm:justify-end space-x-2">
+                    {/* Score Slider */}
+                    <div className="flex items-center space-x-1.5 bg-canvas-recessed px-2.5 py-1 rounded-lg hairline-border text-xs tabular flex-1 sm:flex-initial justify-center sm:justify-start">
+                      <span className="text-zinc-400 text-[11px]">Min:</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="10"
+                        value={minScore}
+                        onChange={(e) => setMinScore(Number(e.target.value))}
+                        className="w-16 accent-accent-cyan cursor-pointer"
+                      />
+                      <span className="font-mono font-bold text-accent-cyan text-xs">
+                        {minScore > 0 ? `≥${minScore}` : 'All'}
                       </span>
-                      <span>{indicator}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+                    </div>
 
-      {/* -------------------------------------------------------------------- */}
-      {/* SECTION 2: 2-COLUMN SPLIT (LIVE FEED + RELEVANCE CONSENSUS RADAR)    */}
-      {/* -------------------------------------------------------------------- */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* LEFT: Live Intelligence Feed Timeline (7 cols) */}
-        <div className="lg:col-span-7 space-y-4">
-          {/* Feed Filter & Control Toolbar */}
-          <div className="card-slick rounded-xl p-4 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              {/* Search Input */}
-              <div className="relative flex-1">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search intelligence reports..."
-                  className="w-full rounded-lg bg-canvas-recessed pl-9 pr-3.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 hairline-border focus:outline-none focus:border-accent-cyan"
-                />
-                <Search className="absolute left-3 top-2 w-3.5 h-3.5 text-zinc-500" />
-                {searchQuery && (
-                  <button onClick={() => setSearchQuery('')} className="absolute right-3 top-2 text-zinc-500 hover:text-zinc-300">
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+                    {/* Pause Stream */}
+                    <button
+                      onClick={() => setIsPaused(!isPaused)}
+                      className={cn(
+                        'p-2 sm:p-1.5 rounded-lg hairline-border text-xs transition-colors pressable',
+                        isPaused ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-surface-raised text-zinc-300'
+                      )}
+                      title={isPaused ? 'Resume stream' : 'Pause stream'}
+                    >
+                      {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                    </button>
+
+                    {/* Refresh Feed */}
+                    <button
+                      onClick={() => loadIntelligenceData()}
+                      className="p-2 sm:p-1.5 rounded-lg bg-surface-raised hairline-border text-zinc-400 hover:text-zinc-200 transition-colors pressable"
+                      title="Refresh intelligence data"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Source Pills row with smooth horizontal scroll on mobile */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 pt-2 border-t border-white/5">
+                  <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-1 -mx-1 px-1 sm:mx-0 sm:px-0 flex-nowrap sm:flex-wrap">
+                    <span className="text-[10px] font-medium text-zinc-500 uppercase tracking-wider shrink-0 mr-1">Filter:</span>
+                    {sourceFilters.map((sf) => (
+                      <button
+                        key={sf.id}
+                        onClick={() => setSelectedSource(sf.id)}
+                        className={cn(
+                          'px-2.5 py-1 sm:py-0.5 rounded-md sm:rounded text-[11px] font-medium transition-all hairline-border shrink-0 pressable whitespace-nowrap',
+                          selectedSource === sf.id
+                            ? 'bg-surface-raised text-accent-cyan border-accent-cyan/40 shadow-sm'
+                            : 'bg-canvas-recessed text-zinc-400 hover:text-zinc-200'
+                        )}
+                      >
+                        {sf.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-[10px] sm:text-[11px] font-mono text-zinc-500 tabular shrink-0 pt-0.5 sm:pt-0">
+                    Showing {filteredEvents.length} of {events.length}
+                  </div>
+                </div>
+              </div>
+
+              {/* Timeline Cards Stream */}
+              <div className="space-y-3">
+                {loading ? (
+                  <div className="space-y-3">
+                    {[1, 2, 3].map((i) => (
+                      <div key={i} className="card-slick rounded-xl p-4 space-y-2 animate-pulse">
+                        <div className="h-3 bg-zinc-800 rounded w-1/4" />
+                        <div className="h-5 bg-zinc-800 rounded w-3/4" />
+                        <div className="h-3 bg-zinc-800 rounded w-full" />
+                      </div>
+                    ))}
+                  </div>
+                ) : filteredEvents.length === 0 ? (
+                  <div className="card-slick rounded-xl p-8 text-center space-y-2">
+                    <p className="text-sm text-zinc-300 font-medium">No intelligence events match filters</p>
+                    <p className="text-xs text-zinc-500">Try relaxing your search query or minimum score filter.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredEvents.map((event) => (
+                      <EventCard
+                        key={event.id}
+                        event={event}
+                        onOpenDetails={(ev) => setSelectedEvent(ev)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        };
+
+        const renderRadarContent = (isMobile = false) => {
+          return (
+            <div className="space-y-4">
+              <div className="card-slick rounded-xl p-3.5 sm:p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2 hairline-b">
+                  <div className="flex items-center space-x-2">
+                    <Compass className="w-4 h-4 text-accent-cyan" />
+                    <h3 className="text-xs font-semibold text-zinc-100 uppercase tracking-wider font-mono">
+                      Consensus &amp; Relevance Radar
+                    </h3>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings={false} />
+                    <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                      CORE-TO-PERIPHERY
+                    </span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Multi-source consensus radar. Confirmed high-agreement clusters anchor the core, while isolated single-source dispatches orbit the outer perimeter.
+                </p>
+                {/* Touch hint for mobile users */}
+                {isMobile && (
+                  <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 bg-surface-raised/70 px-2.5 py-1.5 rounded-lg hairline-border">
+                    <span>💡 Touch: Pinch to zoom • Drag to pan</span>
+                    <span className="text-accent-cyan">Tap node to inspect</span>
+                  </div>
                 )}
               </div>
 
-              {/* Controls: Sort, Score Slider, Pause Stream, Refresh */}
-              <div className="flex items-center space-x-2">
-                {/* Score Slider */}
-                <div className="flex items-center space-x-1.5 bg-canvas-recessed px-2.5 py-1 rounded-lg hairline-border text-xs tabular">
-                  <span className="text-zinc-400 text-[11px]">Min:</span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="10"
-                    value={minScore}
-                    onChange={(e) => setMinScore(Number(e.target.value))}
-                    className="w-16 accent-accent-cyan cursor-pointer"
-                  />
-                  <span className="font-mono font-bold text-accent-cyan text-xs">
-                    {minScore > 0 ? `≥${minScore}` : 'All'}
-                  </span>
+              {/* Interactive Relevance Map in Read-Only Mode */}
+              <div
+                className={cn(
+                  'rounded-xl overflow-hidden hairline-border bg-surface-card',
+                  isMobile ? 'h-[calc(100vh-270px)] min-h-[460px] max-h-[720px]' : ''
+                )}
+              >
+                <RelevanceMap
+                  data={mapData}
+                  isLoading={loading}
+                  onRefresh={() => loadIntelligenceData()}
+                  readOnly={true}
+                />
+              </div>
+            </div>
+          );
+        };
+
+        return (
+          <>
+            {/* ================================================================ */}
+            {/* MOBILE LAYOUT (< 1024px: lg:hidden)                              */}
+            {/* Dedicated Tabs: SitRep Briefing | Live Stream | Consensus Radar  */}
+            {/* ================================================================ */}
+            <div className="lg:hidden space-y-4">
+              {/* Mobile Top Segmented Tab Switcher */}
+              <div className="sticky top-14 z-30 -mx-3 px-3 py-2 bg-canvas-subtle/95 backdrop-blur-md border-b border-white/5">
+                <div className="flex items-center rounded-xl bg-canvas-recessed p-1 hairline-border">
+                  <button
+                    onClick={() => {
+                      setMobileTab('sitrep');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={cn(
+                      'flex-1 flex items-center justify-center space-x-1.5 py-1.5 rounded-lg text-xs font-medium transition-all pressable',
+                      mobileTab === 'sitrep'
+                        ? 'bg-surface-raised text-zinc-100 shadow-sm hairline-border'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    )}
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-accent-cyan" />
+                    <span>SitRep</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setMobileTab('feed');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={cn(
+                      'flex-1 flex items-center justify-center space-x-1.5 py-1.5 rounded-lg text-xs font-medium transition-all pressable',
+                      mobileTab === 'feed'
+                        ? 'bg-surface-raised text-zinc-100 shadow-sm hairline-border'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    )}
+                  >
+                    <Radio className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Live Stream</span>
+                    {filteredEvents.length > 0 && (
+                      <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-surface-card text-zinc-300 hairline-border">
+                        {filteredEvents.length}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setMobileTab('radar');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={cn(
+                      'flex-1 flex items-center justify-center space-x-1.5 py-1.5 rounded-lg text-xs font-medium transition-all pressable',
+                      mobileTab === 'radar'
+                        ? 'bg-surface-raised text-zinc-100 shadow-sm hairline-border'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    )}
+                  >
+                    <Compass className="w-3.5 h-3.5 text-accent-cyan" />
+                    <span>Radar Map</span>
+                  </button>
                 </div>
-
-                {/* Pause Stream */}
-                <button
-                  onClick={() => setIsPaused(!isPaused)}
-                  className={cn(
-                    'p-1.5 rounded-lg hairline-border text-xs transition-colors',
-                    isPaused ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-surface-raised text-zinc-300'
-                  )}
-                  title={isPaused ? 'Resume stream' : 'Pause stream'}
-                >
-                  {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-                </button>
-
-                {/* Refresh Feed */}
-                <button
-                  onClick={() => loadIntelligenceData()}
-                  className="p-1.5 rounded-lg bg-surface-raised hairline-border text-zinc-400 hover:text-zinc-200 transition-colors"
-                  title="Refresh intelligence data"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                </button>
               </div>
+
+              {/* Mobile View Active Tab Display */}
+              {mobileTab === 'sitrep' && (
+                <div className="space-y-4 animate-fade-in">
+                  {renderKpiCards(true)}
+                  {renderSitRepContent()}
+                </div>
+              )}
+
+              {mobileTab === 'feed' && (
+                <div className="space-y-4 animate-fade-in">
+                  {renderFeedContent(true)}
+                </div>
+              )}
+
+              {mobileTab === 'radar' && (
+                <div className="space-y-4 animate-fade-in">
+                  {renderRadarContent(true)}
+                </div>
+              )}
+
+              {/* Fixed Mobile Bottom Navigation Bar (Thumb ergonomics) */}
+              <nav className="fixed bottom-0 left-0 right-0 z-40 bg-canvas-subtle/95 backdrop-blur-md hairline-t px-2 py-1.5 pb-[calc(0.5rem+env(safe-area-inset-bottom))] shadow-2xl">
+                <div className="flex items-center justify-around max-w-md mx-auto">
+                  <button
+                    onClick={() => {
+                      setMobileTab('sitrep');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={cn(
+                      'flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-xl transition-all pressable',
+                      mobileTab === 'sitrep' ? 'text-accent-cyan font-semibold' : 'text-zinc-400 hover:text-zinc-200'
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        'p-1 rounded-lg transition-colors',
+                        mobileTab === 'sitrep' ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-zinc-400'
+                      )}
+                    >
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <span className="text-[10px] mt-0.5 tracking-tight">SitRep</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setMobileTab('feed');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={cn(
+                      'flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-xl transition-all pressable relative',
+                      mobileTab === 'feed' ? 'text-accent-cyan font-semibold' : 'text-zinc-400 hover:text-zinc-200'
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        'p-1 rounded-lg transition-colors relative',
+                        mobileTab === 'feed' ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-zinc-400'
+                      )}
+                    >
+                      <Radio className="w-4 h-4" />
+                      {events.length > 0 && (
+                        <span className="absolute -top-1 -right-2 px-1 py-0.2 bg-emerald-500 text-zinc-950 font-mono text-[9px] font-bold rounded-full min-w-[16px] text-center">
+                          {events.length > 99 ? '99+' : events.length}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] mt-0.5 tracking-tight">Live Stream</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setMobileTab('radar');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className={cn(
+                      'flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-xl transition-all pressable',
+                      mobileTab === 'radar' ? 'text-accent-cyan font-semibold' : 'text-zinc-400 hover:text-zinc-200'
+                    )}
+                  >
+                    <div
+                      className={cn(
+                        'p-1 rounded-lg transition-colors',
+                        mobileTab === 'radar' ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-zinc-400'
+                      )}
+                    >
+                      <Compass className="w-4 h-4" />
+                    </div>
+                    <span className="text-[10px] mt-0.5 tracking-tight">Radar Map</span>
+                  </button>
+                </div>
+              </nav>
             </div>
 
-            {/* Source Pills row */}
-            <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-white/5">
-              <span className="text-[10px] font-medium text-zinc-500 uppercase tracking-wider mr-1">Filter:</span>
-              {sourceFilters.map((sf) => (
-                <button
-                  key={sf.id}
-                  onClick={() => setSelectedSource(sf.id)}
-                  className={cn(
-                    'px-2.5 py-0.5 rounded text-[11px] font-medium transition-all hairline-border',
-                    selectedSource === sf.id
-                      ? 'bg-surface-raised text-accent-cyan border-accent-cyan/40'
-                      : 'bg-canvas-recessed text-zinc-400 hover:text-zinc-200'
-                  )}
-                >
-                  {sf.label}
-                </button>
-              ))}
-              <div className="ml-auto text-[11px] font-mono text-zinc-500 tabular">
-                Showing {filteredEvents.length} of {events.length}
+            {/* ================================================================ */}
+            {/* DESKTOP LAYOUT (>= 1024px: hidden lg:block)                      */}
+            {/* Unified Command Center: Top 4-Col KPIs + SitRep + 7/5 Col Split  */}
+            {/* ================================================================ */}
+            <div className="hidden lg:block space-y-6">
+              {summary && (
+                <div className="space-y-4">
+                  {renderKpiCards(false)}
+                  {renderSitRepContent()}
+                </div>
+              )}
+
+              <div className="grid grid-cols-12 gap-6 items-start">
+                <div className="col-span-7 space-y-4">
+                  {renderFeedContent(false)}
+                </div>
+                <div className="col-span-5 space-y-4">
+                  {renderRadarContent(false)}
+                </div>
               </div>
             </div>
-          </div>
-
-          {/* Timeline Cards Stream */}
-          <div className="space-y-3">
-            {loading ? (
-              <div className="space-y-3">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="card-slick rounded-xl p-4 space-y-2 animate-pulse">
-                    <div className="h-3 bg-zinc-800 rounded w-1/4" />
-                    <div className="h-5 bg-zinc-800 rounded w-3/4" />
-                    <div className="h-3 bg-zinc-800 rounded w-full" />
-                  </div>
-                ))}
-              </div>
-            ) : filteredEvents.length === 0 ? (
-              <div className="card-slick rounded-xl p-8 text-center space-y-2">
-                <p className="text-sm text-zinc-300 font-medium">No intelligence events match filters</p>
-                <p className="text-xs text-zinc-500">Try relaxing your search query or minimum score filter.</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {filteredEvents.map((event) => (
-                  <EventCard
-                    key={event.id}
-                    event={event}
-                    onOpenDetails={(ev) => setSelectedEvent(ev)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* RIGHT: 2D Relevance & Consensus Radar (5 cols) */}
-        <div className="lg:col-span-5 space-y-4">
-          <div className="card-slick rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between pb-2 hairline-b">
-              <div className="flex items-center space-x-2">
-                <Compass className="w-4 h-4 text-accent-cyan" />
-                <h3 className="text-xs font-semibold text-zinc-100 uppercase tracking-wider font-mono">
-                  Consensus &amp; Relevance Radar
-                </h3>
-              </div>
-              <div className="flex items-center space-x-2">
-                <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings={false} />
-                <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                  CORE-TO-PERIPHERY
-                </span>
-              </div>
-            </div>
-            <p className="text-[11px] text-zinc-400 leading-relaxed">
-              Multi-source consensus radar. Confirmed high-agreement clusters anchor the core, while isolated single-source dispatches orbit the outer perimeter.
-            </p>
-          </div>
-
-          {/* Interactive Relevance Map in Read-Only Mode */}
-          <div className="rounded-xl overflow-hidden hairline-border bg-surface-card">
-            <RelevanceMap
-              data={mapData}
-              isLoading={loading}
-              onRefresh={() => loadIntelligenceData()}
-              readOnly={true}
-            />
-          </div>
-        </div>
-      </div>
+          </>
+        );
+      })()}
 
       {/* Event Details Inspection Modal */}
       <EventDetailsModal
