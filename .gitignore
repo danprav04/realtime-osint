@@ -76,4 +76,21 @@ scratch_*.py
 *.swo
 .DS_Store
 Thumbs.db
-backend_deploy.tar
+# Deployment archives & temporary build artifacts
+*.tar
+*.tar.gz
+*.tgz
+.tmp-*
+*.tmp
+deploy_status.txt
+deploy_out.log
+deploy_err.log
+*.log
+
+# Local secrets & keys
+*.pem
+*.key
+*.cert
+*.crt
+id_rsa*
+id_ed25519*

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.auth import verify_admin_password, verify_api_key_string
@@ -223,7 +224,9 @@ async def test_db_init_and_crud():
         assert event.id is not None
 
         # Verify query with relationship
-        result = await session.execute(select(Theme).where(Theme.id == theme.id))
+        result = await session.execute(
+            select(Theme).options(selectinload(Theme.events)).where(Theme.id == theme.id)
+        )
         fetched_theme = result.scalars().first()
         assert fetched_theme is not None
         assert len(fetched_theme.sources) == 1

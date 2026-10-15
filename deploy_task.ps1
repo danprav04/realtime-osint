@@ -1,7 +1,7 @@
 # Wrapper executed by the OsintDeploy scheduled task (runs outside interactive
 # shells so long transfers cannot be killed by parent-process cleanup).
 $ErrorActionPreference = 'Continue'
-Set-Location 'C:\Users\Developer\realtime-osint'
+Set-Location $PSScriptRoot
 'DEPLOY_TASK_START ' + (Get-Date -Format o) | Out-File deploy_status.txt -Encoding ascii
 # Run deploy.ps1 in a child process: captures Write-Host output to files and
 # survives deploy.ps1's internal `exit 1` calls.

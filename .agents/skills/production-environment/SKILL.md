@@ -10,11 +10,11 @@ description: >-
 
 ## 1. Host Identity & Network Access
 
-- **SSH Target**: `ubuntu@production`
+- **SSH Target**: `ubuntu@production` (or configured via `DEPLOY_REMOTE_USER` and `DEPLOY_REMOTE_HOST`)
 - **Tailscale MagicDNS**: `production`
-- **Tailscale IP**: `100.64.0.1`
-- **Public IP**: `192.0.2.1` (Oracle Cloud Infrastructure, ingress locked to port 22/80/443; internal traffic routed securely via `tailscale0`)
-- **Remote Project Directory**: `/home/ubuntu/deployments/realtime-osint`
+- **Tailscale IP**: Set in local `.env` via `DEPLOY_TAILSCALE_IP` (e.g. `100.x.y.z`) or accessed via `production` MagicDNS
+- **Public IP**: Ingress locked to reverse-proxy port 22/80/443; internal traffic routed securely via VPN / Tailscale
+- **Remote Project Directory**: `/home/ubuntu/deployments/realtime-osint` (configurable via `DEPLOY_REMOTE_DIR`)
 
 > [!NOTE]
 > All services on `production` are accessed over Tailscale VPN. Always verify Tailscale connectivity before issuing remote management commands.
@@ -34,7 +34,7 @@ The host is an Oracle Cloud `VM.Standard.E2.1.Micro` instance:
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `osint-postgres` | `postgres:16-alpine` | `120M` | `45M` | `5432` | *None* (Docker network only) |
 | `osint-redis` | `redis:7-alpine` | `50M` | `20M` | `6379` | *None* (Docker network only) |
-| `osint-backend` | `realtimeosint-backend:latest` | `450M` | `150M` | `8000` | `24176:8000` |
+| `osint-backend` | `realtimeosint-backend:latest` | `380M` | `150M` | `8000` | `24176:8000` |
 | `osint-frontend` | `realtimeosint-frontend:latest` | `180M` | `80M` | `3000` | `26816:3000` |
 
 ---
@@ -53,12 +53,12 @@ The server also runs host-level services (`macros-counter-service`, PostgreSQL o
 
 ## 4. Live Endpoints (Tailscale VPN)
 
-| Service | Tailscale Domain | Tailscale IP |
+| Service | Tailscale Domain | Tailscale IP / VPN Host |
 | :--- | :--- | :--- |
-| **Frontend Web UI** | `http://production:26816` | `http://100.64.0.1:26816` |
-| **Backend API Health** | `http://production:24176/api/health` | `http://100.64.0.1:24176/api/health` |
-| **Backend REST API** | `http://production:24176/api/events` | `http://100.64.0.1:24176/api/events` |
-| **WebSocket Gateway** | `http://production:24176/socket.io` | `http://100.64.0.1:24176/socket.io` |
+| **Frontend Web UI** | `http://production:26816` | `http://${DEPLOY_TAILSCALE_IP}:26816` |
+| **Backend API Health** | `http://production:24176/api/health` | `http://${DEPLOY_TAILSCALE_IP}:24176/api/health` |
+| **Backend REST API** | `http://production:24176/api/events` | `http://${DEPLOY_TAILSCALE_IP}:24176/api/events` |
+| **WebSocket Gateway** | `http://production:24176/socket.io` | `http://${DEPLOY_TAILSCALE_IP}:24176/socket.io` |
 
 *Default API Key*: `osint_secret_key_2026` (passed via header `X-API-Key: osint_secret_key_2026`).
 
@@ -115,5 +115,5 @@ ssh ubuntu@production "cd /home/ubuntu/deployments/realtime-osint && docker comp
 
 ### Test Remote API Health from Local Desktop
 ```powershell
-curl -i "http://100.64.0.1:24176/api/health"
+curl -i "http://production:24176/api/health"
 ```

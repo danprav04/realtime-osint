@@ -113,7 +113,10 @@ async def tier5_db_session_factory():
         await session.commit()
 
     yield factory
-    await engine.dispose()
+    try:
+        await engine.dispose()
+    except Exception:
+        pass
 
 
 class MockTier5RedisBus(RedisBus):

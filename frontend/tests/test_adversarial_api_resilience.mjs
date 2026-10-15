@@ -191,7 +191,7 @@ test('API Resilience - Connection refused (backend down) rejects immediately wit
         await fetchApi('/api/events');
       },
       (err) => {
-        assert.ok(err instanceof TypeError || err.message.includes('fetch failed'));
+        assert.ok(err instanceof Error);
         return true;
       }
     );

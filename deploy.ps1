@@ -27,10 +27,43 @@ param(
     [string]$RemoteHost = "production",
     [string]$RemoteUser = "ubuntu",
     [string]$RemoteDir = "/home/ubuntu/deployments/realtime-osint",
-    [string]$TailscaleIP = "100.64.0.1"
+    [string]$TailscaleIP = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+# Load local .env overrides if present
+if (Test-Path .env) {
+    Get-Content .env | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith("#") -and $line -match '^\s*([^=]+?)\s*=\s*(.*)$') {
+            $k = $matches[1].Trim()
+            $v = $matches[2].Trim().Trim('"').Trim("'")
+            if (-not [System.Environment]::GetEnvironmentVariable($k)) {
+                [System.Environment]::SetEnvironmentVariable($k, $v)
+            }
+        }
+    }
+}
+
+if (-not $PSBoundParameters.ContainsKey('TailscaleIP') -or [string]::IsNullOrWhiteSpace($TailscaleIP)) {
+    if ($env:DEPLOY_TAILSCALE_IP) {
+        $TailscaleIP = $env:DEPLOY_TAILSCALE_IP
+    } elseif ($env:TAILSCALE_IP) {
+        $TailscaleIP = $env:TAILSCALE_IP
+    } else {
+        $TailscaleIP = "127.0.0.1"
+    }
+}
+if (-not $PSBoundParameters.ContainsKey('RemoteHost') -and $env:DEPLOY_REMOTE_HOST) {
+    $RemoteHost = $env:DEPLOY_REMOTE_HOST
+}
+if (-not $PSBoundParameters.ContainsKey('RemoteUser') -and $env:DEPLOY_REMOTE_USER) {
+    $RemoteUser = $env:DEPLOY_REMOTE_USER
+}
+if (-not $PSBoundParameters.ContainsKey('RemoteDir') -and $env:DEPLOY_REMOTE_DIR) {
+    $RemoteDir = $env:DEPLOY_REMOTE_DIR
+}
 
 function Write-Step {
     param([string]$Text)

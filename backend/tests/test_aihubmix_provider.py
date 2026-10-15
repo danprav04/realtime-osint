@@ -168,5 +168,9 @@ async def test_live_aihubmix_completion():
         assert reply is not None
         assert len(reply.strip()) > 0
         assert "CONFIRMED" in reply.upper() or len(reply) > 0
+    except (RuntimeError, PermissionError) as exc:
+        if any(term in str(exc) for term in ["Quota Exceeded", "ResourceExhausted", "429", "free model quota"]):
+            pytest.skip(f"AIHubMix live quota exhausted: {exc}")
+        raise
     finally:
         await provider.close()

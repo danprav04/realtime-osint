@@ -199,16 +199,18 @@ async def test_source_deletion_sets_event_source_id_null(session_factory):
         session.add(event)
         await session.commit()
 
+        event_id = event.id
         # Delete Source
         await session.delete(source)
         await session.commit()
 
         # Verify Event still exists, but source_id is NULL
-        refreshed_event = (
-            await session.execute(select(Event).where(Event.id == event.id))
-        ).scalars().first()
-        assert refreshed_event is not None
-        assert refreshed_event.source_id is None
+        async with session_factory() as verify_session:
+            refreshed_event = (
+                await verify_session.execute(select(Event).where(Event.id == event_id))
+            ).scalars().first()
+            assert refreshed_event is not None
+            assert refreshed_event.source_id is None
 
 
 @pytest.mark.asyncio
