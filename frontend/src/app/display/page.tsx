@@ -302,6 +302,8 @@ export default function PublicDisplayPage() {
             importance_score: ev.importance_score ?? 8,
             source_name: ev.source_name,
             source_url: ev.source_url,
+            ai_provenance: ev.ai_provenance || ev.metadata_json?.ai_provenance,
+            metadata_json: ev.metadata_json,
             published_at: ev.published_at,
             timestamp: ev.published_at,
             created_at: ev.ingested_at,
@@ -391,6 +393,8 @@ export default function PublicDisplayPage() {
           importance_score: newEvent.importance_score ?? 8,
           source_name: newEvent.source_name,
           source_url: newEvent.source_url,
+          ai_provenance: newEvent.ai_provenance || (newEvent as any).metadata_json?.ai_provenance || (newEvent as any).metadata?.ai_provenance,
+          metadata_json: (newEvent as any).metadata_json || (newEvent as any).metadata,
           published_at: newEvent.published_at,
           timestamp: newEvent.published_at,
           created_at: newEvent.ingested_at,
@@ -413,6 +417,8 @@ export default function PublicDisplayPage() {
         importance_score: alertData.importance_score ?? 9,
         source_name: alertData.source_name || 'REAL-TIME OSINT',
         source_url: alertData.source_url,
+        ai_provenance: alertData.ai_provenance || alertData.metadata_json?.ai_provenance || alertData.metadata?.ai_provenance,
+        metadata_json: alertData.metadata_json || alertData.metadata,
         published_at: alertData.published_at || new Date().toISOString(),
         timestamp: alertData.timestamp || new Date().toISOString(),
         created_at: alertData.created_at || new Date().toISOString(),
@@ -574,7 +580,7 @@ export default function PublicDisplayPage() {
   // --------------------------------------------------------------------------
   if (isCheckingAuth) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-canvas-base">
+      <div className="min-h-[calc(100vh-12rem)] flex items-center justify-center">
         <div className="flex flex-col items-center space-y-3">
           <AppIcon size={48} animated />
           <span className="text-xs font-mono text-zinc-500 animate-pulse">
@@ -590,7 +596,7 @@ export default function PublicDisplayPage() {
   // --------------------------------------------------------------------------
   if (!token) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4 bg-canvas-base">
+      <div className="min-h-[calc(100vh-12rem)] flex items-center justify-center p-4">
         <div className="w-full max-w-md card-slick rounded-2xl p-8 border border-white/10 shadow-2xl space-y-6">
           <div className="flex flex-col items-center text-center space-y-3">
             <div className="relative p-3 rounded-2xl bg-surface-raised border border-white/10 shadow-inner">
@@ -683,7 +689,7 @@ export default function PublicDisplayPage() {
   const trajStyle = getTrajectoryStyles(summary?.threat_trajectory);
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-6 pb-12 -mt-6">
       {/* Public Top Header Bar */}
       <header className="sticky top-0 z-40 w-full bg-canvas-subtle/95 backdrop-blur hairline-b px-4 py-2.5 -mx-4 sm:-mx-6 lg:-mx-8 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
@@ -760,11 +766,32 @@ export default function PublicDisplayPage() {
       {alerts.length > 0 && (
         <AlertWheel
           alerts={alerts}
+          events={events}
           onDismissAlert={(id) => setAlerts((prev) => prev.filter((a) => a.id !== id && a.event_id !== id))}
           onDismissAll={() => setAlerts([])}
           onOpenDetails={(alert) => {
             const match = events.find((e) => e.id === alert.id || e.id === alert.event_id);
-            if (match) setSelectedEvent(match);
+            if (match) {
+              setSelectedEvent(match);
+            } else {
+              setSelectedEvent({
+                id: alert.id || alert.event_id || 'preview-alert',
+                theme_id: activeTheme?.id || 'default',
+                source_type: 'alert',
+                source_name: alert.source_name || 'REAL-TIME OSINT',
+                source_url: alert.source_url,
+                external_id: alert.event_id || alert.id,
+                title: alert.title,
+                headline: alert.headline || alert.title,
+                summary: alert.summary,
+                raw_text: alert.summary || alert.title,
+                importance_score: alert.importance_score ?? 9,
+                ai_provenance: alert.ai_provenance || alert.metadata_json?.ai_provenance,
+                metadata_json: alert.metadata_json,
+                published_at: alert.published_at || new Date().toISOString(),
+                ingested_at: alert.created_at || new Date().toISOString(),
+              });
+            }
           }}
         />
       )}

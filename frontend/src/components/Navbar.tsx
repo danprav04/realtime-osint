@@ -25,10 +25,15 @@ import { AuthModal } from './AuthModal';
 import { cn, getProviderRateLimitStatuses } from '@/lib/utils';
 
 import { AppIcon } from '@/components/AppIcon';
+import { InstallPwaButton } from '@/components/pwa/InstallPwaButton';
 
 export function Navbar() {
   const pathname = usePathname();
-  const { isConnected } = useSocketConnection();
+  const isDisplay =
+    pathname?.startsWith('/display') ||
+    (typeof window !== 'undefined' && window.location.hostname.includes('ir-osint'));
+
+  const { isConnected } = useSocketConnection(!isDisplay);
   const [activeTheme, setActiveTheme] = useState<Theme | null>(null);
   const [sysSettings, setSysSettings] = useState<SystemSettings | null>(null);
   const [aiSettings, setAiSettings] = useState<AIPipelineSettings | null>(null);
@@ -38,6 +43,7 @@ export function Navbar() {
   const limitsMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (isDisplay) return;
     let isMounted = true;
     Promise.all([
       getActiveTheme().catch(() => null),
@@ -54,7 +60,7 @@ export function Navbar() {
     return () => {
       isMounted = false;
     };
-  }, [pathname]);
+  }, [pathname, isDisplay]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -88,6 +94,10 @@ export function Navbar() {
     { href: '/trends', label: 'Trends & Analytics', icon: BarChart3 },
     { href: '/settings', label: 'Settings', icon: Sliders },
   ];
+
+  if (isDisplay) {
+    return null;
+  }
 
   return (
     <>

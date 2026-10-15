@@ -11,6 +11,12 @@ export function getWsBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const custom = localStorage.getItem('osint_ws_url') || localStorage.getItem('osint_api_url');
     if (custom) return custom;
+    // When served over standard ports or behind a reverse proxy (e.g. ir-osint.danprav.me),
+    // always use current origin without appending a custom port.
+    if (!window.location.port || window.location.port === '80' || window.location.port === '443') {
+      return window.location.origin;
+    }
+    // Direct access to host ports (e.g. Tailscale http://production:26816)
     if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
       const port = process.env.NEXT_PUBLIC_API_PORT || '24176';
       return `${window.location.protocol}//${window.location.hostname}:${port}`;
@@ -40,6 +46,7 @@ export function getSocket(): Socket | null {
 }
 
 let viewerSocketInstance: Socket | null = null;
+let currentViewerToken: string | null = null;
 
 export function getViewerSocket(viewerToken?: string | null): Socket | null {
   if (typeof window === 'undefined') return null;
@@ -47,11 +54,19 @@ export function getViewerSocket(viewerToken?: string | null): Socket | null {
     if (viewerSocketInstance) {
       viewerSocketInstance.disconnect();
       viewerSocketInstance = null;
+      currentViewerToken = null;
     }
     return null;
   }
 
+  // If token changed, recreate connection
+  if (viewerSocketInstance && currentViewerToken !== viewerToken) {
+    viewerSocketInstance.disconnect();
+    viewerSocketInstance = null;
+  }
+
   if (!viewerSocketInstance) {
+    currentViewerToken = viewerToken;
     const wsUrl = getWsBaseUrl();
     viewerSocketInstance = io(wsUrl, {
       path: '/socket.io',
@@ -67,11 +82,16 @@ export function getViewerSocket(viewerToken?: string | null): Socket | null {
 }
 
 
-export function useSocketConnection() {
+export function useSocketConnection(enabled: boolean = true) {
   const [isConnected, setIsConnected] = useState(false);
   const [lastPing, setLastPing] = useState<number | null>(null);
 
   useEffect(() => {
+    if (!enabled) {
+      setIsConnected(false);
+      return;
+    }
+
     const socket = getSocket();
     if (!socket) return;
 

@@ -17,6 +17,12 @@ export function getApiBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const custom = localStorage.getItem('osint_api_url');
     if (custom) return custom;
+    // When served over standard ports or behind a reverse proxy (e.g. ir-osint.danprav.me),
+    // always use current origin without appending a custom port.
+    if (!window.location.port || window.location.port === '80' || window.location.port === '443') {
+      return window.location.origin;
+    }
+    // Direct access to host ports (e.g. Tailscale http://production:26816)
     if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
       const port = process.env.NEXT_PUBLIC_API_PORT || '24176';
       return `${window.location.protocol}//${window.location.hostname}:${port}`;
