@@ -1,10 +1,13 @@
 """
-backend/app/pipeline/providers/factory.py - Provider Factory & 3-Tier API Key Resolution
+backend/app/pipeline/providers/factory.py - Provider Factory & Multi-Key Resolution Engine
+==========================================================================================
+Supports 3-tier API key resolution hierarchy, Groq multi-key load balancing pool,
+and cross-stage provider pooling.
 """
 
 import os
 import logging
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 from backend.app.config import Settings, get_settings
 from backend.app.pipeline.models import AIStageConfig
 from backend.app.pipeline.providers.base import BaseAIProvider
@@ -12,8 +15,81 @@ from backend.app.pipeline.providers.gemini import GeminiProvider
 from backend.app.pipeline.providers.groq import GroqProvider
 from backend.app.pipeline.providers.aihubmix import AIHubMixProvider
 from backend.app.pipeline.providers.mock import MockAIProvider
+from backend.app.pipeline.providers.key_pool import GroqKeyPool, parse_key_list
 
 logger = logging.getLogger("osint.ai.factory")
+
+_shared_groq_pool: Optional[GroqKeyPool] = None
+
+
+def get_shared_groq_pool(keys: Optional[List[str]] = None) -> GroqKeyPool:
+    """
+    Get or initialize the process-wide GroqKeyPool singleton.
+    Ensures all Groq models across stages (extraction, summarization, visuals)
+    share synchronized rotation, pacing, and 429 cooldown status.
+    """
+    global _shared_groq_pool
+    if _shared_groq_pool is None:
+        _shared_groq_pool = GroqKeyPool(keys=keys)
+    elif keys:
+        _shared_groq_pool.set_keys(keys)
+    return _shared_groq_pool
+
+
+def resolve_api_keys(
+    provider_name: str,
+    stage_override: Optional[str] = None,
+    db_keys: Optional[Dict[str, str]] = None,
+    settings: Optional[Settings] = None,
+) -> List[str]:
+    """
+    3-Tier Multi-Key Resolution Hierarchy:
+      Tier 1 (Highest): Per-stage explicit override (comma-separated or single)
+      Tier 2 (Medium):  Dynamic DB SystemSettings key ("api_keys" table row)
+      Tier 3 (Default): Global environment variables (.env)
+    Returns an ordered, deduplicated list of non-empty API keys.
+    """
+    p_norm = provider_name.lower().strip()
+
+    # Tier 1: Stage-specific override
+    if stage_override and stage_override.strip() and not stage_override.startswith("***"):
+        parsed = parse_key_list(stage_override)
+        if parsed:
+            return parsed
+
+    # Tier 2: Dynamic DB SystemSettings
+    db_k = db_keys or {}
+    for k_name in (f"{p_norm}_api_keys", f"{p_norm}_api_key"):
+        val = db_k.get(k_name)
+        if val and not str(val).startswith("***"):
+            parsed = parse_key_list(val)
+            if parsed:
+                return parsed
+
+    # Tier 3: Environment variables
+    st = settings or get_settings()
+    if p_norm == "groq":
+        if hasattr(st, "get_groq_api_keys"):
+            parsed_st = st.get_groq_api_keys()
+            if parsed_st:
+                return parsed_st
+        env_val = (
+            getattr(st, "GROQ_API_KEYS", None)
+            or os.environ.get("GROQ_API_KEYS")
+            or getattr(st, "GROQ_API_KEY", None)
+            or os.environ.get("GROQ_API_KEY")
+        )
+        return parse_key_list(env_val)
+
+    elif p_norm == "gemini":
+        env_val = getattr(st, "GEMINI_API_KEY", None) or os.environ.get("GEMINI_API_KEY")
+        return parse_key_list(env_val)
+
+    elif p_norm in ("aihubmix", "aihub", "inferera"):
+        env_val = getattr(st, "AIHUBMIX_API_KEY", None) or os.environ.get("AIHUBMIX_API_KEY")
+        return parse_key_list(env_val)
+
+    return []
 
 
 def resolve_api_key(
@@ -23,39 +99,15 @@ def resolve_api_key(
     settings: Optional[Settings] = None,
 ) -> Optional[str]:
     """
-    3-Tier API Key Resolution Hierarchy:
-      Tier 1 (Highest): Per-stage explicit override
-      Tier 2 (Medium):  Dynamic DB SystemSettings key ("api_keys" table row)
-      Tier 3 (Default): Global environment variable (.env)
+    Single-key resolution for backward compatibility. Returns primary key from resolve_api_keys.
     """
-    p_norm = provider_name.lower().strip()
-
-    # Tier 1: Stage-specific override
-    if stage_override and stage_override.strip() and not stage_override.startswith("***"):
-        return stage_override.strip()
-
-    # Tier 2: Dynamic DB SystemSettings
-    db_k = db_keys or {}
-    key_name = f"{p_norm}_api_key"
-    if db_k.get(key_name) and not str(db_k[key_name]).startswith("***"):
-        return str(db_k[key_name]).strip()
-
-    # Tier 3: Environment variables
-    st = settings or get_settings()
-    if p_norm == "gemini":
-        env_val = getattr(st, "GEMINI_API_KEY", None) or os.environ.get("GEMINI_API_KEY")
-        if env_val and not str(env_val).startswith("***"):
-            return str(env_val).strip()
-    elif p_norm == "groq":
-        env_val = getattr(st, "GROQ_API_KEY", None) or os.environ.get("GROQ_API_KEY")
-        if env_val and not str(env_val).startswith("***"):
-            return str(env_val).strip()
-    elif p_norm in ("aihubmix", "aihub", "inferera"):
-        env_val = getattr(st, "AIHUBMIX_API_KEY", None) or os.environ.get("AIHUBMIX_API_KEY")
-        if env_val and not str(env_val).startswith("***"):
-            return str(env_val).strip()
-
-    return None
+    keys = resolve_api_keys(
+        provider_name=provider_name,
+        stage_override=stage_override,
+        db_keys=db_keys,
+        settings=settings,
+    )
+    return keys[0] if keys else None
 
 
 def get_stage_provider(
@@ -68,26 +120,32 @@ def get_stage_provider(
     Instantiate appropriate AIProvider for a given stage configuration.
     """
     provider_name = stage_config.provider.lower().strip()
-    api_key = resolve_api_key(
+    keys = resolve_api_keys(
         provider_name=provider_name,
         stage_override=stage_config.api_key_override,
         db_keys=db_keys,
         settings=settings,
     )
+    primary_key = keys[0] if keys else None
 
     if use_mock or os.environ.get("USE_MOCK_AI", "0") == "1":
         return MockAIProvider(
             provider=provider_name,
-            api_key=api_key or "mock-key",
+            api_key=primary_key or "mock-key",
             default_model=stage_config.model_name,
         )
 
     if provider_name == "gemini":
-        return GeminiProvider(api_key=api_key, default_model=stage_config.model_name)
+        return GeminiProvider(api_key=primary_key, default_model=stage_config.model_name)
     elif provider_name == "groq":
-        return GroqProvider(api_key=api_key, default_model=stage_config.model_name)
+        pool = get_shared_groq_pool(keys=keys if keys else None)
+        return GroqProvider(
+            api_key=primary_key,
+            key_pool=pool,
+            default_model=stage_config.model_name,
+        )
     elif provider_name in ("aihubmix", "aihub", "inferera"):
-        return AIHubMixProvider(api_key=api_key, default_model=stage_config.model_name)
+        return AIHubMixProvider(api_key=primary_key, default_model=stage_config.model_name)
     else:
         raise ValueError(f"Unsupported AI provider: '{stage_config.provider}'")
 
@@ -95,7 +153,7 @@ def get_stage_provider(
 class ProviderRegistry:
     """
     Registry for managing AI Provider instances across pipeline stages.
-    Supports pooling and dynamic key updates.
+    Supports pooling, multi-key rotation pools, and dynamic key updates.
     """
 
     def __init__(self, use_mock: bool = False):
@@ -125,8 +183,15 @@ class ProviderRegistry:
                     default_model=model_name,
                 )
             elif p_norm == "groq":
+                parsed_keys = parse_key_list(api_key) if api_key else []
+                if parsed_keys:
+                    pool = get_shared_groq_pool(keys=parsed_keys)
+                else:
+                    resolved = resolve_api_keys("groq")
+                    pool = get_shared_groq_pool(keys=resolved if resolved else None)
                 self._providers[key] = GroqProvider(
                     api_key=api_key,
+                    key_pool=pool,
                     default_model=model_name,
                 )
             elif p_norm in ("aihubmix", "aihub", "inferera"):

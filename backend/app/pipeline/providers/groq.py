@@ -1,13 +1,21 @@
 """
-backend/app/pipeline/providers/groq.py - Groq Cloud HTTP REST Provider
+backend/app/pipeline/providers/groq.py - Groq Cloud HTTP REST Provider with Multi-Key Pool
+==========================================================================================
+High-speed inference provider supporting:
+  - Round-robin load balancing across multiple Groq API keys.
+  - Per-key independent pacing sliding window (28 RPM / 2.1s gap per key).
+  - Dynamic 429 failover to next healthy key upon minute or daily quota exhaustion.
+  - Automatic 401/403 unauthorized key deactivation.
 """
 
 import json
 import logging
-from typing import Any, Dict, Optional
+import random
+from typing import Any, Dict, List, Optional, Union
 import httpx
 
-from backend.app.pipeline.providers.base import BaseAIProvider
+from backend.app.pipeline.providers.base import BaseAIProvider, classify_rate_limit_429
+from backend.app.pipeline.providers.key_pool import GroqKey, GroqKeyPool, KeyStatus, parse_key_list
 
 logger = logging.getLogger("osint.ai.groq")
 
@@ -16,34 +24,184 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 class GroqProvider(BaseAIProvider):
     """
-    Groq Cloud async REST provider via httpx.
+    Groq Cloud async REST provider via httpx with multi-key load balancing and failover.
     Supports qwen/qwen3.8-27b, openai/gpt-oss-120b, openai/gpt-oss-20b.
     """
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: Optional[Union[str, List[str]]] = None,
+        key_pool: Optional[GroqKeyPool] = None,
         default_model: str = "qwen/qwen3.8-27b",
         timeout_seconds: float = 25.0,
         max_retries: int = 4,
         base_backoff_sec: float = 1.0,
         jitter_sec: float = 0.5,
     ):
+        # Extract primary key string for BaseAIProvider initialization
+        primary_key = ""
+        if key_pool and key_pool.get_keys():
+            primary_key = key_pool.get_keys()[0].key
+        elif api_key:
+            parsed = parse_key_list(api_key)
+            if parsed:
+                primary_key = parsed[0]
+
         super().__init__(
-            api_key=api_key,
+            api_key=primary_key,
             default_model=default_model,
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
             base_backoff_sec=base_backoff_sec,
             jitter_sec=jitter_sec,
         )
-        # Safe pacing for Groq free tier (30 RPM limit = 2.0s minimum gap)
+
+        # Attach or initialize GroqKeyPool
+        if key_pool is not None:
+            self.key_pool = key_pool
+            if api_key:
+                for k in parse_key_list(api_key):
+                    self.key_pool.add_key(k)
+        else:
+            initial_keys = parse_key_list(api_key) if api_key else []
+            self.key_pool = GroqKeyPool(keys=initial_keys)
+
+        # Keep primary api_key in sync
+        if self.key_pool.get_keys() and not self.api_key:
+            self.api_key = self.key_pool.get_keys()[0].key
+
+        # Per-key pacing defaults (30 RPM limit = 2.0s minimum gap on free tier)
         self.min_interval_sec = 2.1
         self.max_rpm = 28
 
     @property
     def provider_name(self) -> str:
         return "groq"
+
+    async def _execute_with_key_rotation(
+        self,
+        model_name: str,
+        payload_builder: Any,
+        json_mode: bool = False,
+    ) -> httpx.Response:
+        """
+        Executes an API call using round-robin load balancing across healthy keys in the pool.
+        Automatically rotates keys and retries if 429 rate limits or transient errors occur.
+        """
+        keys = self.key_pool.get_keys()
+        if not keys:
+            raise PermissionError(
+                "Groq API key is invalid or unauthorized (HTTP 401)"
+            )
+
+        client = await self.get_client()
+        last_error: Optional[Exception] = None
+        last_429_reason: str = ""
+
+        max_attempts = max(self.max_retries + 1, len(keys) * 2)
+
+        for attempt in range(max_attempts):
+            key_slot: Optional[GroqKey] = await self.key_pool.acquire_next_key()
+
+            if not key_slot:
+                # All keys in pool are either unauthorized or on cooldown
+                all_unauth = all(k.status == KeyStatus.UNAUTHORIZED for k in keys)
+                if all_unauth:
+                    raise PermissionError(
+                        "Groq API key is invalid or unauthorized (HTTP 401)"
+                    )
+                reason_detail = last_429_reason or "All Groq API keys in pool are in cooldown or exhausted"
+                raise RuntimeError(
+                    f"Groq RateLimitError: 429 Rate limit reached ({reason_detail})"
+                )
+
+            # Enforce pacing slot for this specific key
+            await key_slot.acquire_pacing_slot()
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key_slot.key}",
+            }
+            payload = payload_builder()
+
+            try:
+                response = await client.post(GROQ_BASE_URL, json=payload, headers=headers)
+
+                # HTTP 429: Rate Limit (Minute or Daily Quota)
+                if response.status_code == 429:
+                    is_daily, retry_delay_sec, reason = classify_rate_limit_429(response, "groq")
+                    last_429_reason = reason
+                    key_slot.mark_rate_limited(
+                        is_daily=is_daily,
+                        retry_delay_sec=retry_delay_sec,
+                        reason=reason,
+                    )
+                    logger.warning(
+                        f"[groq:{model_name}] Key {key_slot.masked_key} received 429 ({reason}). "
+                        f"Rotating to next available key in pool (attempt {attempt + 1}/{max_attempts})..."
+                    )
+                    continue
+
+                # HTTP 401 / 403: Invalid or Unauthorized Key
+                if response.status_code in (401, 403):
+                    key_slot.mark_unauthorized()
+                    logger.warning(
+                        f"[groq:{model_name}] Key {key_slot.masked_key} rejected with HTTP {response.status_code}. "
+                        f"Deactivating key and rotating to next available key..."
+                    )
+                    continue
+
+                # HTTP 400: Strict json_object validator rejection (json_validate_failed)
+                if json_mode and response.status_code == 400:
+                    err_body = response.text or ""
+                    if "json_validate_failed" in err_body:
+                        try:
+                            failed_gen = response.json().get("error", {}).get("failed_generation", "")
+                            if failed_gen and "{" in failed_gen and "}" in failed_gen:
+                                key_slot.mark_success()
+                                return response
+                        except Exception:
+                            pass
+
+                        logger.info(
+                            f"[groq:{model_name}] Retrying on key {key_slot.masked_key} without "
+                            f"strict json_object wrapper after json_validate_failed..."
+                        )
+                        fallback_payload = dict(payload)
+                        fallback_payload.pop("response_format", None)
+                        fallback_payload["max_tokens"] = max(payload.get("max_tokens", 1024), 3072)
+                        fallback_resp = await client.post(GROQ_BASE_URL, json=fallback_payload, headers=headers)
+                        if fallback_resp.status_code == 200:
+                            key_slot.mark_success()
+                            return fallback_resp
+                        response = fallback_resp
+
+                # HTTP 503: Service Unavailable
+                if response.status_code == 503:
+                    logger.warning(
+                        f"[groq:{model_name}] Groq Service Unavailable (503) on {key_slot.masked_key}. Rotating key..."
+                    )
+                    delay = self.base_backoff * (2 ** min(attempt, 3)) + random.uniform(0.1, self.jitter)
+                    await asyncio.sleep(delay)
+                    continue
+
+                if response.is_error:
+                    response.raise_for_status()
+                key_slot.mark_success()
+                return response
+
+            except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as net_err:
+                last_error = net_err
+                logger.warning(
+                    f"[groq:{model_name}] Network error on {key_slot.masked_key}: {net_err}. Retrying..."
+                )
+                delay = self.base_backoff * (2 ** min(attempt, 3)) + random.uniform(0.1, self.jitter)
+                await asyncio.sleep(delay)
+                continue
+
+        if last_429_reason:
+            raise RuntimeError(f"Groq RateLimitError: 429 Rate limit reached ({last_429_reason})")
+        raise RuntimeError(f"[groq:{model_name}] Request failed after {max_attempts} attempts: {last_error}")
 
     async def generate_text(
         self,
@@ -55,12 +213,6 @@ class GroqProvider(BaseAIProvider):
         json_mode: bool = False,
     ) -> str:
         model_name = model or self.default_model or "qwen/qwen3.8-27b"
-        client = await self.get_client()
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
 
         messages = []
         if system_prompt:
@@ -79,48 +231,22 @@ class GroqProvider(BaseAIProvider):
         if json_mode and any(tag in model_name.lower() for tag in ("gpt-oss", "qwen", "deepseek")):
             effective_max_tokens = max(max_tokens, 3072)
 
-        payload: Dict[str, Any] = {
-            "model": model_name,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": effective_max_tokens,
-        }
+        def _build_payload() -> Dict[str, Any]:
+            pl: Dict[str, Any] = {
+                "model": model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": effective_max_tokens,
+            }
+            if json_mode:
+                pl["response_format"] = {"type": "json_object"}
+            return pl
 
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-
-        async def _call() -> httpx.Response:
-            return await client.post(GROQ_BASE_URL, json=payload, headers=headers)
-
-        try:
-            response = await self._execute_with_retry(_call)
-        except httpx.HTTPStatusError as http_err:
-            # If Groq's strict json_object validator rejected generation (HTTP 400 json_validate_failed),
-            # recover on the same model without failing over to another model.
-            if json_mode and http_err.response is not None and http_err.response.status_code == 400:
-                err_body = http_err.response.text or ""
-                if "json_validate_failed" in err_body:
-                    try:
-                        failed_gen = http_err.response.json().get("error", {}).get("failed_generation", "")
-                        if failed_gen and "{" in failed_gen and "}" in failed_gen:
-                            return str(failed_gen)
-                    except Exception:
-                        pass
-                    logger.info(
-                        f"[groq:{model_name}] Retrying on same model without strict json_object wrapper after json_validate_failed..."
-                    )
-                    fallback_payload = dict(payload)
-                    fallback_payload.pop("response_format", None)
-                    fallback_payload["max_tokens"] = max(effective_max_tokens, 3072)
-
-                    async def _call_no_rf() -> httpx.Response:
-                        return await client.post(GROQ_BASE_URL, json=fallback_payload, headers=headers)
-
-                    response = await self._execute_with_retry(_call_no_rf)
-                else:
-                    raise
-            else:
-                raise
+        response = await self._execute_with_key_rotation(
+            model_name=model_name,
+            payload_builder=_build_payload,
+            json_mode=json_mode,
+        )
 
         res_data = response.json()
 
@@ -133,6 +259,10 @@ class GroqProvider(BaseAIProvider):
 
         choices = res_data.get("choices", [])
         if not choices:
+            # Handle possible failed_generation fallback
+            failed_gen = res_data.get("error", {}).get("failed_generation")
+            if failed_gen:
+                return str(failed_gen)
             raise ValueError(f"Groq response empty: {res_data}")
 
         return choices[0].get("message", {}).get("content", "")

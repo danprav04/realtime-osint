@@ -53,17 +53,14 @@ DEFAULT_AI_STAGES = {
         ],
     },
     "summarization": {
-        "provider": "groq",
-        "model_name": "openai/gpt-oss-120b",
+        "provider": "aihubmix",
+        "model_name": "coding-glm-5.3-free",
         "temperature": 0.2,
         "fallbacks": [
-            {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
-            {"provider": "aihubmix", "model_name": "coding-minimax-m3-free", "temperature": 0.2},
-            {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
+            {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
-            {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
-            {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.2},
+            {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
         ],
     },
     "visuals": {
@@ -104,19 +101,58 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
         cfg = dict(v)
         if "model" in cfg and "model_name" not in cfg:
             cfg["model_name"] = cfg["model"]
-        if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
-            norm_fb = []
-            for fb in cfg["fallbacks"]:
-                if isinstance(fb, dict):
-                    fb_copy = dict(fb)
-                    if "model" in fb_copy and "model_name" not in fb_copy:
-                        fb_copy["model_name"] = fb_copy["model"]
-                    norm_fb.append(fb_copy)
-                else:
-                    norm_fb.append(fb)
-            cfg["fallbacks"] = norm_fb
-        elif "fallbacks" not in cfg and norm_k in DEFAULT_AI_STAGES:
-            cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[norm_k].get("fallbacks", []))
+
+        # 1. Non-token-heavy stages: AI Hub Mix must NOT be used (100 RPD global limit)
+        if norm_k != "summarization":
+            if cfg.get("provider") == "aihubmix":
+                cfg["provider"] = "gemini" if norm_k == "scoring" else "groq"
+                cfg["model_name"] = "gemini-3.5-flash-lite" if norm_k == "scoring" else "qwen/qwen3.8-27b"
+            if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
+                cfg["fallbacks"] = [
+                    (dict(fb, model_name=fb.get("model_name") or fb.get("model")) if isinstance(fb, dict) else fb)
+                    for fb in cfg["fallbacks"]
+                    if not (isinstance(fb, dict) and fb.get("provider") == "aihubmix")
+                ]
+            elif "fallbacks" not in cfg and norm_k in DEFAULT_AI_STAGES:
+                cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[norm_k].get("fallbacks", []))
+        else:
+            # 2. Token-heavy Stage 3 (Summarization): Use single strongest model (coding-glm-5.3-free).
+            # No duplicate intra-provider AI Hub Mix fallbacks since rate limits are shared globally.
+            if cfg.get("provider") == "aihubmix":
+                cfg["model_name"] = "coding-glm-5.3-free"
+                # Strip any aihubmix fallbacks if primary is already aihubmix
+                if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
+                    cfg["fallbacks"] = [
+                        (dict(fb, model_name=fb.get("model_name") or fb.get("model")) if isinstance(fb, dict) else fb)
+                        for fb in cfg["fallbacks"]
+                        if not (isinstance(fb, dict) and fb.get("provider") == "aihubmix")
+                    ]
+                elif "fallbacks" not in cfg:
+                    cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES["summarization"]["fallbacks"])
+            else:
+                # Primary is not aihubmix: allow at most ONE aihubmix fallback using coding-glm-5.3-free
+                if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
+                    filtered_fb = []
+                    has_aihubmix = False
+                    for fb in cfg["fallbacks"]:
+                        if isinstance(fb, dict):
+                            fb_copy = dict(fb)
+                            if "model" in fb_copy and "model_name" not in fb_copy:
+                                fb_copy["model_name"] = fb_copy["model"]
+                            if fb_copy.get("provider") == "aihubmix":
+                                if not has_aihubmix:
+                                    fb_copy["model_name"] = "coding-glm-5.3-free"
+                                    filtered_fb.append(fb_copy)
+                                    has_aihubmix = True
+                                # Drop subsequent aihubmix models: shared quota makes them redundant
+                            else:
+                                filtered_fb.append(fb_copy)
+                        else:
+                            filtered_fb.append(fb)
+                    cfg["fallbacks"] = filtered_fb
+                elif "fallbacks" not in cfg:
+                    cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES["summarization"]["fallbacks"])
+
         out[norm_k] = cfg
     return out
 
@@ -167,6 +203,15 @@ async def get_system_settings(
     for k, v in effective_keys.items():
         if k == "hf_embedding_url" and v:
             masked_keys[k] = str(v)
+        elif k == "groq_api_key" and v and ("," in str(v) or "\n" in str(v)):
+            sub_keys = [sk.strip() for sk in str(v).replace("\r", "\n").replace(",", "\n").split("\n") if sk.strip()]
+            masked_subs = []
+            for sk in sub_keys:
+                if len(sk) > 4:
+                    masked_subs.append(f"***{sk[-4:]}")
+                else:
+                    masked_subs.append("***")
+            masked_keys[k] = ", ".join(masked_subs)
         elif v and len(str(v)) > 4:
             masked_keys[k] = f"***{str(v)[-4:]}"
         elif v or k in (raw_keys if isinstance(raw_keys, dict) else {}):
@@ -196,6 +241,13 @@ async def get_system_settings(
 async def get_gatekeeper_stats() -> Dict[str, Any]:
     """Return live Pre-Pipeline Stage 0 High-RPD Gatekeeper telemetry counters."""
     return get_pipeline_orchestrator().get_gatekeeper_stats()
+
+
+@router.get("/groq-pool", dependencies=[Depends(require_api_key)])
+async def get_groq_pool_status() -> Dict[str, Any]:
+    """Return live Groq API key rotation pool telemetry, status, and health."""
+    from backend.app.pipeline.providers.factory import get_shared_groq_pool
+    return get_shared_groq_pool().get_telemetry()
 
 
 @router.put("", dependencies=[Depends(require_api_key)])
@@ -234,7 +286,12 @@ async def update_system_settings(
                 current_keys[k] = clean_v
                 if k in env_var_map:
                     os.environ[env_var_map[k]] = clean_v
-                if k == "telegram_bot_token":
+                if k == "groq_api_key":
+                    os.environ["GROQ_API_KEYS"] = clean_v
+                    from backend.app.pipeline.providers.factory import get_shared_groq_pool
+                    from backend.app.pipeline.providers.key_pool import parse_key_list
+                    get_shared_groq_pool().set_keys(parse_key_list(clean_v))
+                elif k == "telegram_bot_token":
                     from backend.app.services.telegram_bot import get_telegram_bot
                     get_telegram_bot().bot_token = clean_v
                 elif k == "telegram_chat_id":

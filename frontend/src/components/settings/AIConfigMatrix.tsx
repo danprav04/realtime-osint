@@ -133,17 +133,22 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     if (provider === 'groq') {
       defaultModel = 'qwen/qwen3.8-27b';
     } else if (provider === 'aihubmix') {
-      defaultModel = stageKey === 'summarization' ? 'coding-minimax-m3-free' : 'coding-glm-5.3-free';
+      defaultModel = 'coding-glm-5.3-free';
     }
     setSettings((prev) => {
       const stage = prev[stageKey];
       if (!stage) return prev;
+      // Strip any aihubmix from fallbacks if aihubmix is primary (shared quota across models)
+      const cleanedFallbacks = provider === 'aihubmix'
+        ? (stage.fallbacks || []).filter((f) => f.provider !== 'aihubmix')
+        : (stage.fallbacks || []);
       return {
         ...prev,
         [stageKey]: {
           ...stage,
           provider,
           model_name: defaultModel,
+          fallbacks: cleanedFallbacks,
         },
       };
     });
@@ -317,7 +322,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
               AI Processing Pipeline & Multi-Tier Fallback Matrix
             </h3>
             <p className="text-xs text-zinc-400">
-              Configure primary models and unlimited automatic fallback chains across Google Gemini and Groq Cloud
+              Configure primary models and unlimited automatic fallback chains across Google Gemini, Groq Cloud, and AI Hub Mix (Free Flagships)
             </p>
           </div>
         </div>
@@ -714,6 +719,37 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                           className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/10 hover:bg-accent-cyan/20 border border-accent-cyan/20 rounded-md transition-colors"
                         >
                           <span>+ Add 3.1 Flash Lite</span>
+                        </button>
+                      )}
+                      {/* Quick preset buttons for AI Hub Mix free flagships */}
+                      {stage.key === 'summarization' && !fallbacks.some((f) => f.model_name === 'coding-glm-5.3-free') && (
+                        <button
+                          type="button"
+                          onClick={() => handleAddFallback(stage.key, 'aihubmix', 'coding-glm-5.3-free')}
+                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/30 rounded-md transition-colors"
+                          title="AI Hub Mix GLM-5.3 Flagship: 1.05M Context reasoning model"
+                        >
+                          <span>+ Add GLM-5.3 (1.05M Free)</span>
+                        </button>
+                      )}
+                      {stage.key === 'summarization' && !fallbacks.some((f) => f.model_name === 'coding-minimax-m3-free') && (
+                        <button
+                          type="button"
+                          onClick={() => handleAddFallback(stage.key, 'aihubmix', 'coding-minimax-m3-free')}
+                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/30 rounded-md transition-colors"
+                          title="AI Hub Mix MiniMax-M3: 1M Context synthesis model"
+                        >
+                          <span>+ Add MiniMax-M3 (1M Free)</span>
+                        </button>
+                      )}
+                      {stage.key !== 'summarization' && !fallbacks.some((f) => f.provider === 'aihubmix') && (
+                        <button
+                          type="button"
+                          onClick={() => handleAddFallback(stage.key, 'aihubmix', 'nemotron-3-super-120b-a12b-free')}
+                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/30 rounded-md transition-colors"
+                          title="AI Hub Mix Nemotron-3 120B Frontier Model (Free)"
+                        >
+                          <span>+ Add Nemotron-120B (Free)</span>
                         </button>
                       )}
                       <button

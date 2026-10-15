@@ -237,7 +237,7 @@ export const PROVIDER_RATE_LIMITS: ProviderRateLimitInfo[] = [
     rateLimitUrl: 'https://console.groq.com/settings/limits',
     usageUrl: 'https://console.groq.com/dashboard/usage',
     docsUrl: 'https://console.groq.com/docs/rate-limits',
-    quotaSummary: '30 RPM • 1K–14.4K RPD',
+    quotaSummary: '30–120 RPM • 1K–14.4K RPD (Multi-Key Rotated)',
     keyFields: ['groq_api_key'],
     description: 'Groq Console organization RPM, RPD, TPM, and TPD model limits',
   },

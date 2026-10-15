@@ -126,8 +126,8 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
     },
     {
       id: 'groq_api_key',
-      label: 'Groq Cloud API Key',
-      placeholder: 'gsk_...',
+      label: 'Groq Cloud API Key(s)',
+      placeholder: 'gsk_..., gsk_... (Comma-separated for auto-rotation)',
       rateLimitUrl: 'https://console.groq.com/settings/limits',
       rateLimitLabel: 'Groq Rate Limits',
     },
@@ -318,7 +318,11 @@ export function ApiKeyManager({ initialSettings, aiSettings, sources, onRefresh 
                       {isConfigured && (
                         <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                          <span>CONNECTED</span>
+                          <span>
+                            {field.id === 'groq_api_key' && String(value).includes(',')
+                              ? `CONNECTED (${String(value).split(',').filter((s) => s.trim().length > 0).length} KEYS ROTATED)`
+                              : 'CONNECTED'}
+                          </span>
                         </span>
                       )}
                     </div>

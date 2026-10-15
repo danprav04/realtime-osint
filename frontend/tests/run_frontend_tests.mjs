@@ -361,6 +361,7 @@ test('Utils - getProviderRateLimitStatuses resolves connected providers and rate
   const groqInfo = getProviderRateLimitInfo('groq_api_key');
   assert.ok(groqInfo);
   assert.equal(groqInfo.rateLimitUrl, 'https://console.groq.com/settings/limits');
+  assert.ok(groqInfo.quotaSummary.includes('Multi-Key Rotated'));
 
   const statuses = getProviderRateLimitStatuses({
     apiKeys: {

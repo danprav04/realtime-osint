@@ -59,6 +59,22 @@ class Settings(BaseSettings):
     # AI Pipeline credentials
     GEMINI_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
+    GROQ_API_KEYS: Optional[str] = None
+
+    def get_groq_api_keys(self) -> List[str]:
+        """Return parsed, deduplicated list of Groq API keys from config/env."""
+        raw = self.GROQ_API_KEYS or self.GROQ_API_KEY or os.environ.get("GROQ_API_KEYS") or os.environ.get("GROQ_API_KEY")
+        if not raw:
+            return []
+        items = [k.strip() for k in str(raw).replace("\r", "\n").replace(",", "\n").split("\n")]
+        seen = set()
+        out = []
+        for k in items:
+            clean = k.strip().strip("'\"")
+            if clean and not clean.startswith("***") and clean not in seen:
+                seen.add(clean)
+                out.append(clean)
+        return out
     AIHUBMIX_API_KEY: Optional[str] = None
     AIHUBMIX_BASE_URL: str = "https://aihubmix.com/v1"
     AIHUBMIX_MAX_RPD: int = 100

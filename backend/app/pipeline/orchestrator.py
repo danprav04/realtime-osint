@@ -139,15 +139,14 @@ class PipelineOrchestrator:
             ),
             "summarization": AIStageConfig(
                 stage_id="summarization",
-                provider="groq",
-                model_name="openai/gpt-oss-120b",
+                provider="aihubmix",
+                model_name="coding-glm-5.3-free",
                 temperature=0.2,
                 fallbacks=[
-                    AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
+                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
-                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.2),
+                    AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
                 ],
             ),
             "visuals": AIStageConfig(
