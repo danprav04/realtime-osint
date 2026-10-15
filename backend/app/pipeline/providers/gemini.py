@@ -7,6 +7,7 @@ import logging
 from typing import Any, Dict, Optional
 import httpx
 
+from backend.app.config import get_settings
 from backend.app.pipeline.providers.base import BaseAIProvider
 
 logger = logging.getLogger("osint.ai.gemini")
@@ -29,8 +30,14 @@ class GeminiProvider(BaseAIProvider):
         base_backoff_sec: float = 1.0,
         jitter_sec: float = 0.5,
     ):
+        st = get_settings()
+        resolved_key = (
+            api_key
+            or getattr(st, "GEMINI_API_KEY", None)
+            or os.environ.get("GEMINI_API_KEY", "")
+        )
         super().__init__(
-            api_key=api_key,
+            api_key=resolved_key,
             default_model=default_model,
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,

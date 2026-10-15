@@ -133,8 +133,14 @@ class AIHubMixProvider(BaseAIProvider):
         jitter_sec: float = 0.5,
         quota_tracker: Optional[AIHubMixQuotaTracker] = None,
     ):
+        st = get_settings()
+        resolved_key = (
+            api_key
+            or getattr(st, "AIHUBMIX_API_KEY", None)
+            or os.environ.get("AIHUBMIX_API_KEY", "")
+        )
         super().__init__(
-            api_key=api_key,
+            api_key=resolved_key,
             default_model=default_model,
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
@@ -146,7 +152,6 @@ class AIHubMixProvider(BaseAIProvider):
         self.max_rpm = 10
         self.max_minute_wait_sec = 65.0
 
-        st = get_settings()
         self.base_url = (base_url or getattr(st, "AIHUBMIX_BASE_URL", None) or DEFAULT_AIHUBMIX_BASE_URL).rstrip("/")
         self.quota_tracker = quota_tracker or _global_quota_tracker
 
