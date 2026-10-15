@@ -1443,79 +1443,6 @@ export default function PublicDisplayPage() {
                   {renderRadarContent(true)}
                 </div>
               )}
-
-              {/* Fixed Mobile Bottom Navigation Bar (Thumb ergonomics) */}
-              <nav className="fixed bottom-0 left-0 right-0 z-40 bg-canvas-subtle/95 backdrop-blur-md hairline-t px-2 py-1.5 pb-[calc(0.5rem+env(safe-area-inset-bottom))] shadow-2xl">
-                <div className="flex items-center justify-around max-w-md mx-auto">
-                  <button
-                    onClick={() => {
-                      setMobileTab('sitrep');
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className={cn(
-                      'flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-xl transition-all pressable',
-                      mobileTab === 'sitrep' ? 'text-accent-cyan font-semibold' : 'text-zinc-400 hover:text-zinc-200'
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        'p-1 rounded-lg transition-colors',
-                        mobileTab === 'sitrep' ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-zinc-400'
-                      )}
-                    >
-                      <Sparkles className="w-4 h-4" />
-                    </div>
-                    <span className="text-[10px] mt-0.5 tracking-tight">SitRep</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setMobileTab('feed');
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className={cn(
-                      'flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-xl transition-all pressable relative',
-                      mobileTab === 'feed' ? 'text-accent-cyan font-semibold' : 'text-zinc-400 hover:text-zinc-200'
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        'p-1 rounded-lg transition-colors relative',
-                        mobileTab === 'feed' ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-zinc-400'
-                      )}
-                    >
-                      <Radio className="w-4 h-4" />
-                      {events.length > 0 && (
-                        <span className="absolute -top-1 -right-2 px-1 py-0.2 bg-emerald-500 text-zinc-950 font-mono text-[9px] font-bold rounded-full min-w-[16px] text-center">
-                          {events.length > 99 ? '99+' : events.length}
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-[10px] mt-0.5 tracking-tight">Live Stream</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setMobileTab('radar');
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className={cn(
-                      'flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-xl transition-all pressable',
-                      mobileTab === 'radar' ? 'text-accent-cyan font-semibold' : 'text-zinc-400 hover:text-zinc-200'
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        'p-1 rounded-lg transition-colors',
-                        mobileTab === 'radar' ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-zinc-400'
-                      )}
-                    >
-                      <Compass className="w-4 h-4" />
-                    </div>
-                    <span className="text-[10px] mt-0.5 tracking-tight">Radar Map</span>
-                  </button>
-                </div>
-              </nav>
             </div>
 
             {/* ================================================================ */}
@@ -1539,6 +1466,90 @@ export default function PublicDisplayPage() {
                 </div>
               </div>
             </div>
+
+            {/* ================================================================ */}
+            {/* FIXED MOBILE BOTTOM NAVIGATION BAR                               */}
+            {/* Positioned at root level with GPU layer promotion, solid surface */}
+            {/* ================================================================ */}
+            <nav
+              aria-label="Mobile Navigation"
+              className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-[#0d0e12] border-t border-white/10 px-2 py-1.5 pb-[calc(0.6rem+env(safe-area-inset-bottom))] shadow-[0_-4px_24px_rgba(0,0,0,0.8)]"
+              style={{
+                transform: 'translateZ(0)',
+                WebkitTransform: 'translateZ(0)',
+                willChange: 'transform',
+              }}
+            >
+              <div className="flex items-center justify-around max-w-md mx-auto">
+                <button
+                  onClick={() => {
+                    setMobileTab('sitrep');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className={cn(
+                    'flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-xl transition-all pressable',
+                    mobileTab === 'sitrep' ? 'text-accent-cyan font-semibold' : 'text-zinc-400 hover:text-zinc-200'
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'p-1 rounded-lg transition-colors',
+                      mobileTab === 'sitrep' ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-zinc-400'
+                    )}
+                  >
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <span className="text-[10px] mt-0.5 tracking-tight">SitRep</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setMobileTab('feed');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className={cn(
+                    'flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-xl transition-all pressable relative',
+                    mobileTab === 'feed' ? 'text-accent-cyan font-semibold' : 'text-zinc-400 hover:text-zinc-200'
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'p-1 rounded-lg transition-colors relative',
+                      mobileTab === 'feed' ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-zinc-400'
+                    )}
+                  >
+                    <Radio className="w-4 h-4" />
+                    {events.length > 0 && (
+                      <span className="absolute -top-1 -right-2 px-1 py-0.2 bg-emerald-500 text-zinc-950 font-mono text-[9px] font-bold rounded-full min-w-[16px] text-center">
+                        {events.length > 99 ? '99+' : events.length}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[10px] mt-0.5 tracking-tight">Live Stream</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setMobileTab('radar');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className={cn(
+                    'flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-xl transition-all pressable',
+                    mobileTab === 'radar' ? 'text-accent-cyan font-semibold' : 'text-zinc-400 hover:text-zinc-200'
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'p-1 rounded-lg transition-colors',
+                      mobileTab === 'radar' ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-zinc-400'
+                    )}
+                  >
+                    <Compass className="w-4 h-4" />
+                  </div>
+                  <span className="text-[10px] mt-0.5 tracking-tight">Radar Map</span>
+                </button>
+              </div>
+            </nav>
           </>
         );
       })()}
