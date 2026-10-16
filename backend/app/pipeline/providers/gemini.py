@@ -9,6 +9,7 @@ import httpx
 
 from backend.app.config import get_settings
 from backend.app.pipeline.providers.base import BaseAIProvider
+from backend.app.pipeline.usage_tracker import get_usage_tracker
 
 logger = logging.getLogger("osint.ai.gemini")
 
@@ -172,9 +173,26 @@ class GeminiProvider(BaseAIProvider):
         # Synchronize token records with actual totalTokenCount reported by Google
         usage = res_data.get("usageMetadata", {})
         actual_tokens = usage.get("totalTokenCount", 0)
+        prompt_tokens = usage.get("promptTokenCount", 0)
+        candidates_tokens = usage.get("candidatesTokenCount", 0)
         token_record = getattr(response, "_token_record", None)
         if actual_tokens > 0:
             self.update_last_token_record(actual_tokens, record_ref=token_record)
+
+        try:
+            get_usage_tracker().record_call(
+                provider="gemini",
+                model=model_name,
+                key=self.api_key,
+                key_field="gemini_api_key",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=candidates_tokens,
+                total_tokens=actual_tokens,
+                success=True,
+                status_code=response.status_code,
+            )
+        except Exception:
+            pass
 
         self.call_history.append({
             "provider": "gemini",

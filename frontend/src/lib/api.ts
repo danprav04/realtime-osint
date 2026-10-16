@@ -8,6 +8,10 @@ import type {
   EmbeddingsMapData,
   EmbeddingStatus,
   SituationSummaryData,
+  UsageTelemetryResponse,
+  ServerLogsResponse,
+  ServerLogEntry,
+  ServerLogStats,
 } from './types';
 
 const DEFAULT_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -200,6 +204,10 @@ export async function resetAIPipelineSettings(): Promise<AIPipelineSettings> {
   });
 }
 
+export async function getProviderUsage(): Promise<UsageTelemetryResponse> {
+  return fetchApi<UsageTelemetryResponse>('/api/settings/provider-usage');
+}
+
 // Embeddings Relevance Map
 export async function getEmbeddingsMap(params?: {
   theme_id?: string;
@@ -281,4 +289,51 @@ export async function generateSituationSummary(params?: {
     { method: 'POST' }
   );
 }
+
+// Server Logs & Diagnostics
+export async function getServerLogs(params?: {
+  limit?: number;
+  level?: string;
+  logger?: string;
+  search?: string;
+  since_id?: number;
+}): Promise<ServerLogsResponse> {
+  const query = new URLSearchParams();
+  if (params) {
+    if (params.limit !== undefined) query.set('limit', params.limit.toString());
+    if (params.level && params.level !== 'ALL') query.set('level', params.level);
+    if (params.logger && params.logger !== 'all') query.set('logger', params.logger);
+    if (params.search) query.set('q', params.search);
+    if (params.since_id !== undefined) query.set('since_id', params.since_id.toString());
+  }
+  const queryString = query.toString();
+  return fetchApi<ServerLogsResponse>(`/api/settings/logs${queryString ? `?${queryString}` : ''}`);
+}
+
+export async function clearServerLogs(): Promise<{ status: string; message: string }> {
+  return fetchApi<{ status: string; message: string }>('/api/settings/logs', {
+    method: 'DELETE',
+  });
+}
+
+export async function getServerLogStats(): Promise<ServerLogStats> {
+  return fetchApi<ServerLogStats>('/api/settings/logs/stats');
+}
+
+export function getServerLogsExportUrl(format: 'text' | 'json' = 'text', limit: number = 1000): string {
+  const baseUrl = getApiBaseUrl();
+  const apiKey = getStoredApiKey();
+  return `${baseUrl}/api/settings/logs/export?format=${format}&limit=${limit}&api_key=${encodeURIComponent(apiKey)}`;
+}
+
+export async function emitTestServerLog(
+  level: string = 'INFO',
+  message: string = 'Operator test log emitted from settings panel'
+): Promise<{ status: string; message: string; entry: ServerLogEntry }> {
+  return fetchApi<{ status: string; message: string; entry: ServerLogEntry }>('/api/settings/logs/test', {
+    method: 'POST',
+    body: JSON.stringify({ level, message }),
+  });
+}
+
 

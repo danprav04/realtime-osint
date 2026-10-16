@@ -4,8 +4,10 @@ backend/app/api/settings.py - System Settings & AI Pipeline Configuration Endpoi
 
 import logging
 import os
-from typing import Any, Dict, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -251,6 +253,27 @@ async def get_groq_pool_status() -> Dict[str, Any]:
     """Return live Groq API key rotation pool telemetry, status, and health."""
     from backend.app.pipeline.providers.factory import get_shared_groq_pool
     return get_shared_groq_pool().get_telemetry()
+
+
+@router.get("/provider-usage", dependencies=[Depends(require_api_key)])
+async def get_provider_usage(
+    session: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Return live perceived usage of each key and model across all providers."""
+    from backend.app.pipeline.usage_tracker import get_usage_tracker
+    orch = get_pipeline_orchestrator()
+    ai_settings = {
+        s: orch.get_stage_config(s).model_dump()
+        for s in ("gatekeeper", "extraction", "scoring", "summarization", "visuals")
+    }
+
+    res = await session.execute(
+        select(SystemSettings).where(SystemSettings.key.in_(["api_keys", "ai_pipeline"]))
+    )
+    db_rows = {row.key: row.value_json for row in res.scalars().all()}
+    db_keys = db_rows.get("api_keys", {})
+
+    return get_usage_tracker().get_telemetry(ai_settings=ai_settings, db_keys=db_keys)
 
 
 @router.put("", dependencies=[Depends(require_api_key)])
@@ -511,3 +534,114 @@ async def reset_ai_pipeline_stages(
     await bus.publish(CHANNEL_CONFIG_RELOAD, {"action": "ai_config_reset"})
 
     return defaults
+
+
+# ---------------------------------------------------------------------------
+# Server Logs & Runtime Diagnostics Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/logs", dependencies=[Depends(require_api_key)])
+async def get_server_logs(
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of log entries to return"),
+    level: Optional[str] = Query(None, description="Filter by level (DEBUG, INFO, WARNING, ERROR, CRITICAL) or comma-separated list"),
+    logger: Optional[str] = Query(None, description="Filter by logger name prefix/substring"),
+    q: Optional[str] = Query(None, description="Search query string in log message or trace ID"),
+    since_id: Optional[int] = Query(None, description="Return only logs with id strictly greater than since_id"),
+) -> Dict[str, Any]:
+    """Retrieve filtered server runtime logs with statistical distribution and telemetry."""
+    from backend.app.services.server_logs import get_server_log_buffer
+
+    buf = get_server_log_buffer()
+    logs = buf.get_logs(
+        level=level,
+        logger_name=logger,
+        search=q,
+        limit=limit,
+        since_id=since_id,
+        reverse=True,
+    )
+    stats = buf.get_stats()
+
+    return {
+        "logs": logs,
+        "total": len(logs),
+        "returned": len(logs),
+        "stats": stats,
+    }
+
+
+@router.get("/logs/stats", dependencies=[Depends(require_api_key)])
+async def get_server_logs_stats() -> Dict[str, Any]:
+    """Retrieve statistical distribution, memory capacity, and health metrics for server logs."""
+    from backend.app.services.server_logs import get_server_log_buffer
+
+    buf = get_server_log_buffer()
+    return buf.get_stats()
+
+
+@router.delete("/logs", dependencies=[Depends(require_api_key)])
+async def clear_server_logs() -> Dict[str, Any]:
+    """Clear all buffered server logs from the in-memory circular ring buffer."""
+    from backend.app.services.server_logs import get_server_log_buffer
+
+    buf = get_server_log_buffer()
+    buf.clear()
+    logger.info("Server log buffer cleared via settings API.")
+    return {
+        "status": "cleared",
+        "message": "Server log buffer has been cleared successfully",
+    }
+
+
+@router.get("/logs/export", dependencies=[Depends(require_api_key)])
+async def export_server_logs(
+    format: str = Query("text", pattern="^(text|json)$", description="Export format: text or json"),
+    limit: int = Query(1000, ge=1, le=2000, description="Maximum number of lines to export"),
+) -> Response:
+    """Export runtime server logs as a downloadable file (plaintext log or structured JSON)."""
+    import json
+    from backend.app.services.server_logs import get_server_log_buffer
+
+    buf = get_server_log_buffer()
+    now_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    if format == "json":
+        logs = buf.get_logs(limit=limit, reverse=False)
+        content = json.dumps({"exported_at": datetime.now(timezone.utc).isoformat(), "logs": logs}, indent=2, default=str)
+        filename = f"osint_server_logs_{now_str}.json"
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    else:
+        text_content = buf.export_text(limit=limit)
+        filename = f"osint_server_logs_{now_str}.log"
+        return PlainTextResponse(
+            content=text_content,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+
+@router.post("/logs/test", dependencies=[Depends(require_api_key)])
+async def emit_test_server_log(
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Emit a test server log entry to verify log capture and UI connectivity."""
+    from backend.app.services.server_logs import get_server_log_buffer
+
+    test_level = str(payload.get("level", "INFO")).upper()
+    test_msg = str(payload.get("message", "Operator test log emitted from settings panel."))
+    target_logger = logging.getLogger("osint.test")
+
+    lvl_num = getattr(logging, test_level, logging.INFO)
+    target_logger.log(lvl_num, test_msg)
+
+    buf = get_server_log_buffer()
+    recent = buf.get_logs(limit=1, reverse=True)
+    return {
+        "status": "emitted",
+        "message": "Test log entry created successfully",
+        "entry": recent[0] if recent else None,
+    }
+

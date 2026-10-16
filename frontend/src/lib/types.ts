@@ -405,3 +405,118 @@ export interface SituationSummaryData {
   };
 }
 
+export interface KeyUsageTelemetry {
+  key_hash: string;
+  masked_key: string;
+  key_field: string;
+  key_index?: number;
+  provider: string;
+  status: 'active' | 'minute_cooldown' | 'daily_exhausted' | 'unauthorized' | 'unconfigured' | string;
+  total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  rate_limited_count: number;
+  success_rate_pct: number;
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  last_used_at?: string | null;
+  remaining_requests?: number | null;
+  remaining_tokens?: number | null;
+  limit_requests?: number | null;
+  limit_tokens?: number | null;
+  reset_requests_sec?: number | null;
+  reset_tokens_sec?: number | null;
+  cooldown_remaining_sec: number;
+  cooldown_reason?: string;
+}
+
+export interface ModelUsageTelemetry {
+  model_name: string;
+  provider: string;
+  stages: string[];
+  is_primary: boolean;
+  is_fallback: boolean;
+  status: 'ready' | 'active' | 'cooldown' | 'exhausted' | string;
+  cooldown_remaining_sec: number;
+  total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  rate_limited_count: number;
+  success_rate_pct: number;
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  avg_latency_ms: number;
+  last_latency_ms: number;
+  last_used_at?: string | null;
+  last_error?: string | null;
+}
+
+export interface ProviderUsageTelemetry {
+  id: string;
+  name: string;
+  is_connected: boolean;
+  total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  rate_limited_count: number;
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  active_keys_count: number;
+  cooldown_keys_count: number;
+  cooldown_models_count: number;
+  last_used_at?: string | null;
+  keys: KeyUsageTelemetry[];
+  models: ModelUsageTelemetry[];
+}
+
+export interface UsageTelemetryResponse {
+  updated_at: string;
+  summary: {
+    total_requests: number;
+    total_tokens: number;
+    active_keys: number;
+    keys_in_cooldown: number;
+    total_models: number;
+    models_in_cooldown: number;
+  };
+  providers: Record<string, ProviderUsageTelemetry>;
+  all_models: ModelUsageTelemetry[];
+  all_keys: KeyUsageTelemetry[];
+}
+
+export interface ServerLogEntry {
+  id: number;
+  timestamp: string;
+  level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL' | string;
+  logger: string;
+  message: string;
+  trace_id?: string | null;
+  source_file?: string | null;
+  line_number?: number | null;
+  function?: string | null;
+  exception?: string | null;
+  extra_data?: Record<string, any> | null;
+}
+
+export interface ServerLogStats {
+  total_buffered: number;
+  max_capacity: number;
+  counts_by_level: Record<string, number>;
+  active_loggers: string[];
+  oldest_timestamp?: string | null;
+  newest_timestamp?: string | null;
+  uptime_seconds: number;
+  created_at?: string;
+}
+
+export interface ServerLogsResponse {
+  logs: ServerLogEntry[];
+  total: number;
+  returned: number;
+  stats: ServerLogStats;
+}
+
+

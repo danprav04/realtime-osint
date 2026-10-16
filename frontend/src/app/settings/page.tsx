@@ -8,6 +8,7 @@ import {
   Cpu,
   Key,
   RotateCw,
+  Terminal,
 } from 'lucide-react';
 import {
   Theme,
@@ -15,6 +16,7 @@ import {
   AIPipelineSettings,
   SystemSettings,
   EmbeddingStatus,
+  UsageTelemetryResponse,
 } from '@/lib/types';
 import {
   getThemes,
@@ -23,17 +25,19 @@ import {
   getAIPipelineSettings,
   getSettings,
   getEmbeddingStatus,
+  getProviderUsage,
 } from '@/lib/api';
 import { ThemeForm } from '@/components/settings/ThemeForm';
 import { SourceManager } from '@/components/settings/SourceManager';
 import { AIConfigMatrix } from '@/components/settings/AIConfigMatrix';
 import { ApiKeyManager } from '@/components/settings/ApiKeyManager';
+import { ServerLogsViewer } from '@/components/settings/ServerLogsViewer';
 import { ProviderRateLimitsBar } from '@/components/settings/ProviderRateLimitsBar';
 import { AppIcon } from '@/components/AppIcon';
 import { cn } from '@/lib/utils';
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'themes' | 'sources' | 'ai' | 'keys'>('themes');
+  const [activeTab, setActiveTab] = useState<'themes' | 'sources' | 'ai' | 'keys' | 'logs'>('themes');
   const [loading, setLoading] = useState(true);
 
   // Loaded data
@@ -43,10 +47,28 @@ export default function SettingsPage() {
   const [aiSettings, setAiSettings] = useState<AIPipelineSettings | null>(null);
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
+  const [providerUsage, setProviderUsage] = useState<UsageTelemetryResponse | null>(null);
+
+  // Sync tab from URL query param (?tab=logs, etc.)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const tabParam = urlParams.get('tab');
+      if (
+        tabParam === 'themes' ||
+        tabParam === 'sources' ||
+        tabParam === 'ai' ||
+        tabParam === 'keys' ||
+        tabParam === 'logs'
+      ) {
+        setActiveTab(tabParam);
+      }
+    }
+  }, []);
 
   const loadAllSettings = useCallback(async () => {
     try {
-      const [themesData, activeThemeData, sourcesData, aiData, sysData, embedData] =
+      const [themesData, activeThemeData, sourcesData, aiData, sysData, embedData, usageData] =
         await Promise.all([
           getThemes().catch(() => []),
           getActiveTheme().catch(() => null),
@@ -54,6 +76,7 @@ export default function SettingsPage() {
           getAIPipelineSettings().catch(() => null),
           getSettings().catch(() => null),
           getEmbeddingStatus().catch(() => null),
+          getProviderUsage().catch(() => null),
         ]);
 
       setThemes(themesData);
@@ -62,6 +85,7 @@ export default function SettingsPage() {
       setAiSettings(aiData);
       setSystemSettings(sysData);
       setEmbeddingStatus(embedData);
+      setProviderUsage(usageData);
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -97,6 +121,12 @@ export default function SettingsPage() {
       label: 'API Keys & Notifications',
       icon: Key,
       desc: 'External credentials, Telegram alerts, and polling intervals',
+    },
+    {
+      id: 'logs' as const,
+      label: 'Server Logs',
+      icon: Terminal,
+      desc: 'Real-time stdout stream, pipeline traces, log level filtering, and diagnostics',
     },
   ];
 
@@ -134,17 +164,25 @@ export default function SettingsPage() {
         aiSettings={aiSettings}
         sources={sources}
         hfSpaceConfigured={embeddingStatus?.hf_space_configured}
+        providerUsage={providerUsage}
       />
 
       {/* Tab Selector Navigation */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isSelected = activeTab === tab.id;
           return (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                setActiveTab(tab.id);
+                if (typeof window !== 'undefined') {
+                  const url = new URL(window.location.href);
+                  url.searchParams.set('tab', tab.id);
+                  window.history.replaceState(null, '', url.toString());
+                }
+              }}
               className={cn(
                 'card-slick rounded-xl p-3.5 text-left flex flex-col justify-between transition-all pressable',
                 isSelected
@@ -212,6 +250,8 @@ export default function SettingsPage() {
             onRefresh={loadAllSettings}
           />
         )}
+
+        {activeTab === 'logs' && <ServerLogsViewer />}
       </div>
     </div>
   );

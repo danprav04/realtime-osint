@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 from backend.app.pipeline.providers.base import BaseAIProvider
+from backend.app.pipeline.usage_tracker import get_usage_tracker
 
 
 class MockAIProvider(BaseAIProvider):
@@ -71,6 +72,21 @@ class MockAIProvider(BaseAIProvider):
             "system_prompt": system_prompt,
             "json_mode": json_mode,
         })
+
+        try:
+            get_usage_tracker().record_call(
+                provider=self.provider_name,
+                model=model_name,
+                key=self.api_key,
+                key_field=f"{self.provider_name}_api_key",
+                prompt_tokens=max(10, len(prompt) // 4),
+                completion_tokens=40,
+                total_tokens=max(10, len(prompt) // 4) + 40,
+                success=True,
+                status_code=200,
+            )
+        except Exception:
+            pass
 
         # Return realistic response based on prompt contents (check explicit stage schema markers first)
         p_lower = (prompt + " " + (system_prompt or "")).lower()

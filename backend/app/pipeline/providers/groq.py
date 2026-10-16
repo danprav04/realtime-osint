@@ -16,6 +16,7 @@ import httpx
 
 from backend.app.pipeline.providers.base import BaseAIProvider, classify_rate_limit_429
 from backend.app.pipeline.providers.key_pool import GroqKey, GroqKeyPool, KeyStatus, parse_key_list
+from backend.app.pipeline.usage_tracker import get_usage_tracker
 
 logger = logging.getLogger("osint.ai.groq")
 
@@ -134,6 +135,20 @@ class GroqProvider(BaseAIProvider):
                 # HTTP 429: Rate Limit (Minute or Daily Quota)
                 if response.status_code == 429:
                     last_429_reason = key_slot.cooldown_reason or "Groq Rate limit reached"
+                    try:
+                        get_usage_tracker().record_call(
+                            provider="groq",
+                            model=model_name,
+                            key=key_slot.key,
+                            key_field="groq_api_key",
+                            success=False,
+                            status_code=429,
+                            error_message=last_429_reason,
+                            is_rate_limit=True,
+                            is_daily_quota=key_slot.status == KeyStatus.DAILY_EXHAUSTED,
+                        )
+                    except Exception:
+                        pass
                     logger.warning(
                         f"[groq:{model_name}] Key {key_slot.masked_key} received 429 ({last_429_reason}). "
                         f"Rotating to next available key in pool (attempt {attempt + 1}/{max_attempts})..."
@@ -156,6 +171,7 @@ class GroqProvider(BaseAIProvider):
                         try:
                             failed_gen = response.json().get("error", {}).get("failed_generation", "")
                             if failed_gen and "{" in failed_gen and "}" in failed_gen:
+                                setattr(response, "_used_key", key_slot.key)
                                 return response
                         except Exception:
                             pass
@@ -170,6 +186,7 @@ class GroqProvider(BaseAIProvider):
                         fallback_resp = await client.post(GROQ_BASE_URL, json=fallback_payload, headers=headers)
                         key_slot.update_from_response(fallback_resp)
                         if fallback_resp.status_code == 200:
+                            setattr(fallback_resp, "_used_key", key_slot.key)
                             return fallback_resp
                         response = fallback_resp
 
@@ -184,6 +201,7 @@ class GroqProvider(BaseAIProvider):
 
                 if response.is_error:
                     response.raise_for_status()
+                setattr(response, "_used_key", key_slot.key)
                 return response
 
             except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as net_err:
@@ -245,6 +263,27 @@ class GroqProvider(BaseAIProvider):
         )
 
         res_data = response.json()
+
+        usage = res_data.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+        used_key = getattr(response, "_used_key", None) or self.api_key
+
+        try:
+            get_usage_tracker().record_call(
+                provider="groq",
+                model=model_name,
+                key=used_key,
+                key_field="groq_api_key",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                success=True,
+                status_code=response.status_code,
+            )
+        except Exception:
+            pass
 
         self.call_history.append({
             "provider": "groq",

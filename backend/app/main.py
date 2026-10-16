@@ -86,6 +86,11 @@ def setup_application_logging() -> None:
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     root.addHandler(handler)
 
+    from backend.app.services.server_logs import get_server_log_buffer_handler
+    buffer_handler = get_server_log_buffer_handler()
+    if buffer_handler not in root.handlers:
+        root.addHandler(buffer_handler)
+
 
 setup_application_logging()
 logger = logging.getLogger("osint.main")

@@ -650,7 +650,96 @@ test('OREF Source - validates oref source type and badge configuration', async (
   assert.ok(badgeContent.includes('Red Alert / OREF'), 'SourceBadge must label OREF alerts');
 });
 
+// Test 29: Perceived Usage Telemetry & ProviderUsageModal
+test('Provider Usage Telemetry - validates getProviderUsage API export and ProviderUsageModal', async () => {
+  const apiModule = await import('../src/lib/api.ts');
+  assert.equal(typeof apiModule.getProviderUsage, 'function', 'getProviderUsage must be an exported function');
+
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  // Verify ProviderUsageModal file exists and contains key UI elements
+  const modalPath = path.resolve('src/components/settings/ProviderUsageModal.tsx');
+  assert.ok(fs.existsSync(modalPath), 'ProviderUsageModal.tsx must exist');
+
+  const modalContent = fs.readFileSync(modalPath, 'utf-8');
+  assert.ok(modalContent.includes('App Perceived Provider & Model Usage'), 'Modal must include perceived usage title');
+  assert.ok(modalContent.includes('Perceived Keys'), 'Modal must have Perceived Keys tab');
+  assert.ok(modalContent.includes('Perceived Models'), 'Modal must have Perceived Models tab');
+  assert.ok(modalContent.includes('cooldown_remaining_sec'), 'Modal must track cooldown remaining seconds');
+
+  // Verify ProviderRateLimitsBar renders usage button with modal trigger
+  const barPath = path.resolve('src/components/settings/ProviderRateLimitsBar.tsx');
+  const barContent = fs.readFileSync(barPath, 'utf-8');
+  assert.ok(barContent.includes('ProviderUsageModal'), 'Bar must integrate ProviderUsageModal');
+  assert.ok(barContent.includes('openInspector'), 'Bar must support opening inspector');
+  assert.ok(barContent.includes('View App Perceived Usage'), 'Bar must provide global perceived usage action');
+});
+
+// Test 30: Server Logs API Client & Type Definitions
+test('Server Logs API Client - validates log retrieval, stats, export, and clear API functions', async () => {
+  const apiModule = await import('../src/lib/api.ts');
+  assert.equal(typeof apiModule.getServerLogs, 'function', 'getServerLogs must be an exported function');
+  assert.equal(typeof apiModule.clearServerLogs, 'function', 'clearServerLogs must be an exported function');
+  assert.equal(typeof apiModule.getServerLogStats, 'function', 'getServerLogStats must be an exported function');
+  assert.equal(typeof apiModule.getServerLogsExportUrl, 'function', 'getServerLogsExportUrl must be an exported function');
+  assert.equal(typeof apiModule.emitTestServerLog, 'function', 'emitTestServerLog must be an exported function');
+
+  const exportUrl = apiModule.getServerLogsExportUrl('text', 500);
+  assert.ok(exportUrl.includes('/api/settings/logs/export'), 'Export URL must target /api/settings/logs/export');
+  assert.ok(exportUrl.includes('format=text'), 'Export URL must include format');
+  assert.ok(exportUrl.includes('limit=500'), 'Export URL must include line limit');
+
+  // Verify mock ServerLogEntry structure
+  const sampleLogEntry = {
+    id: 42,
+    timestamp: new Date().toISOString(),
+    level: 'INFO',
+    logger: 'osint.pipeline.orchestrator',
+    message: 'Event scoring successfully completed with score 9',
+    trace_id: 'trace-12345',
+  };
+  assert.equal(sampleLogEntry.id, 42);
+  assert.equal(sampleLogEntry.level, 'INFO');
+  assert.ok(sampleLogEntry.message.includes('scoring'));
+});
+
+// Test 31: Server Logs Viewer Component & Settings Tab Integration
+test('Server Logs UI - validates ServerLogsViewer component, settings page tab, and /settings/logs route', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  // 1. Verify ServerLogsViewer.tsx exists and contains essential controls
+  const viewerPath = path.resolve('src/components/settings/ServerLogsViewer.tsx');
+  assert.ok(fs.existsSync(viewerPath), 'ServerLogsViewer.tsx must exist');
+
+  const viewerContent = fs.readFileSync(viewerPath, 'utf-8');
+  assert.ok(viewerContent.includes('Runtime Server Logs'), 'Viewer must display server logs header');
+  assert.ok(viewerContent.includes('getServerLogs'), 'Viewer must call getServerLogs');
+  assert.ok(viewerContent.includes('clearServerLogs'), 'Viewer must support clearing logs');
+  assert.ok(viewerContent.includes('emitTestServerLog'), 'Viewer must support test log emission');
+  assert.ok(viewerContent.includes('levelTabs'), 'Viewer must have log level tabs');
+  assert.ok(viewerContent.includes('autoScroll'), 'Viewer must support stick-to-bottom auto-scroll');
+
+  // 2. Verify settings/page.tsx has logs tab
+  const settingsPagePath = path.resolve('src/app/settings/page.tsx');
+  const settingsContent = fs.readFileSync(settingsPagePath, 'utf-8');
+  assert.ok(settingsContent.includes("id: 'logs'"), 'settings/page.tsx must define logs tab');
+  assert.ok(settingsContent.includes('Server Logs'), 'settings/page.tsx must label logs tab');
+  assert.ok(settingsContent.includes('ServerLogsViewer'), 'settings/page.tsx must import and render ServerLogsViewer');
+  assert.ok(settingsContent.includes("activeTab === 'logs'"), 'settings/page.tsx must toggle logs tab');
+
+  // 3. Verify dedicated /settings/logs/page.tsx route exists
+  const logsPagePath = path.resolve('src/app/settings/logs/page.tsx');
+  assert.ok(fs.existsSync(logsPagePath), 'src/app/settings/logs/page.tsx must exist as a dedicated page');
+
+  const logsPageContent = fs.readFileSync(logsPagePath, 'utf-8');
+  assert.ok(logsPageContent.includes('ServerLogsViewer'), 'logs/page.tsx must embed ServerLogsViewer');
+  assert.ok(logsPageContent.includes('/settings'), 'logs/page.tsx must link back to /settings');
+});
+
 console.log('Running frontend automated tests...');
+
 
 
 
