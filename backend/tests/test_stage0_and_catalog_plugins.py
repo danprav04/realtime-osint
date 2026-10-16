@@ -1227,7 +1227,7 @@ class TestGemma4AndOrchestratorGatekeeper:
         from backend.app.pipeline.providers.gemini import GeminiProvider
 
         prov = GeminiProvider(api_key="test-key", default_model="gemma-4-26b-a4b-it")
-        assert prov.max_rpm == 28
+        assert prov.max_rpm == 15
 
         resp_400 = MagicMock()
         resp_400.status_code = 400
@@ -1287,13 +1287,13 @@ class TestGemma4AndOrchestratorGatekeeper:
 
     @pytest.mark.asyncio
     async def test_gemma_tpm_pacing_and_output_token_clamping(self):
-        """Verify Gemma models enforce 13.5K TPM limit, clamp maxOutputTokens, and pace when tokens exceed threshold."""
+        """Verify Gemma models enforce 12K TPM limit, clamp maxOutputTokens, omit systemInstruction, and pace when tokens exceed threshold."""
         from backend.app.pipeline.providers.gemini import GeminiProvider
 
         prov = GeminiProvider(api_key="test-key", default_model="gemma-4-26b-a4b-it")
-        assert prov.max_tpm == 13500
+        assert prov.max_tpm == 11000
 
-        # Verify maxOutputTokens clamping for Gemma json_mode
+        # Verify maxOutputTokens clamping and payload structure for Gemma
         payloads = []
 
         async def fake_post(self_client, url, json=None, headers=None, **kwargs):
@@ -1306,13 +1306,17 @@ class TestGemma4AndOrchestratorGatekeeper:
         with patch("httpx.AsyncClient.post", new=fake_post):
             await prov.generate_text(
                 prompt="Short prompt",
+                system_prompt="Gatekeeper system prompt",
                 max_tokens=1024,
                 json_mode=True,
             )
 
         assert len(payloads) == 1
-        # Confirmed maxOutputTokens was clamped from 1024 to 384 for Gemma
-        assert payloads[0]["generationConfig"]["maxOutputTokens"] == 384
+        # Confirmed maxOutputTokens provides at least 2048 token headroom for Gemma thinking
+        assert payloads[0]["generationConfig"]["maxOutputTokens"] == 2048
+        # Confirmed systemInstruction was inlined into user prompt (not sent as top-level payload attribute)
+        assert "systemInstruction" not in payloads[0]
+        assert "Gatekeeper system prompt" in payloads[0]["contents"][0]["parts"][0]["text"]
 
         # Test sliding window TPM enforcement
         prov.max_tpm = 1000
@@ -1323,7 +1327,7 @@ class TestGemma4AndOrchestratorGatekeeper:
         loop = asyncio.get_event_loop()
         t0 = loop.time()
         # Seed 900 tokens 10s ago
-        prov._token_records.append((t0 - 10.0, 900))
+        prov._token_records.append([t0 - 10.0, 900])
 
         # Request with 200 tokens should trigger wait for the 900 tokens to roll off the 60s window
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:

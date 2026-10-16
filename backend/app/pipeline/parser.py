@@ -37,21 +37,20 @@ def extract_and_parse_json(
     # Tier 1: Direct JSON parse
     try:
         data = json.loads(text)
-        if isinstance(data, dict):
+        if isinstance(data, (dict, list)):
             return target_model.model_validate(data)
     except Exception:
         pass
 
-    # Tier 2: Extract from markdown code fences
-    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-    if fence_match:
-        fenced_content = fence_match.group(1).strip()
+    # Tier 2: Extract from markdown code fences (check in reverse to prioritize final answer over thinking examples)
+    fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_text, re.IGNORECASE)
+    for fence in reversed(fences):
         try:
-            data = json.loads(fenced_content)
-            if isinstance(data, dict):
+            data = json.loads(fence.strip())
+            if isinstance(data, (dict, list)):
                 return target_model.model_validate(data)
         except Exception:
-            text = fenced_content  # Continue to Tier 3 with un-fenced content
+            continue
 
     # Tier 3: Extract outermost curly brackets
     bracket_match = re.search(r"(\{[\s\S]*\})", text)
@@ -59,17 +58,17 @@ def extract_and_parse_json(
         bracketed_content = bracket_match.group(1).strip()
         try:
             data = json.loads(bracketed_content)
-            if isinstance(data, dict):
+            if isinstance(data, (dict, list)):
                 return target_model.model_validate(data)
         except Exception:
             text = bracketed_content
 
     # Tier 3b: Search individual candidate JSON blocks (handles Gemma thinking chains) from last to first
-    cand_blocks = re.findall(r"\{[^{}]*\}", raw_text)
+    cand_blocks = re.findall(r"\{[^{}]*\}|\[[^\[\]]*\]", raw_text)
     for cand in reversed(cand_blocks):
         try:
             cand_data = json.loads(cand)
-            if isinstance(cand_data, dict):
+            if isinstance(cand_data, (dict, list)):
                 return target_model.model_validate(cand_data)
         except Exception:
             continue
@@ -84,7 +83,7 @@ def extract_and_parse_json(
         # Convert single-quoted string values: : 'value' -> : "value"
         cleaned = re.sub(r":\s*\'([^\']*?)\'", r': "\1"', cleaned)
         data = json.loads(cleaned)
-        if isinstance(data, dict):
+        if isinstance(data, (dict, list)):
             return target_model.model_validate(data)
     except Exception:
         pass
@@ -92,7 +91,7 @@ def extract_and_parse_json(
     # Tier 5: Fallback factory execution
     if fallback_factory is not None:
         logger.warning(
-            f"All JSON extraction tiers failed for {target_model.__name__}. Executing fallback factory."
+            f"All JSON extraction tiers failed for {target_model.__name__}. Executing fallback factory. Raw text snippet: {raw_text[:250]}"
         )
         try:
             return fallback_factory()

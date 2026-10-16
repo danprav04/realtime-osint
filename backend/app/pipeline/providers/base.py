@@ -8,7 +8,7 @@ from collections import deque
 import logging
 import random
 import re
-from typing import Any, Callable, Coroutine, Deque, Dict, Optional, Tuple
+from typing import Any, Callable, Coroutine, Deque, Dict, List, Optional, Tuple
 import httpx
 
 logger = logging.getLogger("osint.ai.provider")
@@ -250,7 +250,7 @@ class BaseAIProvider(abc.ABC):
         self._last_request_time: float = 0.0
         self._rate_limit_until: float = 0.0
         self._request_timestamps: Deque[float] = deque()
-        self._token_records: Deque[Tuple[float, int]] = deque()
+        self._token_records: Deque[Any] = deque()
         self._client: Optional[httpx.AsyncClient] = None
         self.call_history: list[Dict[str, Any]] = []
 
@@ -373,8 +373,19 @@ class BaseAIProvider(abc.ABC):
             self._last_request_time = now
             if self.max_rpm > 0:
                 self._request_timestamps.append(now)
+            token_record: Optional[List[Any]] = None
             if self.max_tpm > 0 and estimated_tokens > 0:
-                self._token_records.append((now, estimated_tokens))
+                token_record = [now, estimated_tokens]
+                self._token_records.append(token_record)
+            return token_record
+
+    def update_last_token_record(self, actual_tokens: int, record_ref: Optional[List[Any]] = None) -> None:
+        """Update the estimated token record with the actual token usage reported by the API."""
+        if actual_tokens > 0:
+            if record_ref is not None:
+                record_ref[1] = actual_tokens
+            elif self._token_records:
+                self._token_records[-1][1] = actual_tokens
 
     async def _execute_with_retry(
         self,
@@ -393,9 +404,11 @@ class BaseAIProvider(abc.ABC):
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
-                await self._acquire_pacing_slot(estimated_tokens=estimated_tokens)
+                token_record = await self._acquire_pacing_slot(estimated_tokens=estimated_tokens)
 
                 response = await call_fn()
+                if token_record is not None:
+                    setattr(response, "_token_record", token_record)
 
                 # Status 429: Distinguish Minute Rate Limit (RPM/TPM) vs Daily Quota (RPD/TPD)
                 if response.status_code == 429:
@@ -496,7 +509,8 @@ class BaseAIProvider(abc.ABC):
                 if response.status_code == 500:
                     if attempt == self.max_retries:
                         response.raise_for_status()
-                    delay = max(3.5, self.base_backoff * (2 ** attempt)) + random.uniform(0.5, 1.5)
+                    is_gemma = "gemma" in (getattr(self, "default_model", "") or "").lower()
+                    delay = (14.0 + random.uniform(1.0, 4.0)) if is_gemma else (max(3.5, self.base_backoff * (2 ** attempt)) + random.uniform(0.5, 1.5))
                     logger.warning(
                         f"[{self.provider_name}:{self.default_model}] HTTP 500 Internal Error (TPM saturation/transient cluster error). "
                         f"Waiting {delay:.1f}s before retry (attempt {attempt + 1}/{self.max_retries})..."

@@ -46,11 +46,11 @@ class GeminiProvider(BaseAIProvider):
             base_backoff_sec=base_backoff_sec,
             jitter_sec=jitter_sec,
         )
-        # Safe pacing for Gemini free tier (15 RPM limit = 4.0s minimum gap; 28 RPM & 13.5K TPM for gemma-4)
+        # Safe pacing for Gemini free tier (15 RPM limit = 4.0s minimum gap; 15 RPM & 11K TPM for gemma-4)
         if is_gemma:
-            self.min_interval_sec = 2.1
-            self.max_rpm = 28
-            self.max_tpm = 13500  # Strict 13.5K TPM limit (Google AI Studio allows 16K TPM)
+            self.min_interval_sec = 4.0
+            self.max_rpm = 15
+            self.max_tpm = 11000  # Conservative 11K TPM limit (Google AI Studio has a 16K TPM limit)
         else:
             self.min_interval_sec = 4.1
             self.max_rpm = 14
@@ -79,37 +79,57 @@ class GeminiProvider(BaseAIProvider):
             "x-goog-api-key": self.api_key,
         }
 
-        # Gemma token budgeting: clamp maxOutputTokens so Google's quota counter
-        # does not pre-allocate 1,024 tokens from the strict 16K TPM bucket on every request.
+        # Gemma token budgeting & compatibility:
+        # 1. Gemma 4 models on Google AI Studio crash with HTTP 500 ("Internal error encountered.")
+        #    if `systemInstruction` or `responseMimeType="application/json"` is included in the payload.
+        #    Fold system_prompt directly into the user prompt parts and request JSON explicitly.
+        # 2. Gemma is an internal reasoning model that emits ~400-1450 thought tokens before emitting output.
+        #    maxOutputTokens must be at least 2048 so thinking tokens don't hit the ceiling and abort with HTTP 500.
+        # 3. Safe temperature: Gemma-4 sampling crashes with 500 if temperature == 0.0; clamp to min 0.1.
         if is_gemma:
-            effective_max_tokens = min(max_tokens, 384) if (json_mode and max_tokens >= 512) else min(max_tokens, 512)
+            effective_max_tokens = max(2048, max_tokens)
+            effective_temp = max(0.1, temperature)
+            combined_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+            if json_mode and "json" not in combined_prompt.lower():
+                combined_prompt += "\nRespond strictly with valid JSON."
+
+            payload: Dict[str, Any] = {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{"text": combined_prompt}],
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": effective_temp,
+                    "maxOutputTokens": effective_max_tokens,
+                },
+            }
         else:
             effective_max_tokens = max_tokens
+            effective_temp = temperature
+            payload: Dict[str, Any] = {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{"text": prompt}],
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": effective_temp,
+                    "maxOutputTokens": effective_max_tokens,
+                },
+            }
+            if system_prompt:
+                payload["systemInstruction"] = {
+                    "parts": [{"text": system_prompt}]
+                }
+            if json_mode:
+                payload["generationConfig"]["responseMimeType"] = "application/json"
 
         prompt_chars = len(prompt) + (len(system_prompt) if system_prompt else 0)
         est_input_tokens = int(prompt_chars / 3.5) + 15
         total_est_tokens = est_input_tokens + effective_max_tokens
-
-        payload: Dict[str, Any] = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": prompt}],
-                }
-            ],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": effective_max_tokens,
-            },
-        }
-
-        if system_prompt:
-            payload["systemInstruction"] = {
-                "parts": [{"text": system_prompt}]
-            }
-
-        if json_mode:
-            payload["generationConfig"]["responseMimeType"] = "application/json"
 
         async def _call() -> httpx.Response:
             return await client.post(url, json=payload, headers=headers)
@@ -135,7 +155,7 @@ class GeminiProvider(BaseAIProvider):
                         }
                     ],
                     "generationConfig": {
-                        "temperature": temperature,
+                        "temperature": max(0.1, temperature),
                         "maxOutputTokens": effective_max_tokens,
                     },
                 }
@@ -148,6 +168,13 @@ class GeminiProvider(BaseAIProvider):
                 raise
 
         res_data = response.json()
+
+        # Synchronize token records with actual totalTokenCount reported by Google
+        usage = res_data.get("usageMetadata", {})
+        actual_tokens = usage.get("totalTokenCount", 0)
+        token_record = getattr(response, "_token_record", None)
+        if actual_tokens > 0:
+            self.update_last_token_record(actual_tokens, record_ref=token_record)
 
         self.call_history.append({
             "provider": "gemini",
@@ -162,7 +189,14 @@ class GeminiProvider(BaseAIProvider):
             raise ValueError(f"Gemini response empty or blocked (reason: {block})")
 
         parts = candidates[0].get("content", {}).get("parts", [])
-        return parts[0].get("text", "") if parts else ""
+        if not parts:
+            return ""
+
+        # Extract non-thought content parts (Gemma reasoning models emit thought=True parts first)
+        non_thought_parts = [p.get("text", "") for p in parts if not p.get("thought", False)]
+        if non_thought_parts:
+            return "".join(non_thought_parts)
+        return parts[-1].get("text", "")
 
     async def process_stage(
         self,

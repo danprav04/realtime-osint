@@ -14,7 +14,7 @@ import re
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from backend.app.pipeline.arabic_normalizer import (
     ALL_VERNACULAR_TRIGGERS,
@@ -75,6 +75,41 @@ Do not include markdown formatting or explanations."""
 class Stage0BatchResult(BaseModel):
     """Schema for micro-batched LLM gatekeeper response."""
     keep: List[int] = Field(default_factory=list, description="0-based indices of relevant messages to keep")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input(cls, data: Any) -> Any:
+        if isinstance(data, list):
+            valid = []
+            for item in data:
+                try:
+                    valid.append(int(item))
+                except (ValueError, TypeError):
+                    pass
+            return {"keep": valid}
+        if isinstance(data, dict):
+            raw_keep = (
+                data.get("keep")
+                or data.get("kept")
+                or data.get("keep_indices")
+                or data.get("indices")
+                or data.get("relevant")
+                or data.get("results")
+            )
+            if raw_keep is None:
+                return {"keep": []}
+            if isinstance(raw_keep, (int, float)):
+                return {"keep": [int(raw_keep)]}
+            if isinstance(raw_keep, list):
+                valid = []
+                for item in raw_keep:
+                    try:
+                        valid.append(int(item))
+                    except (ValueError, TypeError):
+                        pass
+                return {"keep": valid}
+            return {"keep": []}
+        return {"keep": []}
 
 
 def _extract_event_text_and_meta(event: Union[NormalizedEvent, Dict[str, Any]]) -> Tuple[str, str, str, Dict[str, Any]]:
@@ -298,8 +333,8 @@ class Stage0Gatekeeper:
                 prompt=prompt,
                 system_prompt=STAGE0_SYSTEM_PROMPT,
                 model=model,
-                temperature=temperature if temperature is not None else 0.0,
-                max_tokens=384,
+                temperature=temperature if temperature is not None else 0.1,
+                max_tokens=2048,
                 json_mode=True,
             )
             self.last_model_used = f"{provider.provider_name}:{model or provider.default_model}"
