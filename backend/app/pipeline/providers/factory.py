@@ -179,7 +179,11 @@ def get_stage_provider(
     elif provider_name in ("mistral", "mistralai"):
         return MistralProvider(api_key=primary_key, default_model=stage_config.model_name)
     elif provider_name in ("cloudflare", "cf", "workers_ai", "workers-ai"):
-        return CloudflareProvider(api_key=primary_key, default_model=stage_config.model_name)
+        cf_account = (
+            (db_keys.get("cloudflare_account_id") if db_keys else None)
+            or (getattr(settings, "CLOUDFLARE_ACCOUNT_ID", None) if settings else None)
+        )
+        return CloudflareProvider(api_key=primary_key, account_id=cf_account, default_model=stage_config.model_name)
     elif provider_name in ("zai", "zhipu", "z.ai", "bigmodel"):
         return ZaiProvider(api_key=primary_key, default_model=stage_config.model_name)
     elif provider_name in ("siliconflow", "silicon", "siliconcloud"):
@@ -203,11 +207,12 @@ class ProviderRegistry:
         provider: str,
         model_name: str,
         api_key: Optional[str] = None,
+        account_id: Optional[str] = None,
         temperature: float = 0.2,
     ) -> BaseAIProvider:
         p_norm = provider.lower().strip()
         is_mock = self.use_mock or os.environ.get("USE_MOCK_AI", "0") == "1"
-        key = f"{p_norm}:{model_name}:mock" if is_mock else f"{p_norm}:{model_name}:{api_key or ''}"
+        key = f"{p_norm}:{model_name}:mock" if is_mock else f"{p_norm}:{model_name}:{api_key or ''}:{account_id or ''}"
         if key not in self._providers:
             if is_mock:
                 self._providers[key] = MockAIProvider(
@@ -250,6 +255,7 @@ class ProviderRegistry:
             elif p_norm in ("cloudflare", "cf", "workers_ai", "workers-ai"):
                 self._providers[key] = CloudflareProvider(
                     api_key=api_key,
+                    account_id=account_id,
                     default_model=model_name,
                 )
             elif p_norm in ("zai", "zhipu", "z.ai", "bigmodel"):

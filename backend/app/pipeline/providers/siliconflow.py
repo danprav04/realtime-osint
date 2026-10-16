@@ -45,14 +45,16 @@ class SiliconFlowProvider(BaseAIProvider):
             or getattr(st, "SILICONFLOW_API_KEY", None)
             or os.environ.get("SILICONFLOW_API_KEY", "")
         )
+        norm_model = self.normalize_model_name(default_model)
         super().__init__(
             api_key=resolved_key,
-            default_model=default_model,
+            default_model=norm_model,
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
             base_backoff_sec=base_backoff_sec,
             jitter_sec=jitter_sec,
         )
+        self.default_model = norm_model
         # High RPM capacity (~1,000 RPM per model = 0.1s spacing)
         self.min_interval_sec = 0.1
         self.max_rpm = 600

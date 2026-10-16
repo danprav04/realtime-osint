@@ -12,6 +12,7 @@ Optimal ultra-lightweight models:
 """
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -26,6 +27,54 @@ logger = logging.getLogger("osint.ai.cloudflare")
 DEFAULT_CLOUDFLARE_MODEL = "@cf/meta/llama-3.2-1b-instruct"
 
 
+class CloudflareNeuronTracker:
+    """
+    In-memory daily Neuron budget tracker for Cloudflare Workers AI.
+    Default free tier: 10,000 Neurons per day, resetting at 00:00 UTC.
+    Protects against rate-limit overruns or unexpected billing.
+    """
+
+    def __init__(self, max_neurons_per_day: float = 10000.0):
+        self.max_neurons = max_neurons_per_day
+        self._current_date_utc: str = self._get_current_utc_date()
+        self._neurons_today: float = 0.0
+        self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _get_current_utc_date() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    async def _check_and_rollover(self) -> None:
+        today = self._get_current_utc_date()
+        if today != self._current_date_utc:
+            self._current_date_utc = today
+            self._neurons_today = 0.0
+            logger.info(f"[Cloudflare AI] New UTC day {today} - reset Neuron budget counter to 0.")
+
+    async def record_neurons(self, neurons_used: float) -> None:
+        async with self._lock:
+            await self._check_and_rollover()
+            if self._neurons_today + neurons_used > self.max_neurons:
+                raise RuntimeError(
+                    f"Cloudflare daily Neuron allowance exhausted: {self._neurons_today:.1f} used, "
+                    f"attempted to add {neurons_used:.1f} (limit {self.max_neurons:.0f} Neurons/day)"
+                )
+            self._neurons_today += max(0.0, neurons_used)
+
+    def get_neurons_used_today(self) -> float:
+        return self._neurons_today
+
+
+_global_neuron_tracker: Optional[CloudflareNeuronTracker] = None
+
+
+def get_cloudflare_neuron_tracker() -> CloudflareNeuronTracker:
+    global _global_neuron_tracker
+    if _global_neuron_tracker is None:
+        _global_neuron_tracker = CloudflareNeuronTracker()
+    return _global_neuron_tracker
+
+
 class CloudflareProvider(BaseAIProvider):
     """
     Cloudflare Workers AI async REST provider via OpenAI-compatible endpoint:
@@ -35,6 +84,7 @@ class CloudflareProvider(BaseAIProvider):
     def __init__(
         self,
         api_key: Optional[str] = None,
+        api_token: Optional[str] = None,
         account_id: Optional[str] = None,
         default_model: str = DEFAULT_CLOUDFLARE_MODEL,
         base_url: Optional[str] = None,
@@ -45,18 +95,21 @@ class CloudflareProvider(BaseAIProvider):
     ):
         st = get_settings()
         resolved_key = (
-            api_key
+            api_token
+            or api_key
             or getattr(st, "CLOUDFLARE_API_TOKEN", None)
             or os.environ.get("CLOUDFLARE_API_TOKEN", "")
         )
         super().__init__(
             api_key=resolved_key,
-            default_model=default_model,
+            default_model=self.normalize_model_name(default_model),
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
             base_backoff_sec=base_backoff_sec,
             jitter_sec=jitter_sec,
         )
+        self.default_model = self.normalize_model_name(default_model)
+        self.api_token = resolved_key
         self.account_id = (
             account_id
             or getattr(st, "CLOUDFLARE_ACCOUNT_ID", None)
@@ -73,6 +126,10 @@ class CloudflareProvider(BaseAIProvider):
             self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/ai/v1"
         else:
             self.base_url = "https://api.cloudflare.com/client/v4/ai/v1"
+
+    @property
+    def chat_endpoint(self) -> str:
+        return f"{self.base_url}/chat/completions"
 
     @property
     def provider_name(self) -> str:

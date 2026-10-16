@@ -59,6 +59,8 @@ class ZaiProvider(BaseAIProvider):
         self.min_interval_sec = 0.2
         self.max_rpm = 300
         self.max_minute_wait_sec = 65.0
+        self.concurrency_limit = 3
+        self.semaphore = _zai_concurrency_semaphore
         self.base_url = (base_url or getattr(st, "ZAI_BASE_URL", None) or DEFAULT_ZAI_BASE_URL).rstrip("/")
 
     @property

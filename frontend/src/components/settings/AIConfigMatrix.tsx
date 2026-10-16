@@ -19,6 +19,8 @@ import {
 import { AIPipelineSettings, AIStageConfig, AIFallbackConfig, SystemSettings } from '@/lib/types';
 import { updateAIPipelineSettings, resetAIPipelineSettings } from '@/lib/api';
 
+type AIProvider = 'gemini' | 'groq' | 'aihubmix' | 'mistral' | 'cloudflare' | 'zai' | 'siliconflow';
+
 interface AIConfigMatrixProps {
   initialSettings: AIPipelineSettings | null;
   systemSettings?: SystemSettings | null;
@@ -27,7 +29,7 @@ interface AIConfigMatrixProps {
 
 export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: AIConfigMatrixProps) {
   const defaultStage = (
-    provider: 'gemini' | 'groq' | 'aihubmix',
+    provider: AIProvider,
     model: string,
     fallbacks: AIFallbackConfig[] = []
   ): AIStageConfig => ({
@@ -42,7 +44,10 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     model_name: 'openai/gpt-oss-20b',
     temperature: 0.0,
     fallbacks: [
+      { provider: 'mistral', model_name: 'ministral-3b-2512', temperature: 0.0 },
       { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.0 },
+      { provider: 'cloudflare', model_name: '@cf/meta/llama-3.2-1b-instruct', temperature: 0.0 },
+      { provider: 'zai', model_name: 'glm-4.7-flash', temperature: 0.0 },
       { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.0 },
       { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.0 },
     ],
@@ -58,26 +63,36 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           gatekeeper: defaultGatekeeperStage(),
           extraction: defaultStage('groq', 'qwen/qwen3.8-27b', [
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+            { provider: 'mistral', model_name: 'ministral-8b-2512', temperature: 0.2 },
+            { provider: 'siliconflow', model_name: 'Qwen/Qwen2.5-7B-Instruct', temperature: 0.2 },
+            { provider: 'cloudflare', model_name: '@cf/meta/llama-3.1-8b-instruct-fp8-fast', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
           ]),
           scoring: defaultStage('gemini', 'gemini-3.5-flash-lite', [
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.1 },
+            { provider: 'mistral', model_name: 'ministral-8b-2512', temperature: 0.1 },
             { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.1 },
+            { provider: 'siliconflow', model_name: 'Qwen/Qwen2.5-7B-Instruct', temperature: 0.1 },
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.1 },
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.1 },
           ]),
           summarization: defaultStage('groq', 'openai/gpt-oss-120b', [
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+            { provider: 'mistral', model_name: 'ministral-8b-2512', temperature: 0.2 },
             { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
-            { provider: 'aihubmix', model_name: 'coding-glm-5.3-flash-free', temperature: 0.2 },
+            { provider: 'siliconflow', model_name: 'THUDM/glm-4-9b-chat', temperature: 0.2 },
+            { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
           ]),
           visuals: defaultStage('groq', 'qwen/qwen3.8-27b', [
             { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.2 },
-            { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
+            { provider: 'mistral', model_name: 'ministral-8b-2512', temperature: 0.2 },
+            { provider: 'cloudflare', model_name: '@cf/meta/llama-3.2-3b-instruct', temperature: 0.2 },
+            { provider: 'siliconflow', model_name: 'Qwen/Qwen2.5-7B-Instruct', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
           ]),
         }
@@ -128,12 +143,20 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     },
   ];
 
-  const handleProviderChange = (stageKey: keyof AIPipelineSettings, provider: 'gemini' | 'groq' | 'aihubmix') => {
+  const handleProviderChange = (stageKey: keyof AIPipelineSettings, provider: AIProvider) => {
     let defaultModel = 'gemini-3.5-flash-lite';
     if (provider === 'groq') {
       defaultModel = 'qwen/qwen3.8-27b';
     } else if (provider === 'aihubmix') {
       defaultModel = 'coding-glm-5.3-free';
+    } else if (provider === 'mistral') {
+      defaultModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512';
+    } else if (provider === 'cloudflare') {
+      defaultModel = stageKey === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
+    } else if (provider === 'zai') {
+      defaultModel = 'glm-4.7-flash';
+    } else if (provider === 'siliconflow') {
+      defaultModel = 'Qwen/Qwen2.5-7B-Instruct';
     }
     setSettings((prev) => {
       const stage = prev[stageKey];
@@ -185,7 +208,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   // Fallback management handlers
   const handleAddFallback = (
     stageKey: keyof AIPipelineSettings,
-    suggestedProvider?: 'gemini' | 'groq' | 'aihubmix',
+    suggestedProvider?: AIProvider,
     suggestedModel?: string
   ) => {
     setSettings((prev) => {
@@ -193,11 +216,16 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
       if (!stage) return prev;
       const existing = stage.fallbacks || [];
       const currentProvider = stage.provider;
-      const nextProvider = suggestedProvider || (currentProvider === 'gemini' ? 'groq' : currentProvider === 'groq' ? 'aihubmix' : 'gemini');
+      const providerCycle: AIProvider[] = ['mistral', 'cloudflare', 'groq', 'gemini', 'siliconflow', 'zai'];
+      const nextProvider = suggestedProvider || providerCycle.find((p) => p !== currentProvider && !existing.some((f) => f.provider === p)) || 'mistral';
       let nextModel = suggestedModel;
       if (!nextModel) {
         if (nextProvider === 'gemini') nextModel = 'gemini-3.1-flash-lite';
         else if (nextProvider === 'groq') nextModel = 'qwen/qwen3.8-27b';
+        else if (nextProvider === 'mistral') nextModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512';
+        else if (nextProvider === 'cloudflare') nextModel = stageKey === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
+        else if (nextProvider === 'zai') nextModel = 'glm-4.7-flash';
+        else if (nextProvider === 'siliconflow') nextModel = 'Qwen/Qwen2.5-7B-Instruct';
         else nextModel = 'coding-glm-5.3-free';
       }
 
@@ -254,6 +282,14 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
             updated.model_name = 'gemini-3.1-flash-lite';
           } else if (value === 'groq') {
             updated.model_name = 'qwen/qwen3.8-27b';
+          } else if (value === 'mistral') {
+            updated.model_name = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512';
+          } else if (value === 'cloudflare') {
+            updated.model_name = stageKey === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
+          } else if (value === 'zai') {
+            updated.model_name = 'glm-4.7-flash';
+          } else if (value === 'siliconflow') {
+            updated.model_name = 'Qwen/Qwen2.5-7B-Instruct';
           } else if (value === 'aihubmix') {
             updated.model_name = 'coding-glm-5.3-free';
           }
@@ -428,6 +464,90 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           </a>
 
           <a
+            href="https://console.mistral.ai/limits/"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open Mistral AI Limits (12.5 RPS / 1.3M TPM on Ministral-3B | $10/mo Free Tier)"
+            className="inline-flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised text-zinc-200 hover:text-accent-cyan hairline-border transition-colors pressable"
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                systemSettings?.api_keys?.mistral_api_key
+                  ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)]'
+                  : 'bg-amber-400'
+              }`}
+            />
+            <span className="font-medium">Mistral Limits</span>
+            <span className="text-[10px] font-mono text-zinc-400 hidden md:inline">
+              (12.5 RPS)
+            </span>
+            <ExternalLink className="w-3 h-3 text-accent-cyan" />
+          </a>
+
+          <a
+            href="https://developers.cloudflare.com/workers-ai/models/"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open Cloudflare Workers AI Model Limits (10,000 Neurons/day | 300 RPM)"
+            className="inline-flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised text-zinc-200 hover:text-accent-cyan hairline-border transition-colors pressable"
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                systemSettings?.api_keys?.cloudflare_api_token
+                  ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)]'
+                  : 'bg-orange-400'
+              }`}
+            />
+            <span className="font-medium">Cloudflare AI</span>
+            <span className="text-[10px] font-mono text-zinc-400 hidden md:inline">
+              (10K Neurons/day)
+            </span>
+            <ExternalLink className="w-3 h-3 text-accent-cyan" />
+          </a>
+
+          <a
+            href="https://open.bigmodel.cn/dev/howuse/rate-limits"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open Z.ai / Zhipu AI Console (Permanent $0 Free Flash Models)"
+            className="inline-flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised text-zinc-200 hover:text-accent-cyan hairline-border transition-colors pressable"
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                systemSettings?.api_keys?.zai_api_key
+                  ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)]'
+                  : 'bg-sky-400'
+              }`}
+            />
+            <span className="font-medium">Z.ai Flash</span>
+            <span className="text-[10px] font-mono text-zinc-400 hidden md:inline">
+              ($0 / Concurrency)
+            </span>
+            <ExternalLink className="w-3 h-3 text-accent-cyan" />
+          </a>
+
+          <a
+            href="https://cloud.siliconflow.com/models"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open SiliconFlow Console (1,000 RPM on $0 Model Catalog)"
+            className="inline-flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-raised text-zinc-200 hover:text-accent-cyan hairline-border transition-colors pressable"
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                systemSettings?.api_keys?.siliconflow_api_key
+                  ? 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)]'
+                  : 'bg-purple-400'
+              }`}
+            />
+            <span className="font-medium">SiliconFlow</span>
+            <span className="text-[10px] font-mono text-zinc-400 hidden md:inline">
+              (1K RPM Free)
+            </span>
+            <ExternalLink className="w-3 h-3 text-accent-cyan" />
+          </a>
+
+          <a
             href={systemSettings?.api_keys?.hf_embedding_url || 'https://huggingface.co/spaces'}
             target="_blank"
             rel="noopener noreferrer"
@@ -474,6 +594,10 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
             const currentStageConfig = settings[stage.key] || defaultGatekeeperStage();
             const isGemini = currentStageConfig.provider === 'gemini';
             const isGroq = currentStageConfig.provider === 'groq';
+            const isMistral = currentStageConfig.provider === 'mistral';
+            const isCloudflare = currentStageConfig.provider === 'cloudflare';
+            const isZai = currentStageConfig.provider === 'zai';
+            const isSiliconFlow = currentStageConfig.provider === 'siliconflow';
             const isAIHubMix = currentStageConfig.provider === 'aihubmix';
             const fallbacks = currentStageConfig.fallbacks || [];
             const gkStats = stage.key === 'gatekeeper' ? systemSettings?.gatekeeper_stats : null;
@@ -545,12 +669,16 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                       <select
                         value={currentStageConfig.provider}
                         onChange={(e) =>
-                          handleProviderChange(stage.key, e.target.value as 'gemini' | 'groq' | 'aihubmix')
+                          handleProviderChange(stage.key, e.target.value as AIProvider)
                         }
                         className="w-full rounded-lg bg-surface-card px-3 py-2 text-zinc-100 hairline-border focus:outline-none focus:border-accent-indigo"
                       >
-                        <option value="gemini">Google Gemini API</option>
                         <option value="groq">Groq Cloud (LPU Inference)</option>
+                        <option value="gemini">Google Gemini API</option>
+                        <option value="mistral">Mistral AI (La Plateforme)</option>
+                        <option value="cloudflare">Cloudflare Workers AI (10K Neurons)</option>
+                        <option value="zai">Z.ai / Zhipu ($0 Flash)</option>
+                        <option value="siliconflow">SiliconFlow (Free Catalog)</option>
                         {stage.key === 'summarization' && (
                           <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
                         )}
@@ -567,11 +695,19 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               ? 'https://aistudio.google.com/rate-limit'
                               : isGroq
                               ? 'https://console.groq.com/settings/limits'
+                              : isMistral
+                              ? 'https://console.mistral.ai/limits/'
+                              : isCloudflare
+                              ? 'https://developers.cloudflare.com/workers-ai/models/'
+                              : isZai
+                              ? 'https://open.bigmodel.cn/dev/howuse/rate-limits'
+                              : isSiliconFlow
+                              ? 'https://cloud.siliconflow.com/models'
                               : 'https://aihubmix.com/models/free'
                           }
                           target="_blank"
                           rel="noopener noreferrer"
-                          title={`View ${isGemini ? 'Google Gemini' : isGroq ? 'Groq Cloud' : 'AI Hub Mix'} rate limits`}
+                          title="View provider rate limits"
                           className="inline-flex items-center space-x-1 text-[10px] text-accent-cyan hover:text-accent-cyan/80 font-mono hover:underline transition-colors"
                         >
                           <span>
@@ -581,6 +717,14 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                 : 'Flash: 500 RPD'
                               : isGroq
                               ? 'Free: 30 RPM / 1K RPD'
+                              : isMistral
+                              ? 'Mistral: Up to 12.5 RPS'
+                              : isCloudflare
+                              ? 'Cloudflare: 300 RPM / 10K Neurons'
+                              : isZai
+                              ? 'Z.ai: Unlimited RPD Flash'
+                              : isSiliconFlow
+                              ? 'SiliconFlow: 1,000 RPM Free'
                               : 'Free: 10 RPM / 100 RPD / 1M TPD'}
                           </span>
                           <ExternalLink className="w-2.5 h-2.5" />
@@ -591,7 +735,21 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                         list={`models-${stage.key}`}
                         value={currentStageConfig.model_name}
                         onChange={(e) => handleModelChange(stage.key, e.target.value)}
-                        placeholder={isGemini ? 'gemma-4-26b-a4b-it' : isGroq ? 'qwen/qwen3.8-27b' : 'coding-glm-5.3-free'}
+                        placeholder={
+                          isGemini
+                            ? 'gemma-4-26b-a4b-it'
+                            : isGroq
+                            ? 'qwen/qwen3.8-27b'
+                            : isMistral
+                            ? 'ministral-3b-2512'
+                            : isCloudflare
+                            ? '@cf/meta/llama-3.2-1b-instruct'
+                            : isZai
+                            ? 'glm-4.7-flash'
+                            : isSiliconFlow
+                            ? 'Qwen/Qwen2.5-7B-Instruct'
+                            : 'coding-glm-5.3-free'
+                        }
                         className="w-full rounded-lg bg-surface-card px-3 py-2 text-zinc-100 font-mono text-xs hairline-border focus:outline-none focus:border-accent-indigo"
                       />
                       <datalist id={`models-${stage.key}`}>
@@ -608,6 +766,30 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                             <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Fastest Multilingual | 1K RPD)</option>
                             <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Deep Reasoning | 1K RPD)</option>
                             <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (Lightweight | 1K RPD)</option>
+                          </>
+                        ) : isMistral ? (
+                          <>
+                            <option value="ministral-3b-2512">ministral-3b-2512 (Ultra-fast Gatekeeper | 12.5 RPS / 1.3M TPM)</option>
+                            <option value="ministral-8b-2512">ministral-8b-2512 (High Quality | 3.13 RPS / 625K TPM)</option>
+                            <option value="mistral-small-2603">mistral-small-2603 (Reasoning | 1.0 RPS)</option>
+                            <option value="mistral-large-2512">mistral-large-2512 (Flagship | 1.0 RPS)</option>
+                          </>
+                        ) : isCloudflare ? (
+                          <>
+                            <option value="@cf/meta/llama-3.2-1b-instruct">@cf/meta/llama-3.2-1b-instruct (~4.1K RPD / 300 RPM)</option>
+                            <option value="@cf/meta/llama-3.2-3b-instruct">@cf/meta/llama-3.2-3b-instruct (~2.4K RPD / 300 RPM)</option>
+                            <option value="@cf/meta/llama-3.1-8b-instruct-fp8-fast">@cf/meta/llama-3.1-8b-instruct-fp8-fast (~2.2K RPD / 300 RPM)</option>
+                          </>
+                        ) : isZai ? (
+                          <>
+                            <option value="glm-4.7-flash">glm-4.7-flash (Permanent $0 Free Flash | High Speed)</option>
+                            <option value="glm-4.5-flash">glm-4.5-flash (Permanent $0 Free Flash)</option>
+                          </>
+                        ) : isSiliconFlow ? (
+                          <>
+                            <option value="Qwen/Qwen2.5-7B-Instruct">Qwen/Qwen2.5-7B-Instruct (Free Catalog | 1K RPM)</option>
+                            <option value="THUDM/glm-4-9b-chat">THUDM/glm-4-9b-chat (Free Catalog | 1K RPM)</option>
+                            <option value="Qwen/Qwen2.5-14B-Instruct">Qwen/Qwen2.5-14B-Instruct (Free Catalog)</option>
                           </>
                         ) : (
                           <>
@@ -662,6 +844,81 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
                             >
                               🧠 gpt-oss-120b
+                            </button>
+                          </>
+                        ) : isMistral ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'ministral-3b-2512')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 transition-colors"
+                            >
+                              ⚡ ministral-3b (12.5 RPS)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'ministral-8b-2512')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 transition-colors"
+                            >
+                              🧠 ministral-8b (3.13 RPS)
+                            </button>
+                          </>
+                        ) : isCloudflare ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, '@cf/meta/llama-3.2-1b-instruct')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 hover:bg-orange-500/20 text-orange-300 transition-colors"
+                            >
+                              ⚡ llama-3.2-1b (~4.1K RPD)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, '@cf/meta/llama-3.2-3b-instruct')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 hover:bg-orange-500/20 text-orange-300 transition-colors"
+                            >
+                              llama-3.2-3b
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, '@cf/meta/llama-3.1-8b-instruct-fp8-fast')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 hover:bg-orange-500/20 text-orange-300 transition-colors"
+                            >
+                              llama-3.1-8b-fp8
+                            </button>
+                          </>
+                        ) : isZai ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'glm-4.7-flash')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 transition-colors"
+                            >
+                              ⚡ glm-4.7-flash ($0)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'glm-4.5-flash')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 transition-colors"
+                            >
+                              glm-4.5-flash
+                            </button>
+                          </>
+                        ) : isSiliconFlow ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'Qwen/Qwen2.5-7B-Instruct')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 transition-colors"
+                            >
+                              ⚡ Qwen2.5-7B (1K RPM)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'THUDM/glm-4-9b-chat')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 transition-colors"
+                            >
+                              glm-4-9b-chat
                             </button>
                           </>
                         ) : (
@@ -719,6 +976,40 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                           <span>+ Add Gemma 4 (14.4K RPD)</span>
                         </button>
                       )}
+                      {/* Quick preset button for Mistral */}
+                      {!fallbacks.some((f) => f.provider === 'mistral') && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleAddFallback(
+                              stage.key,
+                              'mistral',
+                              stage.key === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512'
+                            )
+                          }
+                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-md transition-colors"
+                          title="Mistral Free Plan: 12.5 RPS / 1.3M TPM on Ministral-3B"
+                        >
+                          <span>+ Add Mistral ({stage.key === 'gatekeeper' ? '12.5 RPS' : '8B'})</span>
+                        </button>
+                      )}
+                      {/* Quick preset button for Cloudflare */}
+                      {!fallbacks.some((f) => f.provider === 'cloudflare') && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleAddFallback(
+                              stage.key,
+                              'cloudflare',
+                              stage.key === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast'
+                            )
+                          }
+                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-orange-300 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 rounded-md transition-colors"
+                          title="Cloudflare Workers AI: 10,000 Neurons/day (~4.1K RPD on 1B)"
+                        >
+                          <span>+ Add Cloudflare (~4K RPD)</span>
+                        </button>
+                      )}
                       {/* Quick preset button */}
                       {isGemini && !fallbacks.some((f) => f.model_name === 'gemini-3.1-flash-lite') && (
                         <button
@@ -766,6 +1057,10 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                       {fallbacks.map((fb, idx) => {
                         const fbIsGemini = fb.provider === 'gemini';
                         const fbIsGroq = fb.provider === 'groq';
+                        const fbIsMistral = fb.provider === 'mistral';
+                        const fbIsCloudflare = fb.provider === 'cloudflare';
+                        const fbIsZai = fb.provider === 'zai';
+                        const fbIsSiliconFlow = fb.provider === 'siliconflow';
                         const fbIsAIHubMix = fb.provider === 'aihubmix';
                         return (
                           <div
@@ -784,12 +1079,16 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               <select
                                 value={fb.provider}
                                 onChange={(e) =>
-                                  handleUpdateFallback(stage.key, idx, 'provider', e.target.value as 'gemini' | 'groq' | 'aihubmix')
+                                  handleUpdateFallback(stage.key, idx, 'provider', e.target.value as AIProvider)
                                 }
                                 className="w-full rounded-md bg-canvas-recessed px-2.5 py-1.5 text-zinc-100 hairline-border focus:outline-none focus:border-accent-indigo text-xs"
                               >
-                                <option value="gemini">Gemini API</option>
                                 <option value="groq">Groq Cloud</option>
+                                <option value="gemini">Gemini API</option>
+                                <option value="mistral">Mistral AI</option>
+                                <option value="cloudflare">Cloudflare Workers AI</option>
+                                <option value="zai">Z.ai (Zhipu)</option>
+                                <option value="siliconflow">SiliconFlow</option>
                                 {stage.key === 'summarization' && currentStageConfig.provider !== 'aihubmix' && (
                                   <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
                                 )}
@@ -802,7 +1101,21 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                 type="text"
                                 value={fb.model_name}
                                 onChange={(e) => handleUpdateFallback(stage.key, idx, 'model_name', e.target.value)}
-                                placeholder={fbIsGemini ? 'gemma-4-26b-a4b-it' : fbIsGroq ? 'qwen/qwen3.8-27b' : 'coding-glm-5.3-free'}
+                                placeholder={
+                                  fbIsGemini
+                                    ? 'gemma-4-26b-a4b-it'
+                                    : fbIsGroq
+                                    ? 'qwen/qwen3.8-27b'
+                                    : fbIsMistral
+                                    ? 'ministral-3b-2512'
+                                    : fbIsCloudflare
+                                    ? '@cf/meta/llama-3.2-1b-instruct'
+                                    : fbIsZai
+                                    ? 'glm-4.7-flash'
+                                    : fbIsSiliconFlow
+                                    ? 'Qwen/Qwen2.5-7B-Instruct'
+                                    : 'coding-glm-5.3-free'
+                                }
                                 className="w-full rounded-md bg-canvas-recessed px-2.5 py-1.5 text-zinc-100 font-mono text-xs hairline-border focus:outline-none focus:border-accent-indigo"
                               />
                               <div className="flex flex-wrap items-center justify-between gap-1 mt-1">
@@ -857,6 +1170,81 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                         gpt-oss-120b
                                       </button>
                                     </>
+                                  ) : fbIsMistral ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'ministral-3b-2512')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300"
+                                      >
+                                        ⚡ 3b (12.5 RPS)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'ministral-8b-2512')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300"
+                                      >
+                                        🧠 8b (3.13 RPS)
+                                      </button>
+                                    </>
+                                  ) : fbIsCloudflare ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', '@cf/meta/llama-3.2-1b-instruct')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 hover:bg-orange-500/20 text-orange-300"
+                                      >
+                                        ⚡ llama-1b (~4.1K RPD)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', '@cf/meta/llama-3.2-3b-instruct')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 hover:bg-orange-500/20 text-orange-300"
+                                      >
+                                        llama-3b
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', '@cf/meta/llama-3.1-8b-instruct-fp8-fast')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 hover:bg-orange-500/20 text-orange-300"
+                                      >
+                                        llama-8b-fp8
+                                      </button>
+                                    </>
+                                  ) : fbIsZai ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'glm-4.7-flash')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-300"
+                                      >
+                                        ⚡ glm-4.7-flash ($0)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'glm-4.5-flash')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-300"
+                                      >
+                                        glm-4.5-flash
+                                      </button>
+                                    </>
+                                  ) : fbIsSiliconFlow ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'Qwen/Qwen2.5-7B-Instruct')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300"
+                                      >
+                                        ⚡ Qwen2.5-7B (1K RPM)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'THUDM/glm-4-9b-chat')}
+                                        className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300"
+                                      >
+                                        glm-4-9b
+                                      </button>
+                                    </>
                                   ) : (
                                     <button
                                       type="button"
@@ -873,14 +1261,36 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                       ? 'https://aistudio.google.com/rate-limit'
                                       : fbIsGroq
                                       ? 'https://console.groq.com/settings/limits'
+                                      : fbIsMistral
+                                      ? 'https://console.mistral.ai/limits/'
+                                      : fbIsCloudflare
+                                      ? 'https://developers.cloudflare.com/workers-ai/models/'
+                                      : fbIsZai
+                                      ? 'https://open.bigmodel.cn/dev/howuse/rate-limits'
+                                      : fbIsSiliconFlow
+                                      ? 'https://cloud.siliconflow.com/models'
                                       : 'https://aihubmix.com/models/free'
                                   }
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  title={`Open ${fbIsGemini ? 'Gemini' : fbIsGroq ? 'Groq' : 'AI Hub Mix'} rate limits`}
+                                  title="Open provider rate limits"
                                   className="inline-flex items-center space-x-0.5 text-[9px] font-mono text-accent-cyan/80 hover:text-accent-cyan hover:underline"
                                 >
-                                  <span>{fbIsGemini ? 'Gemini Limits' : fbIsGroq ? 'Groq Limits' : 'AIHubMix Limits'}</span>
+                                  <span>
+                                    {fbIsGemini
+                                      ? 'Gemini Limits'
+                                      : fbIsGroq
+                                      ? 'Groq Limits'
+                                      : fbIsMistral
+                                      ? 'Mistral Limits'
+                                      : fbIsCloudflare
+                                      ? 'Cloudflare Limits'
+                                      : fbIsZai
+                                      ? 'Z.ai Limits'
+                                      : fbIsSiliconFlow
+                                      ? 'SiliconFlow Limits'
+                                      : 'AIHubMix Limits'}
+                                  </span>
                                   <ExternalLink className="w-2.5 h-2.5" />
                                 </a>
                               </div>
