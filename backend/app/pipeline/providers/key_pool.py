@@ -73,14 +73,16 @@ def parse_key_list(raw_keys: Any) -> List[str]:
 
 class GroqKey:
     """
-    State, pacing sliding-window, and error telemetry for a single Groq API key.
+    State, pacing, and rate limit telemetry for a single Groq API key.
+    Locks dynamically based on what Groq returns (retry-after and x-ratelimit-* headers),
+    without assuming the key is locked or enforcing arbitrary client-side lockouts.
     """
 
     def __init__(
         self,
         key: str,
-        min_interval_sec: float = 2.1,
-        max_rpm: int = 28,
+        min_interval_sec: float = 0.0,
+        max_rpm: int = 0,
         max_minute_wait_sec: float = 65.0,
     ):
         self.key: str = key.strip()
@@ -103,6 +105,15 @@ class GroqKey:
         self.daily_quota_exhaustions: int = 0
         self.auth_errors: int = 0
         self.last_used_at: Optional[str] = None
+
+        # Live rate limit headers returned by Groq
+        self.remaining_requests: Optional[int] = None
+        self.remaining_tokens: Optional[int] = None
+        self.limit_requests: Optional[int] = None
+        self.limit_tokens: Optional[int] = None
+        self.reset_requests_sec: Optional[float] = None
+        self.reset_tokens_sec: Optional[float] = None
+        self.retry_after_sec: Optional[float] = None
 
     def is_available(self, now: Optional[float] = None) -> bool:
         """Check if key is available to accept requests."""
@@ -134,9 +145,9 @@ class GroqKey:
             if current_time < self.cooldown_until:
                 return max(0.0, self.cooldown_until - current_time)
 
-        # Sliding window check
+        # Sliding window check (only if max_rpm explicitly set > 0)
         wait_time = 0.0
-        if self._request_timestamps and len(self._request_timestamps) >= self.max_rpm:
+        if self.max_rpm > 0 and self._request_timestamps and len(self._request_timestamps) >= self.max_rpm:
             earliest = self._request_timestamps[0]
             if (current_time - earliest) < 60.0:
                 wait_time = max(wait_time, (earliest + 60.2) - current_time)
@@ -150,14 +161,14 @@ class GroqKey:
 
     async def acquire_pacing_slot(self) -> None:
         """
-        Enforce sliding-window pacing and minimum spacing under the key's private lock.
+        Enforce pacing and cooldown under the key's private lock.
         Requests on this key do not block requests on other keys in the pool.
         """
         async with self._pacing_lock:
             loop = asyncio.get_event_loop()
             now = loop.time()
 
-            # 1. Honor active cooldown if any
+            # 1. Honor active cooldown if any (set strictly by what Groq returned)
             if now < self.cooldown_until:
                 wait_rl = self.cooldown_until - now
                 logger.info(
@@ -166,7 +177,7 @@ class GroqKey:
                 await asyncio.sleep(wait_rl)
                 now = loop.time()
 
-            # 2. Enforce 60-second sliding-window RPM cap
+            # 2. Enforce 60-second sliding-window RPM cap (if configured)
             if self.max_rpm > 0:
                 while self._request_timestamps and (now - self._request_timestamps[0]) >= 60.0:
                     self._request_timestamps.popleft()
@@ -183,7 +194,7 @@ class GroqKey:
                     while self._request_timestamps and (now - self._request_timestamps[0]) >= 60.0:
                         self._request_timestamps.popleft()
 
-            # 3. Enforce minimum spacing between consecutive requests on this key
+            # 3. Enforce minimum spacing between consecutive requests on this key (if configured)
             if self.min_interval_sec > 0 and self._last_request_time > 0:
                 elapsed = now - self._last_request_time
                 if elapsed < self.min_interval_sec:
@@ -197,12 +208,128 @@ class GroqKey:
             self.total_requests += 1
             self.last_used_at = datetime.now(timezone.utc).isoformat()
 
+    def update_from_response(self, response: httpx.Response) -> None:
+        """
+        Dynamically update key status and rate-limit state using the exact HTTP headers
+        returned by Groq (retry-after and x-ratelimit-*), eliminating arbitrary numbers.
+        """
+        headers = response.headers
+
+        # 1. Parse headers returned by Groq
+        raw_retry_after = headers.get("retry-after")
+        retry_after = parse_duration_seconds(raw_retry_after)
+
+        raw_rem_req = headers.get("x-ratelimit-remaining-requests")
+        raw_rem_tok = headers.get("x-ratelimit-remaining-tokens")
+        raw_lim_req = headers.get("x-ratelimit-limit-requests")
+        raw_lim_tok = headers.get("x-ratelimit-limit-tokens")
+        raw_reset_req = headers.get("x-ratelimit-reset-requests")
+        raw_reset_tok = headers.get("x-ratelimit-reset-tokens")
+
+        rem_requests = int(raw_rem_req) if raw_rem_req is not None and str(raw_rem_req).strip().isdigit() else None
+        rem_tokens = int(raw_rem_tok) if raw_rem_tok is not None and str(raw_rem_tok).strip().isdigit() else None
+        lim_requests = int(raw_lim_req) if raw_lim_req is not None and str(raw_lim_req).strip().isdigit() else None
+        lim_tokens = int(raw_lim_tok) if raw_lim_tok is not None and str(raw_lim_tok).strip().isdigit() else None
+
+        reset_requests_sec = parse_duration_seconds(raw_reset_req)
+        reset_tokens_sec = parse_duration_seconds(raw_reset_tok)
+
+        self.retry_after_sec = retry_after
+        self.remaining_requests = rem_requests
+        self.remaining_tokens = rem_tokens
+        self.limit_requests = lim_requests
+        self.limit_tokens = lim_tokens
+        self.reset_requests_sec = reset_requests_sec
+        self.reset_tokens_sec = reset_tokens_sec
+
+        now = _get_loop_time()
+
+        # 2. HTTP 429: Rate Limit Reached
+        if response.status_code == 429:
+            lock_delay: Optional[float] = None
+            reason: str = ""
+            is_daily = False
+
+            # Priority 1: retry-after header returned by Groq on 429
+            if retry_after is not None and retry_after > 0:
+                lock_delay = retry_after
+                if rem_requests == 0 and (rem_tokens is None or rem_tokens > 0):
+                    is_daily = lock_delay > 3600.0
+                    reason = f"daily requests exhausted (retry-after {retry_after:g}s)"
+                else:
+                    is_daily = False
+                    reason = f"rate limit (retry-after {retry_after:g}s)"
+
+            # Priority 2: tokens exhausted (TPM reset)
+            elif rem_tokens == 0 and reset_tokens_sec is not None and reset_tokens_sec > 0:
+                lock_delay = reset_tokens_sec
+                is_daily = False
+                reason = f"tokens exhausted (reset in {reset_tokens_sec:g}s)"
+
+            # Priority 3: requests exhausted (RPD reset)
+            elif rem_requests == 0 and reset_requests_sec is not None and reset_requests_sec > 0:
+                lock_delay = reset_requests_sec
+                is_daily = reset_requests_sec > 3600.0
+                reason = f"requests exhausted (reset in {reset_requests_sec:g}s)"
+
+            # Priority 4: any reset header present
+            elif reset_tokens_sec is not None and reset_tokens_sec > 0:
+                lock_delay = reset_tokens_sec
+                is_daily = False
+                reason = f"rate limit (reset-tokens {reset_tokens_sec:g}s)"
+            elif reset_requests_sec is not None and reset_requests_sec > 0:
+                lock_delay = reset_requests_sec
+                is_daily = reset_requests_sec > 3600.0
+                reason = f"rate limit (reset-requests {reset_requests_sec:g}s)"
+
+            # Priority 5: Fallback to error message body parser
+            else:
+                is_daily_cls, fallback_delay, fallback_reason = classify_rate_limit_429(response, "groq")
+                is_daily = is_daily_cls
+                lock_delay = fallback_delay if (fallback_delay and fallback_delay > 0) else 1.0
+                reason = fallback_reason or "HTTP 429 Rate Limit"
+
+            self.mark_rate_limited(
+                is_daily=is_daily,
+                retry_delay_sec=lock_delay,
+                reason=reason,
+            )
+            return
+
+        # 3. HTTP 200 (Success):
+        if response.status_code == 200:
+            self.mark_success()
+            # If Groq indicated that remaining tokens reached 0 on this request:
+            if rem_tokens == 0 and reset_tokens_sec is not None and reset_tokens_sec > 0:
+                self.status = KeyStatus.MINUTE_COOLDOWN
+                self.cooldown_until = now + reset_tokens_sec
+                self.cooldown_reason = f"tokens depleted (reset in {reset_tokens_sec:g}s)"
+                logger.info(
+                    f"[GroqKey:{self.masked_key}] 200 OK with tokens=0. "
+                    f"Cooldown until reset in {reset_tokens_sec:g}s."
+                )
+            # If Groq indicated that remaining daily requests reached 0 on this request:
+            elif rem_requests == 0 and reset_requests_sec is not None and reset_requests_sec > 0:
+                self.status = KeyStatus.DAILY_EXHAUSTED if reset_requests_sec > 3600.0 else KeyStatus.MINUTE_COOLDOWN
+                self.cooldown_until = now + reset_requests_sec
+                self.cooldown_reason = f"requests depleted (reset in {reset_requests_sec:g}s)"
+                logger.info(
+                    f"[GroqKey:{self.masked_key}] 200 OK with requests=0. "
+                    f"Cooldown until reset in {reset_requests_sec:g}s."
+                )
+            else:
+                # Key is active and has available capacity
+                self.status = KeyStatus.ACTIVE
+                self.cooldown_until = 0.0
+                self.cooldown_reason = ""
+
     def mark_success(self) -> None:
         """Record successful call on this key."""
         self.success_requests += 1
         if self.status != KeyStatus.ACTIVE:
             self.status = KeyStatus.ACTIVE
             self.cooldown_until = 0.0
+            self.cooldown_reason = ""
 
     def mark_rate_limited(
         self,
@@ -210,28 +337,31 @@ class GroqKey:
         retry_delay_sec: Optional[float] = None,
         reason: str = "",
     ) -> None:
-        """Mark key in cooldown following HTTP 429."""
+        """
+        Mark key in cooldown following HTTP 429 using the exact duration returned by Groq.
+        Locks key strictly using the returned delay, avoiding arbitrary multi-hour numbers.
+        """
         now = _get_loop_time()
         self.cooldown_reason = reason or "HTTP 429 Rate Limit"
+
+        # Lock for the exact delay returned by the provider (never arbitrary numbers)
+        delay = float(retry_delay_sec) if (retry_delay_sec is not None and retry_delay_sec > 0) else (60.0 if is_daily else 1.0)
 
         if is_daily:
             self.status = KeyStatus.DAILY_EXHAUSTED
             self.daily_quota_exhaustions += 1
-            # Cooldown until tomorrow 00:00 UTC (or at least 4 hours)
-            delay = retry_delay_sec if (retry_delay_sec and retry_delay_sec > 300) else 14400.0
             self.cooldown_until = now + delay
             logger.warning(
                 f"[GroqKey:{self.masked_key}] Daily quota exhausted ({reason}). "
-                f"Cooldown applied for {delay:.0f}s."
+                f"Cooldown applied for {delay:.2f}s as returned by provider."
             )
         else:
             self.status = KeyStatus.MINUTE_COOLDOWN
             self.minute_rate_limits += 1
-            delay = min(self.max_minute_wait_sec, (retry_delay_sec or 25.0) + random.uniform(0.5, 1.5))
             self.cooldown_until = now + delay
             logger.warning(
-                f"[GroqKey:{self.masked_key}] Minute rate limit reached ({reason}). "
-                f"Cooldown applied for {delay:.1f}s."
+                f"[GroqKey:{self.masked_key}] Rate limit reached ({reason}). "
+                f"Cooldown applied for {delay:.2f}s as returned by provider."
             )
 
     def mark_unauthorized(self) -> None:
@@ -259,6 +389,13 @@ class GroqKey:
             "daily_quota_exhaustions": self.daily_quota_exhaustions,
             "auth_errors": self.auth_errors,
             "last_used_at": self.last_used_at,
+            "remaining_requests": self.remaining_requests,
+            "remaining_tokens": self.remaining_tokens,
+            "limit_requests": self.limit_requests,
+            "limit_tokens": self.limit_tokens,
+            "reset_requests_sec": self.reset_requests_sec,
+            "reset_tokens_sec": self.reset_tokens_sec,
+            "retry_after_sec": self.retry_after_sec,
         }
 
 
@@ -346,8 +483,8 @@ class GroqKeyPool:
                     best_wait = wait
                     best_key = candidate
 
-            # If the closest key will be ready within 35 seconds, return it
-            if best_key and best_wait <= 35.0:
+            # If the closest key will be ready within 60 seconds (e.g. 1-minute window reset), return it
+            if best_key and best_wait <= 60.0:
                 return best_key
 
             return None

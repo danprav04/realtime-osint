@@ -70,9 +70,10 @@ class GroqProvider(BaseAIProvider):
         if self.key_pool.get_keys() and not self.api_key:
             self.api_key = self.key_pool.get_keys()[0].key
 
-        # Per-key pacing defaults (30 RPM limit = 2.0s minimum gap on free tier)
-        self.min_interval_sec = 2.1
-        self.max_rpm = 28
+        # Do not impose arbitrary client-side pacing caps; keys are locked dynamically
+        # using provider-returned response headers (retry-after, x-ratelimit-*).
+        self.min_interval_sec = 0.0
+        self.max_rpm = 0
 
     @property
     def provider_name(self) -> str:
@@ -127,17 +128,14 @@ class GroqProvider(BaseAIProvider):
             try:
                 response = await client.post(GROQ_BASE_URL, json=payload, headers=headers)
 
+                # Dynamically update key rate-limit status from returned response headers
+                key_slot.update_from_response(response)
+
                 # HTTP 429: Rate Limit (Minute or Daily Quota)
                 if response.status_code == 429:
-                    is_daily, retry_delay_sec, reason = classify_rate_limit_429(response, "groq")
-                    last_429_reason = reason
-                    key_slot.mark_rate_limited(
-                        is_daily=is_daily,
-                        retry_delay_sec=retry_delay_sec,
-                        reason=reason,
-                    )
+                    last_429_reason = key_slot.cooldown_reason or "Groq Rate limit reached"
                     logger.warning(
-                        f"[groq:{model_name}] Key {key_slot.masked_key} received 429 ({reason}). "
+                        f"[groq:{model_name}] Key {key_slot.masked_key} received 429 ({last_429_reason}). "
                         f"Rotating to next available key in pool (attempt {attempt + 1}/{max_attempts})..."
                     )
                     continue
@@ -158,7 +156,6 @@ class GroqProvider(BaseAIProvider):
                         try:
                             failed_gen = response.json().get("error", {}).get("failed_generation", "")
                             if failed_gen and "{" in failed_gen and "}" in failed_gen:
-                                key_slot.mark_success()
                                 return response
                         except Exception:
                             pass
@@ -171,8 +168,8 @@ class GroqProvider(BaseAIProvider):
                         fallback_payload.pop("response_format", None)
                         fallback_payload["max_tokens"] = max(payload.get("max_tokens", 1024), 3072)
                         fallback_resp = await client.post(GROQ_BASE_URL, json=fallback_payload, headers=headers)
+                        key_slot.update_from_response(fallback_resp)
                         if fallback_resp.status_code == 200:
-                            key_slot.mark_success()
                             return fallback_resp
                         response = fallback_resp
 
@@ -187,7 +184,6 @@ class GroqProvider(BaseAIProvider):
 
                 if response.is_error:
                     response.raise_for_status()
-                key_slot.mark_success()
                 return response
 
             except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as net_err:

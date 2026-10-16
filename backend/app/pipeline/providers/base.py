@@ -152,6 +152,42 @@ def classify_rate_limit_429(
         and not has_minute_indicator
     )
 
+    # Provider-specific header classification for Groq: lock strictly by returned headers
+    if provider_name == "groq":
+        if retry_after_hdr is not None and retry_after_hdr > 0:
+            is_daily = bool(rem_requests is not None and str(rem_requests).strip() == "0" and reset_requests_sec is not None and reset_requests_sec > 3600.0)
+            return (
+                is_daily,
+                retry_after_hdr,
+                f"{'daily' if is_daily else 'minute'} rate limit (retry-after {retry_after_hdr:g}s)",
+            )
+        if rem_tokens is not None and str(rem_tokens).strip() == "0" and reset_tokens_sec is not None and reset_tokens_sec > 0:
+            return (
+                False,
+                reset_tokens_sec,
+                f"minute rate limit (tokens exhausted, wait {reset_tokens_sec:g}s)",
+            )
+        if rem_requests is not None and str(rem_requests).strip() == "0" and reset_requests_sec is not None and reset_requests_sec > 0:
+            is_daily = reset_requests_sec > 3600.0
+            return (
+                is_daily,
+                reset_requests_sec,
+                f"{'daily' if is_daily else 'minute'} rate limit (requests exhausted, wait {reset_requests_sec:g}s)",
+            )
+        if reset_tokens_sec is not None and reset_tokens_sec > 0:
+            return (
+                False,
+                reset_tokens_sec,
+                f"minute rate limit (reset-tokens {reset_tokens_sec:g}s)",
+            )
+        if reset_requests_sec is not None and reset_requests_sec > 0:
+            is_daily = reset_requests_sec > 3600.0
+            return (
+                is_daily,
+                reset_requests_sec,
+                f"{'daily' if is_daily else 'minute'} rate limit (reset-requests {reset_requests_sec:g}s)",
+            )
+
     # Determine best wait duration
     retry_delay: Optional[float] = None
     for candidate in (retry_info_sec, msg_retry_sec, retry_after_hdr):

@@ -247,3 +247,157 @@ def test_factory_multi_key_resolution():
 
     primary = resolve_api_key("groq", db_keys=db_keys)
     assert primary == "gsk_db_k1"
+
+
+def test_groq_key_not_assumed_locked_initially():
+    """Verify GroqKey is never assumed locked initially; pacing caps are not imposed by default."""
+    key = GroqKey(key="gsk_fresh_test_key")
+    assert key.status == KeyStatus.ACTIVE
+    assert key.cooldown_until == 0.0
+    assert key.is_available() is True
+    assert key.min_interval_sec == 0.0
+    assert key.max_rpm == 0
+    assert key.get_seconds_until_ready() == 0.0
+
+
+def test_groq_key_locks_using_retry_after_header():
+    """Verify HTTP 429 locks key for the exact retry-after seconds returned by Groq, not arbitrary numbers."""
+    key = GroqKey(key="gsk_test_retry_after")
+    req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    resp_429 = httpx.Response(
+        429,
+        request=req,
+        headers={
+            "retry-after": "2",
+            "x-ratelimit-remaining-requests": "14370",
+            "x-ratelimit-remaining-tokens": "17997",
+            "x-ratelimit-limit-requests": "14400",
+            "x-ratelimit-limit-tokens": "18000",
+        },
+        json={"error": {"message": "Rate limit reached"}},
+    )
+
+    key.update_from_response(resp_429)
+
+    assert key.retry_after_sec == 2.0
+    assert key.status == KeyStatus.MINUTE_COOLDOWN
+    assert key.minute_rate_limits == 1
+    assert "retry-after 2s" in key.cooldown_reason
+    assert key.is_available() is False
+    # Cooldown should be locked by ~2.0 seconds (not 25s, not 65s, not 14400s)
+    remaining = key.get_seconds_until_ready()
+    assert 1.0 <= remaining <= 2.1
+
+
+def test_groq_key_locks_using_reset_tokens_header():
+    """Verify HTTP 429 with TPM reset locks for exact x-ratelimit-reset-tokens duration (e.g. 7.66s)."""
+    key = GroqKey(key="gsk_test_reset_tokens")
+    req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    resp_429 = httpx.Response(
+        429,
+        request=req,
+        headers={
+            "x-ratelimit-remaining-tokens": "0",
+            "x-ratelimit-reset-tokens": "7.66s",
+            "x-ratelimit-remaining-requests": "14370",
+            "x-ratelimit-limit-tokens": "18000",
+        },
+        json={"error": {"message": "Rate limit reached for tokens per minute"}},
+    )
+
+    key.update_from_response(resp_429)
+
+    assert key.reset_tokens_sec == 7.66
+    assert key.status == KeyStatus.MINUTE_COOLDOWN
+    assert key.is_available() is False
+    remaining = key.get_seconds_until_ready()
+    assert 6.0 <= remaining <= 7.7
+
+
+def test_groq_key_locks_using_reset_requests_header_not_4_hours():
+    """Verify HTTP 429 with RPD reset (2m59.56s) locks for 179.56s, NEVER arbitrary 14400s (4 hours)."""
+    key = GroqKey(key="gsk_test_reset_requests")
+    req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    resp_429 = httpx.Response(
+        429,
+        request=req,
+        headers={
+            "x-ratelimit-remaining-requests": "0",
+            "x-ratelimit-reset-requests": "2m59.56s",
+            "x-ratelimit-remaining-tokens": "17997",
+            "x-ratelimit-limit-requests": "14400",
+        },
+        json={"error": {"message": "Rate limit reached for requests per day"}},
+    )
+
+    key.update_from_response(resp_429)
+
+    assert key.reset_requests_sec == 179.56
+    # 2m59.56s is <= 3600s, so it is treated as a short requests cooldown, not 14400s (4 hours)
+    remaining = key.get_seconds_until_ready()
+    assert 170.0 <= remaining <= 180.0
+    assert remaining < 300.0  # Crucial: NOT 14400s!
+
+
+def test_groq_key_200_ok_updates_quota_and_keeps_active():
+    """Verify 200 OK responses update capacity and confirm key is active and ready."""
+    key = GroqKey(key="gsk_test_200_ok")
+    req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    resp_200 = httpx.Response(
+        200,
+        request=req,
+        headers={
+            "x-ratelimit-remaining-requests": "14370",
+            "x-ratelimit-remaining-tokens": "17997",
+            "x-ratelimit-limit-requests": "14400",
+            "x-ratelimit-limit-tokens": "18000",
+            "x-ratelimit-reset-requests": "2m59.56s",
+            "x-ratelimit-reset-tokens": "7.66s",
+        },
+        json={"choices": [{"message": {"content": "ok"}}]},
+    )
+
+    key.update_from_response(resp_200)
+
+    assert key.status == KeyStatus.ACTIVE
+    assert key.is_available() is True
+    assert key.remaining_requests == 14370
+    assert key.remaining_tokens == 17997
+    assert key.limit_requests == 14400
+    assert key.limit_tokens == 18000
+    assert key.reset_requests_sec == 179.56
+    assert key.reset_tokens_sec == 7.66
+    assert key.cooldown_until == 0.0
+
+
+def test_groq_key_200_ok_locks_when_tokens_depleted():
+    """Verify 200 OK that depletes tokens to 0 locks key for exact reset-tokens duration."""
+    key = GroqKey(key="gsk_test_200_depleted")
+    req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    resp_200 = httpx.Response(
+        200,
+        request=req,
+        headers={
+            "x-ratelimit-remaining-requests": "14000",
+            "x-ratelimit-remaining-tokens": "0",
+            "x-ratelimit-reset-tokens": "4.2s",
+        },
+        json={"choices": [{"message": {"content": "ok"}}]},
+    )
+
+    key.update_from_response(resp_200)
+
+    assert key.status == KeyStatus.MINUTE_COOLDOWN
+    assert key.is_available() is False
+    assert "tokens depleted (reset in 4.2s)" in key.cooldown_reason
+    remaining = key.get_seconds_until_ready()
+    assert 3.0 <= remaining <= 4.3
+
+
+def test_groq_provider_does_not_assume_pacing_delay():
+    """Verify GroqProvider initializes with min_interval_sec=0 and max_rpm=0."""
+    pool = GroqKeyPool(keys=["gsk_pacing_test"])
+    provider = GroqProvider(key_pool=pool)
+    assert provider.min_interval_sec == 0.0
+    assert provider.max_rpm == 0
+
