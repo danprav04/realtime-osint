@@ -106,13 +106,13 @@ class PipelineOrchestrator:
         self._stage_configs = {
             "gatekeeper": AIStageConfig(
                 stage_id="gatekeeper",
-                provider="gemini",
-                model_name="gemma-4-26b-a4b-it",
+                provider="groq",
+                model_name="openai/gpt-oss-20b",
                 temperature=0.0,
                 fallbacks=[
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.0),
-                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.0),
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.0),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.0),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.0),
                 ],
             ),
             "extraction": AIStageConfig(
@@ -123,8 +123,8 @@ class PipelineOrchestrator:
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                 ],
             ),
             "scoring": AIStageConfig(
@@ -134,9 +134,9 @@ class PipelineOrchestrator:
                 temperature=0.1,
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.1),
-                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.1),
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.1),
+                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.1),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.1),
                 ],
             ),
             "summarization": AIStageConfig(
@@ -146,8 +146,8 @@ class PipelineOrchestrator:
                 temperature=0.2,
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                     AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-flash-free", temperature=0.2),
                 ],
             ),

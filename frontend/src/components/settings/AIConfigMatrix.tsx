@@ -38,13 +38,13 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   });
 
   const defaultGatekeeperStage = (): AIStageConfig => ({
-    provider: 'gemini',
-    model_name: 'gemma-4-26b-a4b-it',
+    provider: 'groq',
+    model_name: 'openai/gpt-oss-20b',
     temperature: 0.0,
     fallbacks: [
-      { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.0 },
-      { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.0 },
       { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.0 },
+      { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.0 },
+      { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.0 },
     ],
   });
 
@@ -59,19 +59,19 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           extraction: defaultStage('groq', 'qwen/qwen3.8-27b', [
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
-            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
           ]),
           scoring: defaultStage('gemini', 'gemini-3.5-flash-lite', [
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.1 },
             { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.1 },
-            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.1 },
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.1 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.1 },
           ]),
           summarization: defaultStage('groq', 'openai/gpt-oss-120b', [
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
-            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
             { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
             { provider: 'aihubmix', model_name: 'coding-glm-5.3-flash-free', temperature: 0.2 },
           ]),
           visuals: defaultStage('groq', 'qwen/qwen3.8-27b', [

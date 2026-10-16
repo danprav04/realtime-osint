@@ -21,13 +21,13 @@ router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
 DEFAULT_AI_STAGES = {
     "gatekeeper": {
-        "provider": "gemini",
-        "model_name": "gemma-4-26b-a4b-it",
+        "provider": "groq",
+        "model_name": "openai/gpt-oss-20b",
         "temperature": 0.0,
         "fallbacks": [
-            {"provider": "gemini", "model_name": "gemma-4-31b-it", "temperature": 0.0},
-            {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.0},
             {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.0},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.0},
+            {"provider": "gemini", "model_name": "gemma-4-31b-it", "temperature": 0.0},
         ],
     },
     "extraction": {
@@ -37,8 +37,8 @@ DEFAULT_AI_STAGES = {
         "fallbacks": [
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
-            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
             {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
         ],
     },
     "scoring": {
@@ -48,8 +48,8 @@ DEFAULT_AI_STAGES = {
         "fallbacks": [
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.1},
             {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.1},
-            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.1},
             {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.1},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.1},
         ],
     },
     "summarization": {
@@ -58,8 +58,8 @@ DEFAULT_AI_STAGES = {
         "temperature": 0.2,
         "fallbacks": [
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
-            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
             {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
             {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
         ],
     },
