@@ -7,7 +7,7 @@ and hourly volume statistics.
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession

@@ -277,10 +277,10 @@ DENIAL_AND_CONTRADICTION_TRIGGERS: List[str] = [
     "تکذیب", "تكذيب", "شایعه", "شايعه", "دروغ", "تکذیب شد", "صحت ندارد",
     "آرامش برقرار است", "انفجار کپسول", "رزمایش", "صدای رزمایش",
     # Hebrew
-    "הכחשה", "מכחיש", "מכחישים", "דיווח שווא", "אזעקת שווא", "שמועות",
+    "הכחשה", "הכחיש", "הכחישה", "מכחיש", "מכחישים", "הוכחש", "הוכחשו", "דיווח שווא", "דיווח כוזב", "אזעקת שווא", "שמועות",
     "אין נפגעים", "אירוע שווא", "פיצוץ מבוקר", "תרגיל צבאי", "שגוי",
     # English
-    "denies", "denied", "denial", "refutes", "refuted", "false alarm",
+    "denies", "denied", "denial", "refutes", "refuted", "rejected claims", "rejects claims", "false alarm",
     "debunked", "unfounded rumor", "claims denied", "controlled detonation",
     "quarry blast", "gas cylinder explosion", "routine exercise",
     "no strike occurred", "reports untrue", "unconfirmed rumor",

@@ -213,7 +213,16 @@ def compute_recency_weight(
     if now is None:
         now = utc_now()
 
-    t_pub = published_at
+    if isinstance(published_at, str):
+        try:
+            t_pub = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        except Exception:
+            return min_weight
+    elif isinstance(published_at, datetime):
+        t_pub = published_at
+    else:
+        return min_weight
+
     if t_pub.tzinfo is None:
         t_pub = t_pub.replace(tzinfo=timezone.utc)
     if now.tzinfo is None:
