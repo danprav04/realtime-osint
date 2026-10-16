@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Sparkles, Zap, Layers, Cpu, Server, Bot } from 'lucide-react';
+import { Sparkles, Zap, Layers, Cpu, Server, Bot, Cloud, Flame, Atom } from 'lucide-react';
 import { AIModelInfo } from '@/lib/types';
 import { getProviderBadgeStyles, formatProviderName, parseModelProvider, cn } from '@/lib/utils';
 
@@ -65,6 +65,10 @@ export function AIModelBadge({
     if (pLower.includes('gemini') || pLower.includes('google')) return Sparkles;
     if (pLower.includes('groq')) return Zap;
     if (pLower.includes('aihubmix') || pLower.includes('aihub')) return Layers;
+    if (pLower.includes('mistral')) return Flame;
+    if (pLower.includes('cloudflare')) return Cloud;
+    if (pLower.includes('zai') || pLower.includes('zhipu')) return Atom;
+    if (pLower.includes('siliconflow')) return Cpu;
     if (pLower.includes('hugging') || pLower.includes('hf')) return Server;
     if (pLower.includes('rule') || pLower.includes('heuristic') || pLower.includes('system')) return Cpu;
     return Bot;

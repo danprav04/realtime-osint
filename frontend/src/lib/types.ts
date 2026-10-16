@@ -32,7 +32,7 @@ export interface ScoringBreakdown {
 }
 
 export interface AIModelInfo {
-  provider: 'gemini' | 'groq' | 'aihubmix' | 'huggingface' | 'heuristic' | 'system' | string;
+  provider: 'gemini' | 'groq' | 'aihubmix' | 'mistral' | 'cloudflare' | 'zai' | 'siliconflow' | 'huggingface' | 'heuristic' | 'system' | string;
   model: string;
 }
 
@@ -164,7 +164,7 @@ export interface DashboardStats {
 }
 
 export interface AIFallbackConfig {
-  provider: 'gemini' | 'groq' | 'aihubmix';
+  provider: 'gemini' | 'groq' | 'aihubmix' | 'mistral' | 'cloudflare' | 'zai' | 'siliconflow' | string;
   model_name: string;
   temperature?: number;
   api_key_override?: string | null;
@@ -172,7 +172,7 @@ export interface AIFallbackConfig {
 
 export interface AIStageConfig {
   stage_id?: string;
-  provider: 'gemini' | 'groq' | 'aihubmix';
+  provider: 'gemini' | 'groq' | 'aihubmix' | 'mistral' | 'cloudflare' | 'zai' | 'siliconflow' | string;
   model_name: string;
   temperature: number;
   api_key_override?: string | null;

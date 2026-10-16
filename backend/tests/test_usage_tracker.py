@@ -127,3 +127,40 @@ async def test_api_provider_usage_endpoint(monkeypatch):
         assert "all_keys" in data
         assert "gemini" in data["providers"]
         assert "groq" in data["providers"]
+
+
+def test_model_rate_limit_isolates_from_key_status():
+    """Verify that a model-specific 429 leaves the key active and only puts the model into cooldown."""
+    tracker = ProviderUsageTracker()
+    tracker.reset_for_testing()
+
+    # Model hits 429
+    tracker.record_call(
+        provider="groq",
+        model="llama-3.3-70b-versatile",
+        key="gsk_isolated_test_key_123",
+        key_field="groq_api_key",
+        success=False,
+        status_code=429,
+        error_message="Rate limit 429 retry-after 307s",
+        is_rate_limit=True,
+        cooldown_sec=307.0,
+        is_key_level=False,
+    )
+
+    tel = tracker.get_telemetry()
+    groq_prov = tel["providers"]["groq"]
+
+    # Key must remain ACTIVE with 0 cooldown!
+    assert groq_prov["cooldown_keys_count"] == 0
+    k = next(k for k in groq_prov["keys"] if "gsk_isolated" in k.get("masked_key", "") or k.get("key_field") == "groq_api_key")
+    assert k["status"] == "active"
+    assert k["cooldown_remaining_sec"] == 0.0
+    assert "llama-3.3-70b-versatile" in k["throttled_models"]
+
+    # Model must be in cooldown!
+    assert groq_prov["cooldown_models_count"] >= 1
+    m = next(m for m in groq_prov["models"] if m["model_name"] == "llama-3.3-70b-versatile")
+    assert m["status"] == "cooldown"
+    assert m["cooldown_remaining_sec"] > 250.0
+

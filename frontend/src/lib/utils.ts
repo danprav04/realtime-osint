@@ -197,7 +197,7 @@ export function sortEvents<
 }
 
 export interface ProviderRateLimitInfo {
-  id: 'gemini' | 'groq' | 'aihubmix' | 'telegram' | 'newsapi' | 'reddit' | 'huggingface';
+  id: 'gemini' | 'groq' | 'aihubmix' | 'mistral' | 'cloudflare' | 'zai' | 'siliconflow' | 'telegram' | 'newsapi' | 'reddit' | 'huggingface';
   name: string;
   shortName: string;
   category: 'ai' | 'ingestion' | 'alert';
@@ -253,6 +253,54 @@ export const PROVIDER_RATE_LIMITS: ProviderRateLimitInfo[] = [
     quotaSummary: '10 RPM • 100 RPD • 1M TPD (Free Flagships)',
     keyFields: ['aihubmix_api_key'],
     description: 'AI Hub Mix free tier flagship models (coding-glm-5.3-free, coding-minimax-m3-free, nemotron-3-super-120b)',
+  },
+  {
+    id: 'mistral',
+    name: 'Mistral AI',
+    shortName: 'Mistral',
+    category: 'ai',
+    rateLimitUrl: 'https://console.mistral.ai/limits/',
+    usageUrl: 'https://console.mistral.ai/usage/',
+    docsUrl: 'https://docs.mistral.ai/api/',
+    quotaSummary: '12.5 RPS • $10 Allowance • Ministral',
+    keyFields: ['mistral_api_key'],
+    description: 'Mistral La Plateforme free tier allowance and high-throughput Ministral endpoints',
+  },
+  {
+    id: 'cloudflare',
+    name: 'Cloudflare Workers AI',
+    shortName: 'Cloudflare',
+    category: 'ai',
+    rateLimitUrl: 'https://dash.cloudflare.com/',
+    usageUrl: 'https://dash.cloudflare.com/',
+    docsUrl: 'https://developers.cloudflare.com/workers-ai/models/',
+    quotaSummary: '10K Neurons/day • 300 RPM • Free Tier',
+    keyFields: ['cloudflare_api_token'],
+    description: 'Cloudflare Workers AI serverless inference with 10,000 free daily Neurons',
+  },
+  {
+    id: 'zai',
+    name: 'Z.ai (Zhipu AI)',
+    shortName: 'Z.ai',
+    category: 'ai',
+    rateLimitUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
+    usageUrl: 'https://open.bigmodel.cn/usercenter/charge',
+    docsUrl: 'https://open.bigmodel.cn/dev/api',
+    quotaSummary: 'Unlimited RPD/TPD • 1–5 Concurrency',
+    keyFields: ['zai_api_key'],
+    description: 'Zhipu BigModel Open Platform permanent $0 Flash series (glm-4.7-flash, glm-4.5-flash)',
+  },
+  {
+    id: 'siliconflow',
+    name: 'SiliconFlow (SiliconCloud)',
+    shortName: 'SiliconFlow',
+    category: 'ai',
+    rateLimitUrl: 'https://cloud.siliconflow.cn/models',
+    usageUrl: 'https://cloud.siliconflow.cn/billing',
+    docsUrl: 'https://docs.siliconflow.cn/',
+    quotaSummary: '~1,000 RPM • Independent Model Quotas',
+    keyFields: ['siliconflow_api_key'],
+    description: 'SiliconFlow international endpoint and permanent $0 open-weights catalog (Qwen2.5-7B, GLM-4-9B)',
   },
   {
     id: 'telegram',
@@ -315,6 +363,7 @@ export function getProviderRateLimitInfo(providerId: string): ProviderRateLimitI
 export function getProviderRateLimitStatuses(options?: {
   apiKeys?: Record<string, string> | null;
   aiSettings?: {
+    gatekeeper?: { provider?: string; fallbacks?: Array<{ provider?: string }> };
     extraction?: { provider?: string; fallbacks?: Array<{ provider?: string }> };
     scoring?: { provider?: string; fallbacks?: Array<{ provider?: string }> };
     summarization?: { provider?: string; fallbacks?: Array<{ provider?: string }> };
@@ -328,7 +377,7 @@ export function getProviderRateLimitStatuses(options?: {
   const sources = options?.sources || [];
 
   const stages = aiSettings
-    ? [aiSettings.extraction, aiSettings.scoring, aiSettings.summarization, aiSettings.visuals].filter(Boolean)
+    ? [aiSettings.gatekeeper, aiSettings.extraction, aiSettings.scoring, aiSettings.summarization, aiSettings.visuals].filter(Boolean)
     : [];
 
   return PROVIDER_RATE_LIMITS.map((baseProvider) => {
@@ -350,7 +399,7 @@ export function getProviderRateLimitStatuses(options?: {
     });
 
     const activeInAiPipeline =
-      (provider.id === 'gemini' || provider.id === 'groq' || provider.id === 'aihubmix') &&
+      ['gemini', 'groq', 'aihubmix', 'mistral', 'cloudflare', 'zai', 'siliconflow'].includes(provider.id) &&
       stages.some(
         (stage) =>
           stage?.provider === provider.id ||
@@ -426,6 +475,10 @@ export function formatProviderName(provider?: string): string {
   if (p === 'gemini' || p === 'google') return 'Gemini';
   if (p === 'groq') return 'Groq';
   if (p === 'aihubmix' || p === 'aihub' || p === 'inferera') return 'AIHubMix';
+  if (p === 'mistral' || p === 'mistralai') return 'Mistral AI';
+  if (p === 'cloudflare' || p === 'cf' || p === 'workers_ai') return 'Cloudflare AI';
+  if (p === 'zai' || p === 'zhipu' || p === 'z.ai') return 'Z.ai (Zhipu)';
+  if (p === 'siliconflow' || p === 'silicon') return 'SiliconFlow';
   if (p === 'huggingface' || p === 'hf') return 'Hugging Face';
   if (p === 'heuristic' || p === 'rule-based') return 'Rule-Based';
   if (p === 'system' || p === 'offline') return 'System';
@@ -446,7 +499,7 @@ export function parseModelProvider(
   }
 
   const s = modelString.trim();
-  if (s.includes(':')) {
+  if (s.includes(':') && !s.startsWith('@cf/')) {
     const parts = s.split(':');
     const prov = parts[0].trim();
     const mdl = parts.slice(1).join(':').trim();
@@ -461,6 +514,14 @@ export function parseModelProvider(
   let inferredProvider = defaultProvider || 'AI';
   if (lower.includes('gemini') || lower.includes('gemma')) {
     inferredProvider = 'Gemini';
+  } else if (lower.includes('ministral') || lower.includes('mistral') || lower.includes('codestral') || lower.includes('open-mistral')) {
+    inferredProvider = 'Mistral AI';
+  } else if (lower.includes('@cf/') || lower.includes('cloudflare')) {
+    inferredProvider = 'Cloudflare AI';
+  } else if (lower.includes('glm-4.7') || lower.includes('glm-4.5') || lower.includes('glm-4-flash')) {
+    inferredProvider = 'Z.ai (Zhipu)';
+  } else if (lower.includes('siliconflow')) {
+    inferredProvider = 'SiliconFlow';
   } else if (lower.includes('qwen') || lower.includes('gpt-oss') || lower.includes('llama') || lower.includes('mixtral')) {
     inferredProvider = 'Groq';
   } else if (lower.includes('coding-glm') || lower.includes('minimax') || lower.includes('nemotron')) {
@@ -562,6 +623,38 @@ export function getProviderBadgeStyles(provider?: string) {
       badge: `${baseBadge} hover:border-purple-500/30`,
       icon: 'text-purple-400/70',
       dot: 'bg-purple-400/50',
+      textAccent: 'text-zinc-300',
+    };
+  }
+  if (p.includes('mistral')) {
+    return {
+      badge: `${baseBadge} hover:border-orange-500/30`,
+      icon: 'text-orange-400/70',
+      dot: 'bg-orange-400/50',
+      textAccent: 'text-zinc-300',
+    };
+  }
+  if (p.includes('cloudflare')) {
+    return {
+      badge: `${baseBadge} hover:border-amber-600/30`,
+      icon: 'text-amber-500/70',
+      dot: 'bg-amber-500/50',
+      textAccent: 'text-zinc-300',
+    };
+  }
+  if (p.includes('zai') || p.includes('zhipu')) {
+    return {
+      badge: `${baseBadge} hover:border-indigo-500/30`,
+      icon: 'text-indigo-400/70',
+      dot: 'bg-indigo-400/50',
+      textAccent: 'text-zinc-300',
+    };
+  }
+  if (p.includes('siliconflow') || p.includes('silicon')) {
+    return {
+      badge: `${baseBadge} hover:border-teal-500/30`,
+      icon: 'text-teal-400/70',
+      dot: 'bg-teal-400/50',
       textAccent: 'text-zinc-300',
     };
   }
