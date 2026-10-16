@@ -124,23 +124,30 @@ async def fallback_to_sqlite() -> AsyncEngine:
 async def init_db() -> None:
     """
     Initialize database connection and verify connectivity.
-    Creates schema tables and falls back to SQLite if PostgreSQL is unavailable.
+    Applies versioned migrations (auto-stamping baseline on legacy databases)
+    and falls back to SQLite if PostgreSQL is unavailable.
     """
     global _engine
     engine = get_engine()
 
     try:
-        # Test connection
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database schema initialized successfully.")
+        # Run versioned migrations (upgrades to head or auto-stamps existing legacy tables)
+        from backend.app.db.migrator import run_migrations
+        mig_result = run_migrations(target_revision="head")
+        logger.info(f"Database schema verified/migrated successfully: {mig_result}")
     except Exception as exc:
-        logger.error(f"Failed to initialize schema on primary database: {exc}")
-        # Trigger fallback to SQLite
-        fallback_engine = await fallback_to_sqlite()
-        async with fallback_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database schema initialized successfully on SQLite fallback.")
+        logger.warning(f"Versioned migration run encountered error ({exc}); attempting metadata fallback...")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database schema initialized successfully via metadata fallback.")
+        except Exception as primary_exc:
+            logger.error(f"Failed to initialize schema on primary database: {primary_exc}")
+            # Trigger fallback to SQLite
+            fallback_engine = await fallback_to_sqlite()
+            async with fallback_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database schema initialized successfully on SQLite fallback.")
 
 
 async def close_db() -> None:

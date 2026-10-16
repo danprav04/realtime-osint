@@ -7,18 +7,25 @@
     updates the running Docker stack without port clashes, and verifies health checks.
 
 .PARAMETER Service
-    Target service to build and deploy: 'all' (default), 'frontend', 'backend', or 'config'.
+    Target service to build and deploy: 'all' (default), 'frontend', 'backend', 'config', or 'migrate'.
+
+.PARAMETER SkipMigration
+    Skip running database schema migrations during backend/all deployment.
 
 .EXAMPLE
     .\deploy.ps1
     .\deploy.ps1 -Service frontend
     .\deploy.ps1 -Service backend
     .\deploy.ps1 -Service config
+    .\deploy.ps1 -Service migrate
+    .\deploy.ps1 -SkipMigration
 #>
 
 param(
-    [ValidateSet("all", "frontend", "backend", "config")]
+    [ValidateSet("all", "frontend", "backend", "config", "migrate")]
     [string]$Service = "all",
+
+    [switch]$SkipMigration = $false,
 
     # Randomized production host ports (2026-10-15) - keep in sync with docker-compose.yml
     [int]$BackendPort = 24176,
@@ -250,6 +257,26 @@ try {
         Write-Step "Synchronizing compose configuration to remote..."
         ssh $RemoteTarget "cd $RemoteDir && docker compose up -d"
         Write-Success "Containers reconciled against current config."
+    }
+
+    # Execute database migrations
+    if ($Service -eq "all" -or $Service -eq "backend" -or $Service -eq "migrate") {
+        if (-not $SkipMigration) {
+            Write-Step "Applying database schema migrations on production..."
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            $migOutput = ssh $RemoteTarget "docker exec osint-backend python -m backend.app.db.migrator upgrade 2>&1"
+            $migExit = $LASTEXITCODE
+            $ErrorActionPreference = $prevEap
+            if ($migExit -ne 0) {
+                Write-Err "Database migration failed on production: $migOutput"
+                throw "Database migration step failed"
+            }
+            Write-Success "Database schema migrations applied successfully."
+            Write-Host " $migOutput" -ForegroundColor DarkGray
+        } else {
+            Write-Warn "Skipping database migrations as requested (-SkipMigration)."
+        }
     }
 
 } finally {

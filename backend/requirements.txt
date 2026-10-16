@@ -9,6 +9,7 @@ python-multipart>=0.0.12
 sqlalchemy[asyncio]>=2.0.35
 asyncpg>=0.29.0
 aiosqlite>=0.20.0
+alembic>=1.14.0
 
 # --- Caching, Bus & HTTP ---
 redis>=5.1.0
