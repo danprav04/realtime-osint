@@ -143,13 +143,16 @@ def run_migrations(target_revision: str = "head", override_url: Optional[str] = 
 
     logger.info(f"Database inspection: current_rev={current_rev}, has_legacy_tables={has_legacy_tables}, tables_count={len(table_names)}")
 
-    baseline_rev = "0001_initial_schema"
-
     # Auto-stamp baseline if legacy unversioned tables are present
     if current_rev is None and has_legacy_tables:
-        logger.info(f"Unversioned schema with existing tables detected. Stamping baseline revision '{baseline_rev}'...")
-        command.stamp(cfg, baseline_rev)
-        current_rev = baseline_rev
+        if "historical_rollups" in table_names:
+            logger.info(f"Unversioned schema with latest tables detected. Stamping head revision '{head_rev}'...")
+            command.stamp(cfg, head_rev)
+            current_rev = head_rev
+        else:
+            logger.info(f"Unversioned schema with baseline tables detected. Stamping baseline revision '{baseline_rev}'...")
+            command.stamp(cfg, baseline_rev)
+            current_rev = baseline_rev
 
     # If already at target, return early
     if current_rev == head_rev and target_revision == "head":
@@ -255,19 +258,21 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)-5.5s [%(name)s] %(message)s")
 
     cmd = args.command or "upgrade"
+    revision_arg = getattr(args, "revision", "head")
+    url_arg = getattr(args, "url", None)
 
     try:
         if cmd == "upgrade":
-            res = run_migrations(target_revision=args.revision, override_url=args.url)
+            res = run_migrations(target_revision=revision_arg, override_url=url_arg)
             print(f"[OK] Upgrade complete: {res}")
         elif cmd == "downgrade":
-            res = rollback_migration(target_revision=args.revision, override_url=args.url)
+            res = rollback_migration(target_revision=revision_arg, override_url=url_arg)
             print(f"[OK] Downgrade complete: {res}")
         elif cmd == "stamp":
-            res = stamp_revision(revision=args.revision, override_url=args.url)
+            res = stamp_revision(revision=revision_arg, override_url=url_arg)
             print(f"[OK] Stamp complete: {res}")
         elif cmd == "status":
-            res = get_migration_status(override_url=args.url)
+            res = get_migration_status(override_url=url_arg)
             print("\nDatabase Migration Status:")
             print(f"  Current Revision : {res['current_revision']}")
             print(f"  Head Revision    : {res['head_revision']}")

@@ -84,6 +84,7 @@ class PipelineOrchestrator:
         self._worker_tasks: List[asyncio.Task] = []
         self._backfill_task: Optional[asyncio.Task] = None
         self._sweeper_task: Optional[asyncio.Task] = None
+        self._compaction_task: Optional[asyncio.Task] = None
         self._in_flight_ids: set[str] = set()
         self._bg_tasks: set[asyncio.Task] = set()
         self._num_workers = num_workers
@@ -284,6 +285,9 @@ class PipelineOrchestrator:
             # Periodic background sweeper to prevent any events getting stranded
             self._sweeper_task = asyncio.create_task(self._periodic_unanalyzed_sweeper())
 
+            # Periodic background tiered memory compaction (every 24h)
+            self._compaction_task = asyncio.create_task(self._periodic_memory_compaction())
+
             logger.info(f"Pipeline Orchestrator started with {self._num_workers} workers.")
 
     async def stop(self) -> None:
@@ -312,6 +316,11 @@ class PipelineOrchestrator:
                 self._sweeper_task.cancel()
                 all_tasks.append(self._sweeper_task)
             self._sweeper_task = None
+
+            if self._compaction_task is not None and not self._compaction_task.done():
+                self._compaction_task.cancel()
+                all_tasks.append(self._compaction_task)
+            self._compaction_task = None
 
             for task in self._worker_tasks:
                 if not task.done():
@@ -486,6 +495,31 @@ class PipelineOrchestrator:
             except Exception as exc:
                 logger.debug(f"Periodic unanalyzed sweeper suppressed exception: {exc}")
                 await asyncio.sleep(5)
+
+    async def _periodic_memory_compaction(self) -> None:
+        """Periodic background memory compaction and vector pruning for aged events (>7d)."""
+        await asyncio.sleep(60.0)  # Wait 1 minute after pipeline start
+        while self._running:
+            try:
+                factory = self._get_session_factory()
+                async with factory() as session:
+                    from backend.app.services.memory_rollup_service import get_memory_rollup_service
+                    rollup_svc = get_memory_rollup_service()
+                    res = await rollup_svc.compact_aged_events(
+                        session=session,
+                        age_threshold_days=7,
+                        clear_routine_vectors=True,
+                    )
+                    if res.get("events_processed", 0) > 0:
+                        logger.info(f"[pipeline-compactor] Background memory compaction: {res}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"[pipeline-compactor] Error during background compaction: {e}")
+            try:
+                await asyncio.sleep(86400.0)  # Run once every 24 hours
+            except asyncio.CancelledError:
+                break
 
     async def handle_config_reload(self, channel: str, message: Any) -> None:
         """Dynamic hot-reload subscriber callback."""
@@ -1069,11 +1103,12 @@ class PipelineOrchestrator:
             runner_fn=lambda **kw: run_stage3_summary(
                 event=event,
                 intelligence_text=intelligence_text,
+                scoring_context=scoring_ctx,
                 **kw,
             ),
             fallback_heuristic_fn=lambda: Stage3Result(
                 summary="Intelligence update logged and monitored.",
-                headline=title_val[:75] or "Event Update",
+                headline=("Disputed: " + title_val[:65] if scoring_ctx.get("is_contradiction") else (title_val[:75] or "Event Update")),
             ),
             return_provenance=True,
         )
@@ -1084,11 +1119,12 @@ class PipelineOrchestrator:
                 event=event,
                 intelligence_text=intelligence_text,
                 extracted_entities=res_s1.extracted_entities,
+                scoring_context=scoring_ctx,
                 **kw,
             ),
             fallback_heuristic_fn=lambda: Stage4Result(
                 trend_category="Geopolitical Development",
-                cluster_tags=["Intelligence"],
+                cluster_tags=(["Disputed", "Intelligence"] if scoring_ctx.get("is_contradiction") else ["Intelligence"]),
                 narrative_insight="Event logged.",
             ),
             return_provenance=True,

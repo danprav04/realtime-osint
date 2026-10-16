@@ -126,22 +126,39 @@ async def run_stage3_summary(
     event: Any,
     intelligence_text: str,
     provider: BaseAIProvider,
+    scoring_context: Optional[Dict[str, Any]] = None,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
     raise_on_error: bool = False,
 ) -> Stage3Result:
     """
     Executes Stage 3 event summarization using the configured AI provider.
+    Incorporate cross-source corroboration and denial stance if available.
     """
     title = getattr(event, "title", None) or (event.get("title") if isinstance(event, dict) else "")
-    prompt = (
-        f"Event Title: {title}\n"
-        f"Intelligence Content:\n{intelligence_text}\n\n"
-        f"Provide valid JSON matching the Stage3Result schema."
-    )
+    prompt_parts = [
+        f"Event Title: {title}",
+        f"Intelligence Content:\n{intelligence_text}",
+    ]
+    if scoring_context:
+        if scoring_context.get("is_contradiction"):
+            prompt_parts.append(
+                "DISPUTE CONTEXT: This event claim is actively denied or disputed by other sources. "
+                "Ensure the headline or summary notes this disputed/conflicting stance objectively."
+            )
+        elif scoring_context.get("corroboration_count", 0) >= 2:
+            prompt_parts.append(
+                "VERIFICATION CONTEXT: Verified by multiple independent sources."
+            )
+    prompt_parts.append("Provide valid JSON matching the Stage3Result schema.")
+    prompt = "\n\n".join(prompt_parts)
 
     def fallback():
-        return _heuristic_stage3_fallback(intelligence_text, title)
+        res = _heuristic_stage3_fallback(intelligence_text, title)
+        if scoring_context and scoring_context.get("is_contradiction") and not res.headline.lower().startswith("disputed"):
+            res.headline = f"Disputed: {res.headline}"[:78]
+        return res
+
 
     try:
         raw_response = await provider.generate_text(

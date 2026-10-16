@@ -17,6 +17,7 @@ import httpx
 
 from backend.app.config import get_settings
 from backend.app.pipeline.providers.base import BaseAIProvider
+from backend.app.pipeline.usage_tracker import get_usage_tracker
 
 logger = logging.getLogger("osint.ai.mistral")
 
@@ -126,6 +127,23 @@ class MistralProvider(BaseAIProvider):
         res_data = response.json()
         usage = res_data.get("usage", {})
         total_tokens = usage.get("total_tokens", 0)
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+
+        try:
+            get_usage_tracker().record_call(
+                provider="mistral",
+                model=model_name,
+                key=self.api_key,
+                key_field="mistral_api_key",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                success=True,
+                status_code=response.status_code,
+            )
+        except Exception:
+            pass
 
         self.call_history.append({
             "provider": "mistral",

@@ -197,6 +197,33 @@ def _extract_event_Lookup_tokens(event: Event) -> Set[str]:
     return tokens
 
 
+def compute_recency_weight(
+    published_at: Optional[datetime],
+    now: Optional[datetime] = None,
+    half_life_hours: float = 18.0,
+    min_weight: float = 0.10,
+) -> float:
+    """
+    Compute a continuous exponential recency weight w(Δt) = max(min_weight, 0.5^(Δt / half_life)).
+    Δt is hours elapsed between published_at and now.
+    Recent intelligence (last few hours) receives weights close to 1.0, smoothly decaying to min_weight.
+    """
+    if not published_at:
+        return min_weight
+    if now is None:
+        now = utc_now()
+
+    t_pub = published_at
+    if t_pub.tzinfo is None:
+        t_pub = t_pub.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    hours_diff = max(0.0, (now - t_pub).total_seconds() / 3600.0)
+    decay = 0.5 ** (hours_diff / max(0.1, half_life_hours))
+    return float(max(min_weight, min(1.0, decay)))
+
+
 def _compute_pairwise_context_bonus(ev_a: Event, ev_b: Event) -> float:
     """
     Compute a small contextual adjustment [-0.07, +0.035] to raw cosine similarity
@@ -206,7 +233,7 @@ def _compute_pairwise_context_bonus(ev_a: Event, ev_b: Event) -> float:
     """
     adjustment = 0.0
 
-    # 1. Temporal proximity check
+    # 1. Temporal proximity check (smooth continuous decay)
     if ev_a.published_at and ev_b.published_at:
         try:
             t_a = ev_a.published_at
@@ -216,12 +243,15 @@ def _compute_pairwise_context_bonus(ev_a: Event, ev_b: Event) -> float:
             if t_b.tzinfo is None:
                 t_b = t_b.replace(tzinfo=timezone.utc)
             hours_diff = abs((t_a - t_b).total_seconds()) / 3600.0
-            if hours_diff <= 18.0:
-                adjustment += 0.01
+            if hours_diff <= 12.0:
+                adjustment += 0.015 * (1.0 - (hours_diff / 12.0) * 0.3)
+            elif hours_diff <= 24.0:
+                adjustment += 0.008 * (1.0 - (hours_diff - 12.0) / 12.0)
             elif hours_diff > 96.0:
-                adjustment -= 0.055
+                decay_factor = min(1.0, (hours_diff - 96.0) / 96.0)
+                adjustment -= (0.045 + 0.025 * decay_factor)
             elif hours_diff > 48.0:
-                adjustment -= 0.025
+                adjustment -= (0.015 + 0.025 * ((hours_diff - 48.0) / 48.0))
         except Exception:
             pass
 
@@ -239,6 +269,7 @@ def _compute_pairwise_context_bonus(ev_a: Event, ev_b: Event) -> float:
             adjustment -= 0.03
 
     return adjustment
+
 
 
 MOCK_STOPWORDS = {
@@ -1232,11 +1263,23 @@ class EmbeddingService:
             corrob_idx = [j for j, s in similarities_list if s >= corrob_threshold]
             corrob_events = [events[j] for j in corrob_idx]
 
+            from backend.app.pipeline.arabic_normalizer import classify_claim_stance
+            cand_text_i = f"{ev_i.headline or ev_i.title or ''} {ev_i.summary or ev_i.translated_text or ev_i.raw_text or ''}".strip()
+
             unique_sources: Set[str] = {ev_i.source_name}
             unique_source_types: Set[str] = {ev_i.source_type}
+            contradiction_count = 0
+            contradiction_reasons: List[str] = []
+
             for c_ev in corrob_events:
-                unique_sources.add(c_ev.source_name)
-                unique_source_types.add(c_ev.source_type)
+                peer_text_c = f"{c_ev.headline or c_ev.title or ''} {c_ev.summary or c_ev.translated_text or c_ev.raw_text or ''}".strip()
+                stance_info = classify_claim_stance(cand_text_i, peer_text_c)
+                if stance_info.get("is_contradiction"):
+                    contradiction_count += 1
+                    contradiction_reasons.append(f"{c_ev.source_name}: {stance_info.get('explanation')}")
+                else:
+                    unique_sources.add(c_ev.source_name)
+                    unique_source_types.add(c_ev.source_type)
 
             independent_sources = unique_sources - {ev_i.source_name}
             same_source_updates = sum(1 for c_ev in corrob_events if c_ev.source_name == ev_i.source_name)
@@ -1244,7 +1287,11 @@ class EmbeddingService:
             num_source_types = len(unique_source_types)
 
             # --- Granular Calibrated Trustworthiness Algorithm ---
-            if max_similarity < outlier_threshold:
+            if contradiction_count > 0:
+                trust_score = min(48, max(15, int(round(50 - contradiction_count * 10))))
+                trust_label = "Contested / Disputed"
+                verdict = f"Disputed report: Conflicting statements / official denial detected ({'; '.join(contradiction_reasons[:2])})."
+            elif max_similarity < outlier_threshold:
                 ratio = max(0.0, min(1.0, max_similarity / max(outlier_threshold, 0.01)))
                 trust_score = int(round(18 + ratio * 18))
                 trust_label = "Isolated Outlier"
@@ -1296,6 +1343,9 @@ class EmbeddingService:
                 "max_similarity": round(max_similarity, 3),
                 "centrality": 0.0,
                 "is_cluster_lead": False,
+                "is_disputed": contradiction_count > 0,
+                "contradiction_reasons": contradiction_reasons,
+                "recency_weight": round(compute_recency_weight(ev_i.published_at), 3),
             })
 
         # 3. Coherent Story Clustering via Cosine-Threshold Agglomerative Clustering
@@ -1373,11 +1423,18 @@ class EmbeddingService:
                     outlier_indices_set.update(coherent_members)
 
         # Cap at top 9 primary story galaxies ranked by gravity; do NOT force-merge unrelated overflow clusters
+        now_dt = utc_now()
+
         def _group_gravity(group_idxs: List[int]) -> float:
             sz = len(group_idxs)
             avg_t = sum(node_metrics[i]["trustworthiness_score"] for i in group_idxs) / sz
             avg_imp = sum((getattr(events[i], "importance_score", 5) or 5) for i in group_idxs) / sz
-            return sz * (0.55 + 0.45 * (avg_t / 100.0)) * (0.65 + 0.35 * (avg_imp / 10.0))
+            recency_weights = [
+                compute_recency_weight(events[i].published_at, now=now_dt, half_life_hours=24.0, min_weight=0.20)
+                for i in group_idxs
+            ]
+            avg_recency = sum(recency_weights) / sz
+            return sz * (0.55 + 0.45 * (avg_t / 100.0)) * (0.65 + 0.35 * (avg_imp / 10.0)) * (0.50 + 0.50 * avg_recency)
 
         valid_groups.sort(key=_group_gravity, reverse=True)
         if len(valid_groups) > 9:
@@ -1440,6 +1497,19 @@ class EmbeddingService:
                 1,
             )
 
+            # Cluster freshness metrics
+            comp_dates = [events[idx].published_at for idx in comp_indices if events[idx].published_at]
+            if comp_dates:
+                norm_dates = [d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d for d in comp_dates]
+                latest_pub = max(norm_dates)
+                age_hours = round(max(0.0, (now_dt - latest_pub).total_seconds() / 3600.0), 1)
+                is_fresh = age_hours <= 12.0
+                cluster_recency = round(compute_recency_weight(latest_pub, now=now_dt, half_life_hours=24.0), 3)
+            else:
+                age_hours = 999.0
+                is_fresh = False
+                cluster_recency = 0.10
+
             for idx in comp_indices:
                 node_metrics[idx]["cluster_id"] = cluster_id_counter
                 node_metrics[idx]["cluster_label"] = cluster_label
@@ -1455,6 +1525,9 @@ class EmbeddingService:
                 "avg_importance": avg_imp,
                 "lead_event_id": lead_event.id,
                 "event_ids": [events[idx].id for idx in comp_indices],
+                "is_fresh": is_fresh,
+                "latest_event_age_hours": age_hours,
+                "cluster_recency_weight": cluster_recency,
             })
 
         outlier_events = [events[idx] for idx in sorted(outlier_indices_set)]
@@ -1478,6 +1551,9 @@ class EmbeddingService:
                     )
                 ),
                 "event_ids": [e.id for e in outlier_events],
+                "is_fresh": False,
+                "latest_event_age_hours": 999.0,
+                "cluster_recency_weight": 0.10,
             })
 
         # --- Curated Intra-Cluster Edges: STRICTLY Cross-Source Corroboration ---
@@ -1885,6 +1961,11 @@ class EmbeddingService:
                 "corroboration_count": 0,
                 "corroborating_sources": [],
                 "corroborating_event_ids": [],
+                "recency_weighted_corroboration": 0.0,
+                "is_contradiction": False,
+                "contradicting_sources": [],
+                "contradicting_event_ids": [],
+                "contradiction_details": [],
                 "same_source_echo_count": 0,
                 "is_same_source_echo": False,
                 "max_similarity": 0.0,
@@ -1894,6 +1975,8 @@ class EmbeddingService:
                 "critical_alerts_last_6h": critical_alerts_last_6h,
                 "avg_score_24h": avg_score_24h,
                 "active_storylines": active_storylines,
+                "historical_precedents": [],
+                "entity_baselines": {},
             }
 
         # 4. Retrieve or compute embeddings for recent peer events
@@ -1934,9 +2017,14 @@ class EmbeddingService:
         cand_tokens = _extract_event_Lookup_tokens(temp_event)
         cand_clean_text = f"{title} {intelligence_text}".strip()
 
+        from backend.app.pipeline.arabic_normalizer import classify_claim_stance
+
         scored_peers: List[Tuple[Event, float, float]] = []
         corroborating_sources_set: Set[str] = set()
         corroborating_event_ids: List[str] = []
+        contradicting_sources_set: Set[str] = set()
+        contradicting_event_ids: List[str] = []
+        contradiction_details: List[str] = []
         same_source_echo_count = 0
 
         for idx, peer in enumerate(recent_events):
@@ -1954,12 +2042,24 @@ class EmbeddingService:
 
             scored_peers.append((peer, effective_sim, jaccard_sim))
 
+            # Check claim stance: contradiction/denial vs corroboration
+            stance_info = classify_claim_stance(cand_clean_text, peer_clean_text)
+            is_contradiction = stance_info.get("is_contradiction", False)
+
             is_same_source = (peer.source_name or "").strip().lower() == (source_name or "").strip().lower()
             if is_same_source:
                 if effective_sim >= echo_threshold or jaccard_sim >= 0.75 or (adj_s >= corrob_threshold and shared_tokens >= 2):
                     same_source_echo_count += 1
             else:
-                if effective_sim >= corrob_threshold or (adj_s >= corrob_threshold - 0.03 and shared_tokens >= 2):
+                if is_contradiction and effective_sim >= outlier_threshold:
+                    if peer.source_name:
+                        contradicting_sources_set.add(peer.source_name)
+                    contradicting_event_ids.append(peer.id)
+                    contradiction_details.append(
+                        f"[{peer.source_name}] {stance_info.get('explanation', 'Denial/contradiction')} "
+                        f"(Ref: '{peer.headline or peer.title}')"
+                    )
+                elif effective_sim >= corrob_threshold or (adj_s >= corrob_threshold - 0.03 and shared_tokens >= 2):
                     if peer.source_name:
                         corroborating_sources_set.add(peer.source_name)
                     corroborating_event_ids.append(peer.id)
@@ -1967,9 +2067,18 @@ class EmbeddingService:
         scored_peers.sort(key=lambda x: x[1], reverse=True)
         max_similarity = scored_peers[0][1] if scored_peers else 0.0
 
+        # Calculate recency-weighted corroboration score across independent corroborating sources
+        corrob_events_list = [p for p in recent_events if p.id in corroborating_event_ids]
+        recency_weighted_corrob = sum(
+            compute_recency_weight(p.published_at, now=now, half_life_hours=18.0)
+            for p in corrob_events_list
+        )
+
         related_reports: List[Dict[str, Any]] = []
         for peer, sim_val, _ in scored_peers[:4]:
             if sim_val >= outlier_threshold:
+                p_rec = compute_recency_weight(peer.published_at, now=now, half_life_hours=18.0)
+                peer_pub_iso = peer.published_at.isoformat() if peer.published_at else None
                 related_reports.append({
                     "event_id": peer.id,
                     "headline": peer.headline or peer.title,
@@ -1977,13 +2086,16 @@ class EmbeddingService:
                     "source_type": peer.source_type,
                     "importance_score": int(peer.importance_score or 5),
                     "similarity": round(sim_val, 3),
-                    "published_at": peer.published_at.isoformat() if peer.published_at else None,
+                    "recency_weight": round(p_rec, 3),
+                    "published_at": peer_pub_iso,
                 })
 
         corrob_count = len(corroborating_sources_set)
         is_same_source_echo = same_source_echo_count >= 1
 
-        if is_same_source_echo and corrob_count == 0:
+        if len(contradicting_sources_set) > 0:
+            corrob_status = "Disputed / Conflicting Reports"
+        elif is_same_source_echo and corrob_count == 0:
             corrob_status = "Same-Source Echo"
         elif corrob_count >= 2:
             corrob_status = "Highly Corroborated"
@@ -1994,6 +2106,23 @@ class EmbeddingService:
         else:
             corrob_status = "First Report / Unverified"
 
+        # 5. Query historical rollup precedents and baselines
+        historical_context = []
+        entity_baselines = {}
+        try:
+            from backend.app.services.memory_rollup_service import get_memory_rollup_service
+            rollup_svc = get_memory_rollup_service()
+            hist_res = await rollup_svc.get_historical_context_and_baselines(
+                session=session,
+                theme_id=theme_id,
+                candidate_entities=entities or [],
+                candidate_location=location_name or location_country or "",
+            )
+            historical_context = hist_res.get("precedents", [])
+            entity_baselines = hist_res.get("entity_baselines", {})
+        except Exception as e:
+            logger.debug(f"[neighborhood] Historical rollups query omitted: {e}")
+
         return {
             "embedding_vector": cand_vec,
             "embedding_model_name": model_used,
@@ -2001,6 +2130,11 @@ class EmbeddingService:
             "corroboration_count": corrob_count,
             "corroborating_sources": sorted(corroborating_sources_set),
             "corroborating_event_ids": corroborating_event_ids,
+            "recency_weighted_corroboration": round(recency_weighted_corrob, 2),
+            "is_contradiction": len(contradicting_sources_set) > 0,
+            "contradicting_sources": sorted(contradicting_sources_set),
+            "contradicting_event_ids": contradicting_event_ids,
+            "contradiction_details": contradiction_details,
             "same_source_echo_count": same_source_echo_count,
             "is_same_source_echo": is_same_source_echo,
             "max_similarity": round(max_similarity, 3),
@@ -2010,6 +2144,8 @@ class EmbeddingService:
             "critical_alerts_last_6h": critical_alerts_last_6h,
             "avg_score_24h": avg_score_24h,
             "active_storylines": active_storylines,
+            "historical_precedents": historical_context,
+            "entity_baselines": entity_baselines,
         }
 
 

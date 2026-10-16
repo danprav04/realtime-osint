@@ -96,7 +96,16 @@ class Settings(BaseSettings):
 
     # Cloudflare Workers AI (10,000 Neurons/day free)
     CLOUDFLARE_ACCOUNT_ID: Optional[str] = None
-    CLOUDFLARE_API_TOKEN: Optional[str] = None
+    CLOUDFLARE_API_TOKEN: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY"),
+        description="Cloudflare Workers AI API Token/Key",
+    )
+    CLOUDFLARE_API_KEY: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("CLOUDFLARE_API_KEY", "CLOUDFLARE_API_TOKEN"),
+        description="Cloudflare Workers AI API Token/Key",
+    )
     CLOUDFLARE_BASE_URL: Optional[str] = None
 
     # Z.ai / Zhipu AI ($0 Flash models, unlimited RPD/TPD)

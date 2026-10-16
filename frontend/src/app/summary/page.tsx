@@ -25,6 +25,9 @@ import {
   ExternalLink,
   Crosshair,
   TrendingUp,
+  Award,
+  History,
+  Archive,
 } from 'lucide-react';
 import {
   SituationSummaryData,
@@ -32,6 +35,8 @@ import {
   SummaryClusterBreakdown,
   NormalizedEvent,
   Theme,
+  HistoricalRollup,
+  SourceCredibilityItem,
 } from '@/lib/types';
 import {
   getSituationSummary,
@@ -777,6 +782,19 @@ export default function AISummaryPage() {
                                     {cluster.avg_trustworthiness_score}% • {cluster.trustworthiness_label}
                                   </span>
                                 </span>
+                                {cluster.is_fresh !== undefined && (
+                                  cluster.is_fresh ? (
+                                    <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-mono text-[10px] font-semibold">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                      <span>Fresh ({cluster.latest_event_age_hours !== undefined ? `${cluster.latest_event_age_hours.toFixed(1)}h ago` : '<24h'})</span>
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-400/90 font-mono text-[10px]">
+                                      <Clock className="w-3 h-3 text-amber-400" />
+                                      <span>Aged ({cluster.latest_event_age_hours !== undefined ? `${Math.round(cluster.latest_event_age_hours)}h old` : '>24h'})</span>
+                                    </span>
+                                  )
+                                )}
                               </div>
                               <h4 className="text-base font-semibold text-zinc-100 tracking-tight pt-0.5">
                                 {cluster.title}
@@ -1145,6 +1163,90 @@ export default function AISummaryPage() {
                   })}
                 </div>
               </div>
+
+              {/* Dynamic Source Credibility Leaderboard */}
+              {summary.source_credibility_leaderboard && summary.source_credibility_leaderboard.length > 0 && (
+                <div className="card-slick rounded-xl p-5 space-y-3.5">
+                  <div className="flex items-center justify-between pb-2 hairline-b">
+                    <div className="flex items-center space-x-2">
+                      <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                        <Award className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-semibold text-zinc-100 uppercase font-mono">
+                          Source Credibility Rankings
+                        </h4>
+                        <p className="text-[10px] text-zinc-400">
+                          Dynamic calibration weighted by recency
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {summary.source_credibility_leaderboard.slice(0, 5).map((src) => (
+                      <div
+                        key={src.source_name}
+                        className="p-2.5 rounded-lg bg-surface-raised/70 border border-white/5 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-zinc-200 truncate">
+                            {src.source_name}
+                          </span>
+                          <span className="font-mono text-[11px] font-semibold text-emerald-400 tabular">
+                            {src.credibility_score.toFixed(1)}/10
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                          <span className="px-1.5 py-0.5 rounded bg-surface-card border border-white/5 text-zinc-300">
+                            {src.tier.split(' ')[0]} {src.tier.split(' ')[1]}
+                          </span>
+                          <span>Corrob: {Math.round(src.corroboration_rate * 100)}%</span>
+                          <span>Weight: {src.recency_weight.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Historical Intelligence Rollups (Aged Memory) */}
+              {summary.historical_rollups && summary.historical_rollups.length > 0 && (
+                <div className="card-slick rounded-xl p-5 space-y-3.5">
+                  <div className="flex items-center justify-between pb-2 hairline-b">
+                    <div className="flex items-center space-x-2">
+                      <div className="p-1.5 rounded-lg bg-accent-indigo/10 text-accent-indigo border border-accent-indigo/25">
+                        <Archive className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-semibold text-zinc-100 uppercase font-mono">
+                          Compacted Memory Epochs
+                        </h4>
+                        <p className="text-[10px] text-zinc-400">
+                          Archived summaries ({summary.historical_rollups.length} epochs)
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {summary.historical_rollups.slice(0, 3).map((rollup) => (
+                      <div
+                        key={rollup.id}
+                        className="p-2.5 rounded-lg bg-surface-raised/60 border border-white/5 space-y-1 text-xs"
+                      >
+                        <div className="flex items-center justify-between font-mono text-[10px] text-zinc-400">
+                          <span className="text-accent-indigo font-semibold">Epoch: {rollup.epoch_key}</span>
+                          <span className="tabular">{rollup.total_events} events • {rollup.critical_events_count} critical</span>
+                        </div>
+                        <p className="text-[11px] text-zinc-300 line-clamp-2 leading-relaxed">
+                          {rollup.executive_summary}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </>

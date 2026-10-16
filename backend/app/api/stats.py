@@ -131,3 +131,28 @@ async def get_dashboard_stats(
         "source_breakdown": source_breakdown,
         "hourly_volume": hourly_volume,
     }
+
+
+@router.get("/sources/credibility", dependencies=[Depends(require_api_key)])
+async def get_source_credibility_leaderboard(
+    theme_id: Optional[int] = None,
+    session: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """
+    Retrieve dynamic source credibility leaderboard based on historical corroboration and reporting.
+    """
+    from backend.app.services.memory_rollup_service import get_memory_rollup_service
+    service = get_memory_rollup_service()
+    try:
+        leaderboard = await service.get_dynamic_source_credibility(session=session, theme_id=theme_id)
+        return {
+            "total_sources_evaluated": len(leaderboard),
+            "leaderboard": leaderboard,
+        }
+    except Exception as exc:
+        logger.error(f"Error computing source credibility: {exc}", exc_info=True)
+        return {
+            "total_sources_evaluated": 0,
+            "leaderboard": [],
+        }
+

@@ -29,6 +29,12 @@ export interface ScoringBreakdown {
   calibration_notes?: string[];
   related_reports?: RelatedReportItem[];
   retroactively_corroborated?: boolean;
+  is_contradiction?: boolean;
+  contradicting_sources?: string[];
+  contradiction_details?: string[];
+  recency_weighted_corroboration?: number;
+  historical_precedents?: any[];
+  entity_baselines?: Record<string, any>;
 }
 
 export interface AIModelInfo {
@@ -349,6 +355,9 @@ export interface SummaryClusterBreakdown {
   top_entities: string[];
   center_x?: number;
   center_y?: number;
+  is_fresh?: boolean;
+  latest_event_age_hours?: number;
+  cluster_recency_weight?: number;
   events: SummaryCitationEvent[];
 }
 
@@ -360,6 +369,38 @@ export interface SummaryKeyDevelopment {
   source_name?: string | null;
   trustworthiness_label?: string | null;
   trustworthiness_score?: number | null;
+}
+
+export interface HistoricalRollup {
+  id: string;
+  theme_id: number;
+  period_start: string;
+  period_end: string;
+  epoch_key: string;
+  total_events: number;
+  critical_events_count: number;
+  max_importance_score: number;
+  avg_importance_score: number;
+  executive_summary: string;
+  entity_counts_json: Record<string, number>;
+  location_counts_json: Record<string, number>;
+  source_stats_json: Record<string, any>;
+  notable_events_json: any[];
+  is_compacted: boolean;
+  created_at?: string;
+}
+
+export interface SourceCredibilityItem {
+  source_name: string;
+  source_type: string;
+  credibility_score: number;
+  tier: 'Tier 1 (High Reliability)' | 'Tier 2 (Established / Mainstream)' | 'Tier 3 (Aggregator / Secondary)' | 'Tier 4 (Unverified / Social / Bot)' | string;
+  badge_color: string;
+  total_reports: number;
+  corroboration_rate: number;
+  avg_importance_score: number;
+  latest_activity?: string | null;
+  recency_weight: number;
 }
 
 export interface SituationSummaryData {
@@ -378,6 +419,8 @@ export interface SituationSummaryData {
   strategic_assessment: string;
   key_developments: SummaryKeyDevelopment[];
   clusters: SummaryClusterBreakdown[];
+  source_credibility_leaderboard?: SourceCredibilityItem[];
+  historical_rollups?: HistoricalRollup[];
   unverified_outliers: {
     assessment: string;
     events: SummaryCitationEvent[];

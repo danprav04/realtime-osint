@@ -13,6 +13,8 @@ import {
   Sparkles,
   FileText,
   Code,
+  AlertTriangle,
+  History,
 } from 'lucide-react';
 import { NormalizedEvent, ScoringBreakdown } from '@/lib/types';
 import { ImportanceBadge } from './ImportanceBadge';
@@ -98,7 +100,14 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                 </span>
               )}
               {scoringBreakdown?.corroboration_status && (
-                <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <span
+                  className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-mono ${
+                    scoringBreakdown.is_contradiction
+                      ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                      : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                  }`}
+                >
+                  {scoringBreakdown.is_contradiction && <AlertTriangle className="w-3 h-3 text-rose-400" />}
                   <span>{scoringBreakdown.corroboration_status}</span>
                 </span>
               )}
@@ -231,6 +240,34 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
 
                   {scoringBreakdown && (
                     <>
+                      {/* Contradiction / Denial Stance Banner */}
+                      {scoringBreakdown.is_contradiction && (
+                        <div className="p-3.5 rounded-lg bg-rose-500/10 border border-rose-500/30 space-y-2">
+                          <div className="flex items-center space-x-2 text-xs font-semibold text-rose-400">
+                            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                            <span>CONTESTED / CONFLICTING CLAIMS DETECTED (DENIAL / REFUTATION)</span>
+                          </div>
+                          <p className="text-xs text-rose-200/90 leading-relaxed">
+                            This report directly contradicts or refutes statements from peer intelligence sources. Corroboration score escalation has been automatically suppressed to preserve assessment objectivity.
+                          </p>
+                          {scoringBreakdown.contradicting_sources && scoringBreakdown.contradicting_sources.length > 0 && (
+                            <div className="text-[11px] text-rose-300 font-mono">
+                              <span className="text-rose-400 font-semibold">Contradicting Sources: </span>
+                              {scoringBreakdown.contradicting_sources.join(', ')}
+                            </div>
+                          )}
+                          {scoringBreakdown.contradiction_details && scoringBreakdown.contradiction_details.length > 0 && (
+                            <div className="space-y-1 pt-1">
+                              {scoringBreakdown.contradiction_details.map((detail, idx) => (
+                                <div key={idx} className="p-2 rounded bg-black/40 border border-rose-500/20 text-[11px] text-zinc-300 font-mono">
+                                  {detail}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {/* 3-Column Sub-Score Bars */}
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
                         <div className="p-2.5 rounded-md bg-canvas-recessed hairline-border">
@@ -296,6 +333,11 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                             Corroborated by: {scoringBreakdown.corroborating_sources.join(', ')}
                           </span>
                         )}
+                        {scoringBreakdown.recency_weighted_corroboration !== undefined && scoringBreakdown.recency_weighted_corroboration > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-canvas-recessed hairline-border text-zinc-300">
+                            Recency Corroboration: {scoringBreakdown.recency_weighted_corroboration.toFixed(2)}
+                          </span>
+                        )}
                       </div>
 
                       {/* Calibration Notes */}
@@ -339,6 +381,33 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                                   </span>
                                   <span className="text-zinc-400">Score {rel.importance_score}/10</span>
                                 </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Historical Memory Precedents (Epochs & Rollups) */}
+                      {scoringBreakdown.historical_precedents && scoringBreakdown.historical_precedents.length > 0 && (
+                        <div className="p-2.5 rounded-md bg-canvas-recessed hairline-border space-y-2">
+                          <div className="flex items-center space-x-1.5 text-[10px] font-semibold uppercase tracking-wider text-accent-indigo">
+                            <History className="w-3.5 h-3.5" />
+                            <span>Historical Memory Precedents (Aged Intelligence Context)</span>
+                          </div>
+                          <div className="space-y-1.5 text-xs">
+                            {scoringBreakdown.historical_precedents.map((prec, idx) => (
+                              <div key={idx} className="p-2.5 rounded bg-surface-card border border-white/5 space-y-1">
+                                <div className="flex items-center justify-between text-[11px] font-mono">
+                                  <span className="text-accent-indigo font-medium">
+                                    Epoch: {prec.epoch_key || prec.period_start?.slice(0, 10)}
+                                  </span>
+                                  <span className="text-zinc-400">
+                                    Precedent Relevance: {Math.round((prec.similarity || 0) * 100)}%
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-zinc-300 leading-snug">
+                                  {prec.executive_summary}
+                                </p>
                               </div>
                             ))}
                           </div>

@@ -195,25 +195,26 @@ async def get_system_settings(
     raw_keys = rows.get("api_keys", {})
     app_settings = get_settings()
     env_keys = {
-        "gemini_api_key": app_settings.GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY"),
-        "groq_api_key": app_settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY"),
-        "aihubmix_api_key": app_settings.AIHUBMIX_API_KEY or os.environ.get("AIHUBMIX_API_KEY"),
-        "mistral_api_key": app_settings.MISTRAL_API_KEY or os.environ.get("MISTRAL_API_KEY"),
-        "cloudflare_api_token": app_settings.CLOUDFLARE_API_TOKEN or os.environ.get("CLOUDFLARE_API_TOKEN") or app_settings.CLOUDFLARE_API_KEY or os.environ.get("CLOUDFLARE_API_KEY"),
-        "cloudflare_account_id": app_settings.CLOUDFLARE_ACCOUNT_ID or os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
-        "zai_api_key": app_settings.ZAI_API_KEY or os.environ.get("ZAI_API_KEY"),
-        "siliconflow_api_key": app_settings.SILICONFLOW_API_KEY or os.environ.get("SILICONFLOW_API_KEY"),
-        "telegram_bot_token": app_settings.TELEGRAM_BOT_TOKEN or os.environ.get("TELEGRAM_BOT_TOKEN"),
-        "telegram_chat_id": app_settings.TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID"),
+        "gemini_api_key": getattr(app_settings, "GEMINI_API_KEY", None) or os.environ.get("GEMINI_API_KEY"),
+        "groq_api_key": getattr(app_settings, "GROQ_API_KEY", None) or os.environ.get("GROQ_API_KEY"),
+        "aihubmix_api_key": getattr(app_settings, "AIHUBMIX_API_KEY", None) or os.environ.get("AIHUBMIX_API_KEY"),
+        "mistral_api_key": getattr(app_settings, "MISTRAL_API_KEY", None) or os.environ.get("MISTRAL_API_KEY"),
+        "cloudflare_api_token": getattr(app_settings, "CLOUDFLARE_API_TOKEN", None) or os.environ.get("CLOUDFLARE_API_TOKEN") or getattr(app_settings, "CLOUDFLARE_API_KEY", None) or os.environ.get("CLOUDFLARE_API_KEY"),
+        "cloudflare_api_key": getattr(app_settings, "CLOUDFLARE_API_KEY", None) or os.environ.get("CLOUDFLARE_API_KEY") or getattr(app_settings, "CLOUDFLARE_API_TOKEN", None) or os.environ.get("CLOUDFLARE_API_TOKEN"),
+        "cloudflare_account_id": getattr(app_settings, "CLOUDFLARE_ACCOUNT_ID", None) or os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
+        "zai_api_key": getattr(app_settings, "ZAI_API_KEY", None) or os.environ.get("ZAI_API_KEY"),
+        "siliconflow_api_key": getattr(app_settings, "SILICONFLOW_API_KEY", None) or os.environ.get("SILICONFLOW_API_KEY"),
+        "telegram_bot_token": getattr(app_settings, "TELEGRAM_BOT_TOKEN", None) or os.environ.get("TELEGRAM_BOT_TOKEN"),
+        "telegram_chat_id": getattr(app_settings, "TELEGRAM_CHAT_ID", None) or os.environ.get("TELEGRAM_CHAT_ID"),
         "telegram_api_id": os.environ.get("TELEGRAM_API_ID"),
         "telegram_api_hash": os.environ.get("TELEGRAM_API_HASH"),
         "newsapi_key": os.environ.get("NEWSAPI_KEY"),
         "reddit_client_id": os.environ.get("REDDIT_CLIENT_ID"),
         "reddit_client_secret": os.environ.get("REDDIT_CLIENT_SECRET"),
-        "hf_embedding_url": app_settings.HF_EMBEDDING_URL or os.environ.get("HF_EMBEDDING_URL"),
-        "hf_api_key": app_settings.HF_API_KEY or os.environ.get("HF_API_KEY"),
+        "hf_embedding_url": getattr(app_settings, "HF_EMBEDDING_URL", None) or os.environ.get("HF_EMBEDDING_URL"),
+        "hf_api_key": getattr(app_settings, "HF_API_KEY", None) or os.environ.get("HF_API_KEY"),
     }
-    effective_keys = {}
+    effective_keys = {k: "" for k in env_keys.keys()}
     for k, env_v in env_keys.items():
         if env_v:
             effective_keys[k] = env_v
@@ -224,9 +225,11 @@ async def get_system_settings(
 
     masked_keys = {}
     for k, v in effective_keys.items():
-        if k == "hf_embedding_url" and v:
+        if not v:
+            masked_keys[k] = ""
+        elif k == "hf_embedding_url":
             masked_keys[k] = str(v)
-        elif k == "groq_api_key" and v and ("," in str(v) or "\n" in str(v)):
+        elif k == "groq_api_key" and ("," in str(v) or "\n" in str(v)):
             sub_keys = [sk.strip() for sk in str(v).replace("\r", "\n").replace(",", "\n").split("\n") if sk.strip()]
             masked_subs = []
             for sk in sub_keys:
@@ -235,9 +238,9 @@ async def get_system_settings(
                 else:
                     masked_subs.append("***")
             masked_keys[k] = ", ".join(masked_subs)
-        elif v and len(str(v)) > 4:
+        elif len(str(v)) > 4:
             masked_keys[k] = f"***{str(v)[-4:]}"
-        elif v or k in (raw_keys if isinstance(raw_keys, dict) else {}):
+        else:
             masked_keys[k] = "***"
 
     default_lookbacks = {
@@ -313,6 +316,7 @@ async def update_system_settings(
             "aihubmix_api_key": "AIHUBMIX_API_KEY",
             "mistral_api_key": "MISTRAL_API_KEY",
             "cloudflare_api_token": "CLOUDFLARE_API_TOKEN",
+            "cloudflare_api_key": "CLOUDFLARE_API_KEY",
             "cloudflare_account_id": "CLOUDFLARE_ACCOUNT_ID",
             "zai_api_key": "ZAI_API_KEY",
             "siliconflow_api_key": "SILICONFLOW_API_KEY",
@@ -335,7 +339,10 @@ async def update_system_settings(
                 current_keys[k] = clean_v
                 if k in env_var_map:
                     os.environ[env_var_map[k]] = clean_v
-                if k == "groq_api_key":
+                if k in ("cloudflare_api_token", "cloudflare_api_key"):
+                    os.environ["CLOUDFLARE_API_TOKEN"] = clean_v
+                    os.environ["CLOUDFLARE_API_KEY"] = clean_v
+                elif k == "groq_api_key":
                     os.environ["GROQ_API_KEYS"] = clean_v
                     from backend.app.pipeline.providers.factory import get_shared_groq_pool
                     from backend.app.pipeline.providers.key_pool import parse_key_list

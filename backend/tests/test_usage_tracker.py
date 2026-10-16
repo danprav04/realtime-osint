@@ -62,21 +62,64 @@ def test_record_call_and_telemetry():
         cooldown_sec=30.0,
     )
 
+    # Record Mistral call
+    tracker.record_call(
+        provider="mistral",
+        model="ministral-3b-2512",
+        key="mstrl_testkey1234567890abcdef",
+        key_field="mistral_api_key",
+        prompt_tokens=100,
+        completion_tokens=40,
+        total_tokens=140,
+        success=True,
+        status_code=200,
+        duration_ms=80.0,
+    )
+
+    # Record Cloudflare call
+    tracker.record_call(
+        provider="cloudflare",
+        model="@cf/meta/llama-3.2-1b-instruct",
+        key="cfut_testkey1234567890abcdef",
+        key_field="cloudflare_api_token",
+        prompt_tokens=80,
+        completion_tokens=30,
+        total_tokens=110,
+        success=True,
+        status_code=200,
+        duration_ms=60.0,
+    )
+
     ai_settings = {
         "extraction": {"model_name": "qwen/qwen3.8-27b"},
         "scoring": {"model_name": "gemini-2.5-flash"},
+        "gatekeeper": {"model_name": "ministral-3b-2512"},
     }
 
     tel = tracker.get_telemetry(ai_settings=ai_settings)
 
     assert "summary" in tel
-    assert tel["summary"]["total_requests"] >= 3
-    assert tel["summary"]["total_tokens"] >= 500
+    assert tel["summary"]["total_requests"] >= 5
+    assert tel["summary"]["total_tokens"] >= 750
 
     # Provider assertions
     providers = tel["providers"]
     assert "gemini" in providers
     assert "groq" in providers
+    assert "mistral" in providers
+    assert "cloudflare" in providers
+    assert "zai" in providers
+    assert "siliconflow" in providers
+
+    mistral_prov = providers["mistral"]
+    assert mistral_prov["total_requests"] == 1
+    assert mistral_prov["successful_requests"] == 1
+    assert mistral_prov["total_tokens"] == 140
+
+    cf_prov = providers["cloudflare"]
+    assert cf_prov["total_requests"] == 1
+    assert cf_prov["successful_requests"] == 1
+    assert cf_prov["total_tokens"] == 110
 
     gemini_prov = providers["gemini"]
     assert gemini_prov["total_requests"] == 1
@@ -127,6 +170,34 @@ async def test_api_provider_usage_endpoint(monkeypatch):
         assert "all_keys" in data
         assert "gemini" in data["providers"]
         assert "groq" in data["providers"]
+        assert "mistral" in data["providers"]
+        assert "cloudflare" in data["providers"]
+        assert "zai" in data["providers"]
+        assert "siliconflow" in data["providers"]
+
+
+@pytest.mark.asyncio
+async def test_api_settings_endpoint():
+    from httpx import ASGITransport, AsyncClient
+    from backend.app.main import create_app
+    from backend.app.config import get_settings
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    settings = get_settings()
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        headers = {"X-API-Key": settings.API_KEY}
+        resp = await client.get("/api/settings", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "api_keys" in data
+        api_keys = data["api_keys"]
+        assert "mistral_api_key" in api_keys
+        assert "cloudflare_api_token" in api_keys
+        assert "cloudflare_api_key" in api_keys
+        assert "zai_api_key" in api_keys
+        assert "siliconflow_api_key" in api_keys
 
 
 def test_model_rate_limit_isolates_from_key_status():

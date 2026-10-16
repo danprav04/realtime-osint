@@ -134,23 +134,40 @@ async def run_stage4_visuals(
     intelligence_text: str,
     extracted_entities: List[str],
     provider: BaseAIProvider,
+    scoring_context: Optional[Dict[str, Any]] = None,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
     raise_on_error: bool = False,
 ) -> Stage4Result:
     """
     Executes Stage 4 visual & trend categorization using the configured AI provider.
+    Incorporate corroboration status and contradiction signals into tags and narrative insights.
     """
     title = getattr(event, "title", None) or (event.get("title") if isinstance(event, dict) else "")
-    prompt = (
-        f"Event Title: {title}\n"
-        f"Extracted Entities: {', '.join(extracted_entities)}\n"
-        f"Intelligence Content:\n{intelligence_text}\n\n"
-        f"Provide valid JSON matching the Stage4Result schema."
-    )
+    prompt_parts = [
+        f"Event Title: {title}",
+        f"Extracted Entities: {', '.join(extracted_entities)}",
+        f"Intelligence Content:\n{intelligence_text}",
+    ]
+    if scoring_context:
+        if scoring_context.get("is_contradiction"):
+            prompt_parts.append(
+                "NOTE: This report is actively disputed or denied. Ensure tags include 'Disputed' or 'Information Dispute'."
+            )
+        elif scoring_context.get("corroboration_count", 0) >= 2:
+            prompt_parts.append(
+                "NOTE: Confirmed by multiple independent cross-sources."
+            )
+    prompt_parts.append("Provide valid JSON matching the Stage4Result schema.")
+    prompt = "\n\n".join(prompt_parts)
 
     def fallback():
-        return _heuristic_stage4_fallback(intelligence_text, extracted_entities)
+        res = _heuristic_stage4_fallback(intelligence_text, extracted_entities)
+        if scoring_context and scoring_context.get("is_contradiction"):
+            if "Disputed" not in res.cluster_tags:
+                res.cluster_tags.insert(0, "Disputed")
+        return res
+
 
     try:
         raw_response = await provider.generate_text(

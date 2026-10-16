@@ -301,3 +301,71 @@ class SystemSettings(Base):
             "value_json": self.value_json,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class HistoricalRollup(Base):
+    """
+    Tiered memory epoch rollup table.
+    Compacts aged events (>7d) into semantic storyline digests, entity/location baselines,
+    and a single 3072d summary vector, preserving 100% of analytical knowledge while
+    reclaiming RAM and DB storage.
+    """
+    __tablename__ = "historical_rollups"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    theme_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("themes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    epoch_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    total_events: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    critical_events_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_importance_score: Mapped[int] = mapped_column(SmallInteger, default=5, nullable=False)
+    avg_importance_score: Mapped[float] = mapped_column(Float, default=5.0, nullable=False)
+    executive_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    storylines_json: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    entity_counts_json: Mapped[Dict[str, int]] = mapped_column(JSON, default=dict, nullable=False)
+    location_counts_json: Mapped[Dict[str, int]] = mapped_column(JSON, default=dict, nullable=False)
+    category_counts_json: Mapped[Dict[str, int]] = mapped_column(JSON, default=dict, nullable=False)
+    source_stats_json: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    notable_events_json: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    embedding_vector: Mapped[Optional[List[float]]] = mapped_column(JSON, nullable=True)
+    embedding_model_name: Mapped[str] = mapped_column(String(100), default="gemini-embedding-2", nullable=False)
+    is_compacted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("theme_id", "epoch_key", name="uq_historical_rollups_theme_epoch"),
+        Index("idx_rollups_theme_period", "theme_id", "period_start"),
+    )
+
+    theme: Mapped["Theme"] = relationship("Theme", lazy="noload")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "theme_id": self.theme_id,
+            "period_start": self.period_start.isoformat() if self.period_start else None,
+            "period_end": self.period_end.isoformat() if self.period_end else None,
+            "epoch_key": self.epoch_key,
+            "total_events": self.total_events,
+            "critical_events_count": self.critical_events_count,
+            "max_importance_score": self.max_importance_score,
+            "avg_importance_score": self.avg_importance_score,
+            "executive_summary": self.executive_summary,
+            "storylines_json": self.storylines_json or [],
+            "entity_counts_json": self.entity_counts_json or {},
+            "location_counts_json": self.location_counts_json or {},
+            "category_counts_json": self.category_counts_json or {},
+            "source_stats_json": self.source_stats_json or {},
+            "notable_events_json": self.notable_events_json or [],
+            "embedding_model_name": self.embedding_model_name,
+            "is_compacted": self.is_compacted,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+

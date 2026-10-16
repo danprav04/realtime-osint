@@ -225,6 +225,11 @@ class ScoringContext(BaseModel):
     corroborating_event_ids: List[str] = Field(default_factory=list)
     same_source_echo_count: int = 0
     is_same_source_echo: bool = False
+    is_contradiction: bool = False
+    contradicting_sources: List[str] = Field(default_factory=list)
+    contradicting_event_ids: List[str] = Field(default_factory=list)
+    contradiction_details: List[str] = Field(default_factory=list)
+    recency_weighted_corroboration: float = 0.0
     max_similarity: float = 0.0
     corroboration_status: str = "First Report / Unverified"
     source_reliability_tier: str = "tier_2_regional_osint"
@@ -235,6 +240,8 @@ class ScoringContext(BaseModel):
     critical_alerts_last_6h: int = 0
     avg_score_24h: float = 5.0
     active_storylines: List[str] = Field(default_factory=list)
+    historical_precedents: List[Dict[str, Any]] = Field(default_factory=list)
+    entity_baselines: Dict[str, Any] = Field(default_factory=dict)
     embedding_vector: Optional[List[float]] = None
     embedding_model_name: Optional[str] = None
 
@@ -295,6 +302,26 @@ class Stage2Result(BaseModel):
     related_event_ids: List[str] = Field(
         default_factory=list,
         description="Event IDs of semantically matched recent reports.",
+    )
+    is_contradiction: bool = Field(
+        default=False,
+        description="Whether active denial or contradiction triggers were detected against this event.",
+    )
+    contradicting_sources: List[str] = Field(
+        default_factory=list,
+        description="Sources actively denying or refuting this event claim.",
+    )
+    contradiction_details: List[str] = Field(
+        default_factory=list,
+        description="Details of matched denial triggers or refutation headlines.",
+    )
+    recency_weighted_corroboration: Optional[float] = Field(
+        default=None,
+        description="Continuous exponential recency-weighted corroboration score.",
+    )
+    historical_precedents: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Matching historical rollup precedents from tiered memory.",
     )
     calibration_notes: List[str] = Field(
         default_factory=list,
@@ -365,6 +392,10 @@ class Stage2Result(BaseModel):
             "corroborating_sources": self.corroborating_sources or ctx.get("corroborating_sources", []),
             "same_source_echo_count": ctx.get("same_source_echo_count", 0),
             "is_same_source_echo": bool(ctx.get("is_same_source_echo", False)),
+            "is_contradiction": getattr(self, "is_contradiction", False) or bool(ctx.get("is_contradiction", False)),
+            "contradicting_sources": getattr(self, "contradicting_sources", []) or ctx.get("contradicting_sources", []),
+            "contradiction_details": getattr(self, "contradiction_details", []) or ctx.get("contradiction_details", []),
+            "recency_weighted_corroboration": self.recency_weighted_corroboration if self.recency_weighted_corroboration is not None else ctx.get("recency_weighted_corroboration", 0.0),
             "max_similarity": round(float(ctx.get("max_similarity", 0.0)), 3),
             "source_reliability_tier": ctx.get("source_reliability_tier", "tier_2_regional_osint"),
             "source_reliability_label": ctx.get("source_reliability_label", "Standard OSINT Feed"),
@@ -373,6 +404,8 @@ class Stage2Result(BaseModel):
             "velocity_status": ctx.get("velocity_status", "Normal"),
             "calibration_notes": list(self.calibration_notes),
             "related_reports": ctx.get("related_reports", []),
+            "historical_precedents": self.historical_precedents or ctx.get("historical_precedents", []),
+            "entity_baselines": ctx.get("entity_baselines", {}),
         }
 
 

@@ -239,7 +239,7 @@ export const PROVIDER_RATE_LIMITS: ProviderRateLimitInfo[] = [
     usageUrl: 'https://console.groq.com/dashboard/usage',
     docsUrl: 'https://console.groq.com/docs/rate-limits',
     quotaSummary: '30–120 RPM • 1K–14.4K RPD (Multi-Key Rotated)',
-    keyFields: ['groq_api_key'],
+    keyFields: ['groq_api_key', 'groq_api_keys'],
     description: 'Groq Console organization RPM, RPD, TPM, and TPD model limits',
   },
   {
@@ -275,7 +275,7 @@ export const PROVIDER_RATE_LIMITS: ProviderRateLimitInfo[] = [
     usageUrl: 'https://dash.cloudflare.com/',
     docsUrl: 'https://developers.cloudflare.com/workers-ai/models/',
     quotaSummary: '10K Neurons/day • 300 RPM • Free Tier',
-    keyFields: ['cloudflare_api_token'],
+    keyFields: ['cloudflare_api_token', 'cloudflare_api_key'],
     description: 'Cloudflare Workers AI serverless inference with 10,000 free daily Neurons',
   },
   {

@@ -398,7 +398,6 @@ class ProviderUsageTracker:
                     "last_error": m_stats["last_error"],
                 })
 
-            # Next, ensure all configured pipeline stage models are included even if 0 requests yet
             catalog_defaults = [
                 ("gemini", "gemini-2.5-flash"),
                 ("gemini", "gemini-2.5-flash-lite"),
@@ -410,13 +409,35 @@ class ProviderUsageTracker:
                 ("aihubmix", "coding-glm-5.3-free"),
                 ("aihubmix", "coding-minimax-m3-free"),
                 ("aihubmix", "nemotron-3-super-120b"),
+                ("mistral", "ministral-3b-2512"),
+                ("mistral", "ministral-8b-2512"),
+                ("mistral", "open-mistral-nemo"),
+                ("cloudflare", "@cf/meta/llama-3.2-1b-instruct"),
+                ("cloudflare", "@cf/meta/llama-3.2-3b-instruct"),
+                ("cloudflare", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
+                ("zai", "glm-4.7-flash"),
+                ("zai", "glm-4.5-flash"),
+                ("siliconflow", "Qwen/Qwen2.5-7B-Instruct"),
+                ("siliconflow", "THUDM/GLM-4-9B-0414"),
                 ("huggingface", "sentence-transformers/all-MiniLM-L6-v2"),
             ]
             # Add any explicitly configured models from stage_map
             for m_name, stages in stage_map.items():
-                p_cand = "groq" if any(tag in m_name.lower() for tag in ("qwen", "llama", "groq")) else "gemini"
-                if any(tag in m_name.lower() for tag in ("coding", "glm", "minimax", "nemotron")):
+                m_lower = m_name.lower()
+                if any(tag in m_lower for tag in ("ministral", "mistral", "codestral", "open-mistral")):
+                    p_cand = "mistral"
+                elif any(tag in m_lower for tag in ("@cf/", "cloudflare")):
+                    p_cand = "cloudflare"
+                elif any(tag in m_lower for tag in ("glm-4.7", "glm-4.5", "glm-4-flash", "zai")):
+                    p_cand = "zai"
+                elif any(tag in m_lower for tag in ("siliconflow",)):
+                    p_cand = "siliconflow"
+                elif any(tag in m_lower for tag in ("coding", "glm", "minimax", "nemotron")):
                     p_cand = "aihubmix"
+                elif any(tag in m_lower for tag in ("qwen", "llama", "groq")):
+                    p_cand = "groq"
+                else:
+                    p_cand = "gemini"
                 catalog_defaults.append((p_cand, m_name))
 
             for p_cand, m_name in catalog_defaults:
@@ -546,6 +567,10 @@ class ProviderUsageTracker:
             single_key_providers = [
                 ("gemini", "gemini_api_key", effective_db_keys.get("gemini_api_key") or getattr(st, "GEMINI_API_KEY", None) or os.environ.get("GEMINI_API_KEY")),
                 ("aihubmix", "aihubmix_api_key", effective_db_keys.get("aihubmix_api_key") or getattr(st, "AIHUBMIX_API_KEY", None) or os.environ.get("AIHUBMIX_API_KEY")),
+                ("mistral", "mistral_api_key", effective_db_keys.get("mistral_api_key") or getattr(st, "MISTRAL_API_KEY", None) or os.environ.get("MISTRAL_API_KEY")),
+                ("cloudflare", "cloudflare_api_token", effective_db_keys.get("cloudflare_api_token") or getattr(st, "CLOUDFLARE_API_TOKEN", None) or os.environ.get("CLOUDFLARE_API_TOKEN") or getattr(st, "CLOUDFLARE_API_KEY", None) or os.environ.get("CLOUDFLARE_API_KEY")),
+                ("zai", "zai_api_key", effective_db_keys.get("zai_api_key") or getattr(st, "ZAI_API_KEY", None) or os.environ.get("ZAI_API_KEY")),
+                ("siliconflow", "siliconflow_api_key", effective_db_keys.get("siliconflow_api_key") or getattr(st, "SILICONFLOW_API_KEY", None) or os.environ.get("SILICONFLOW_API_KEY")),
                 ("huggingface", "hf_api_key", effective_db_keys.get("hf_api_key") or getattr(st, "HF_API_KEY", None) or os.environ.get("HF_API_KEY")),
                 ("telegram", "telegram_bot_token", effective_db_keys.get("telegram_bot_token") or getattr(st, "TELEGRAM_BOT_TOKEN", None) or os.environ.get("TELEGRAM_BOT_TOKEN")),
                 ("reddit", "reddit_client_id", effective_db_keys.get("reddit_client_id") or getattr(st, "REDDIT_CLIENT_ID", None) or os.environ.get("REDDIT_CLIENT_ID")),
@@ -595,11 +620,27 @@ class ProviderUsageTracker:
                         })
 
             # Assemble per-provider telemetry objects
-            provider_names = ["gemini", "groq", "aihubmix", "huggingface", "telegram", "reddit", "newsapi"]
+            provider_names = [
+                "gemini",
+                "groq",
+                "aihubmix",
+                "mistral",
+                "cloudflare",
+                "zai",
+                "siliconflow",
+                "huggingface",
+                "telegram",
+                "reddit",
+                "newsapi",
+            ]
             provider_display_names = {
                 "gemini": "Google Gemini",
                 "groq": "Groq Cloud",
                 "aihubmix": "AI Hub Mix",
+                "mistral": "Mistral AI",
+                "cloudflare": "Cloudflare Workers AI",
+                "zai": "Z.ai (Zhipu)",
+                "siliconflow": "SiliconFlow",
                 "huggingface": "Hugging Face TEI",
                 "telegram": "Telegram API",
                 "reddit": "Reddit Data API",

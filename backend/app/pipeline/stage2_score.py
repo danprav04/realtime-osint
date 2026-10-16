@@ -168,6 +168,23 @@ def build_stage2_context_block(
                     f"[{b_tok}]"
                 )
 
+        is_contradiction = bool(scoring_context.get("is_contradiction", False))
+        contra_sources = scoring_context.get("contradicting_sources") or []
+        contra_details = scoring_context.get("contradiction_details") or []
+        if is_contradiction:
+            lines.append(
+                f"- CONTRADICTION / DISPUTE ALERT: Report is actively denied or disputed by "
+                f"{', '.join(contra_sources[:3])}."
+            )
+            for cd in contra_details[:2]:
+                lines.append(f"  * {cd}")
+
+        recency_corrob = scoring_context.get("recency_weighted_corroboration", 0.0)
+        lines.append(
+            f"- Continuous Recency-Weighted Corroboration: {recency_corrob:.2f} "
+            f"(recent cross-source reports weighted with exponential decay)"
+        )
+
         corrob_status = scoring_context.get("corroboration_status", "First Report / Unverified")
         corrob_count = scoring_context.get("corroboration_count", 0)
         corrob_sources = scoring_context.get("corroborating_sources", [])
@@ -203,6 +220,23 @@ def build_stage2_context_block(
         storylines = scoring_context.get("active_storylines") or []
         if storylines:
             lines.append(f"- Active High-Priority Theater Storylines: {' ; '.join(storylines[:3])}")
+
+        baselines = scoring_context.get("entity_baselines") or {}
+        if baselines:
+            lines.append("- Longitudinal Entity Baselines (Tiered Historical Memory):")
+            for ent, b_info in list(baselines.items())[:3]:
+                lines.append(
+                    f"  * {ent}: {b_info.get('daily_baseline_average', 0)} avg/day "
+                    f"(peak {b_info.get('peak_daily_mentions', 0)}/day, {b_info.get('days_active_in_history', 0)} active epochs)"
+                )
+
+        precedents = scoring_context.get("historical_precedents") or []
+        if precedents:
+            lines.append("- Historical Precedents (from Memory Rollups):")
+            for prec in precedents[:2]:
+                lines.append(
+                    f"  * [{prec.get('period_start')} | Peak {prec.get('max_importance_score')}/10] {prec.get('executive_summary')}"
+                )
 
     return "\n".join(lines)
 
@@ -351,8 +385,21 @@ def calibrate_stage2_result(
             conf_level = "low"
             conf_score = min(conf_score, 4)
 
-        # --- Calibration Guardrail 4: Multi-Source Embedding Corroboration & Term Burst Boost ---
-        if not is_same_source_echo and corrob_count >= 2 and score >= 4:
+        # --- Calibration Guardrail 4: Multi-Source Embedding Corroboration & Contradiction Handling ---
+        is_contradiction = bool(ctx.get("is_contradiction", False))
+        contra_sources = list(ctx.get("contradicting_sources", []))
+
+        if is_contradiction:
+            old_score = score
+            if score >= threshold and src_tier != "tier_1_wire_official":
+                score = max(1, min(score, threshold - 1))
+            src_str = f" from {', '.join(contra_sources[:2])}" if contra_sources else ""
+            note = f"Dispute / Contradiction flagged: conflicting claims or official denial{src_str}"
+            if note not in notes:
+                notes.append(note)
+            conf_level = "low"
+            conf_score = min(conf_score, 4)
+        elif not is_same_source_echo and corrob_count >= 2 and score >= 4:
             old_score = score
             score = min(10, score + 1)
             src_str = ", ".join(corrob_sources[:3])
@@ -391,7 +438,7 @@ def calibrate_stage2_result(
     else:
         priority = "low"
 
-    should_alert = bool(score >= threshold and not is_same_source_echo)
+    should_alert = bool(score >= threshold and not is_same_source_echo and not is_contradiction)
 
     rationale = (result.score_rationale or "Standard intelligence assessment.").strip()
     if notes:
@@ -413,6 +460,11 @@ def calibrate_stage2_result(
         corroboration_status=ctx.get("corroboration_status") or result.corroboration_status or "First Report / Unverified",
         corroborating_sources=corrob_sources or list(result.corroborating_sources or []),
         related_event_ids=[r.get("event_id") for r in related_reports if r.get("event_id")] or list(result.related_event_ids or []),
+        is_contradiction=is_contradiction,
+        contradicting_sources=contra_sources or list(getattr(result, "contradicting_sources", []) or []),
+        contradiction_details=list(ctx.get("contradiction_details") or []),
+        recency_weighted_corroboration=ctx.get("recency_weighted_corroboration"),
+        historical_precedents=list(ctx.get("historical_precedents") or []),
         calibration_notes=notes,
     )
 

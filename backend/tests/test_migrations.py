@@ -41,17 +41,18 @@ def test_fresh_database_migration(temp_db_url):
     # 1. Initial status before migration
     status_before = get_migration_status(override_url=temp_db_url)
     assert status_before["current_revision"] is None
-    assert status_before["head_revision"] == "0001_initial_schema"
+    head_rev = status_before["head_revision"]
+    assert head_rev is not None
     assert status_before["is_up_to_date"] is False
 
     # 2. Run migrations
     result = run_migrations(target_revision="head", override_url=temp_db_url)
     assert result["status"] == "success"
-    assert result["head_revision"] == "0001_initial_schema"
+    assert result["head_revision"] == head_rev
 
     # 3. Status after migration
     status_after = get_migration_status(override_url=temp_db_url)
-    assert status_after["current_revision"] == "0001_initial_schema"
+    assert status_after["current_revision"] == head_rev
     assert status_after["is_up_to_date"] is True
     assert "events" in status_after["tables"]
     assert "themes" in status_after["tables"]
@@ -59,6 +60,7 @@ def test_fresh_database_migration(temp_db_url):
     assert "alerts" in status_after["tables"]
     assert "event_embeddings" in status_after["tables"]
     assert "system_settings" in status_after["tables"]
+    assert "historical_rollups" in status_after["tables"]
     assert "alembic_version" in status_after["tables"]
 
 
@@ -71,7 +73,7 @@ def test_migration_idempotency(temp_db_url):
     # Second migration run
     res2 = run_migrations(target_revision="head", override_url=temp_db_url)
     assert res2["status"] == "already_up_to_date"
-    assert res2["current_revision"] == "0001_initial_schema"
+    assert res2["current_revision"] == res1["current_revision"]
 
 
 @pytest.mark.asyncio
@@ -79,7 +81,7 @@ async def test_legacy_database_auto_stamping(temp_db_url):
     """
     Verify that an unversioned database with pre-existing tables
     (such as a production database initialized via Base.metadata.create_all)
-    is automatically stamped with baseline revision '0001_initial_schema'.
+    is automatically stamped with baseline or head revision cleanly.
     """
     # 1. Create tables directly via metadata.create_all (simulates legacy database)
     eng = create_async_engine(temp_db_url)
@@ -93,14 +95,12 @@ async def test_legacy_database_auto_stamping(temp_db_url):
     assert status_before["has_legacy_tables"] is True
     assert "events" in status_before["tables"]
 
-    # 3. Running upgrade should detect legacy schema, stamp baseline without colliding
+    # 3. Running upgrade should detect legacy schema and stamp without colliding
     result = run_migrations(target_revision="head", override_url=temp_db_url)
-    assert result["status"] == "already_up_to_date" or result["status"] == "success"
-    assert result["current_revision"] == "0001_initial_schema"
+    assert result["status"] in ("already_up_to_date", "success")
 
     # 4. Status should now report fully versioned and up-to-date
     status_after = get_migration_status(override_url=temp_db_url)
-    assert status_after["current_revision"] == "0001_initial_schema"
     assert status_after["is_up_to_date"] is True
 
 

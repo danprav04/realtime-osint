@@ -266,6 +266,26 @@ BURST_ROOT_TOKENS: List[str] = [
     "sirens sounding",
 ]
 
+# 8. Denial / Contradiction / Debunking Triggers (Multilingual: Arabic, Farsi, Hebrew, English)
+DENIAL_AND_CONTRADICTION_TRIGGERS: List[str] = [
+    # Arabic
+    "نفي", "ينفي", "تنفي", "نفت", "لا صحه", "لا صحة", "شائعات", "شائعه", "شائعة",
+    "تكذيب", "يكذب", "فبركه", "فبركة", "ادعاءات كاذبه", "ادعاءات كاذبة", "غير صحيح",
+    "لم يحدث", "بلاغ كاذب", "تفجير مسيطر عليه", "اعمال مقالع", "انفجار اسطوانه",
+    "انفجار اسطوانة", "لا يوجد استهداف", "اصوات مناورات", "مناوره تدريبيه",
+    # Farsi
+    "تکذیب", "تكذيب", "شایعه", "شايعه", "دروغ", "تکذیب شد", "صحت ندارد",
+    "آرامش برقرار است", "انفجار کپسول", "رزمایش", "صدای رزمایش",
+    # Hebrew
+    "הכחשה", "מכחיש", "מכחישים", "דיווח שווא", "אזעקת שווא", "שמועות",
+    "אין נפגעים", "אירוע שווא", "פיצוץ מבוקר", "תרגיל צבאי", "שגוי",
+    # English
+    "denies", "denied", "denial", "refutes", "refuted", "false alarm",
+    "debunked", "unfounded rumor", "claims denied", "controlled detonation",
+    "quarry blast", "gas cylinder explosion", "routine exercise",
+    "no strike occurred", "reports untrue", "unconfirmed rumor",
+]
+
 ALL_VERNACULAR_TRIGGERS: List[str] = list(
     dict.fromkeys(
         EXPLOSION_VERNACULAR
@@ -280,6 +300,54 @@ ALL_VERNACULAR_TRIGGERS: List[str] = list(
         + BURST_ROOT_TOKENS
     )
 )
+
+
+def classify_claim_stance(candidate_text: str, peer_text: str) -> Dict[str, Any]:
+    """
+    Classify whether two semantically related reports corroborate each other or
+    if one actively denies, refutes, or contradicts the claims made in the other.
+    Returns:
+      {
+        "is_contradiction": bool,
+        "stance": "corroborating" | "contradicting_or_denying" | "neutral_progression",
+        "matched_triggers": list[str],
+        "denying_text_side": "candidate" | "peer" | "none",
+        "explanation": str
+      }
+    """
+    cand_norm = normalize_arabic_text(candidate_text).lower()
+    peer_norm = normalize_arabic_text(peer_text).lower()
+
+    cand_denial_triggers = [
+        t for t in DENIAL_AND_CONTRADICTION_TRIGGERS
+        if normalize_arabic_text(t).lower() in cand_norm
+    ]
+    peer_denial_triggers = [
+        t for t in DENIAL_AND_CONTRADICTION_TRIGGERS
+        if normalize_arabic_text(t).lower() in peer_norm
+    ]
+
+    has_cand_denial = len(cand_denial_triggers) > 0
+    has_peer_denial = len(peer_denial_triggers) > 0
+
+    if has_cand_denial or has_peer_denial:
+        denying_side = "candidate" if has_cand_denial else "peer"
+        matched = cand_denial_triggers if has_cand_denial else peer_denial_triggers
+        return {
+            "is_contradiction": True,
+            "stance": "contradicting_or_denying",
+            "matched_triggers": matched,
+            "denying_text_side": denying_side,
+            "explanation": f"Active denial or contradiction signal detected: {', '.join(matched[:3])}",
+        }
+
+    return {
+        "is_contradiction": False,
+        "stance": "corroborating",
+        "matched_triggers": [],
+        "denying_text_side": "none",
+        "explanation": "No conflicting or refutation tokens detected between reports.",
+    }
 
 
 class SlidingWindowBurstDetector:

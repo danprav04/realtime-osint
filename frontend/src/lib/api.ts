@@ -8,6 +8,8 @@ import type {
   EmbeddingsMapData,
   EmbeddingStatus,
   SituationSummaryData,
+  HistoricalRollup,
+  SourceCredibilityItem,
   UsageTelemetryResponse,
   ServerLogsResponse,
   ServerLogEntry,
@@ -288,6 +290,53 @@ export async function generateSituationSummary(params?: {
     `/api/summary/generate${queryString ? `?${queryString}` : ''}`,
     { method: 'POST' }
   );
+}
+
+// Historical Memory Rollups & Compaction
+export async function getHistoricalRollups(params?: {
+  theme_id?: string;
+  limit?: number;
+}): Promise<HistoricalRollup[]> {
+  const query = new URLSearchParams();
+  if (params?.theme_id) query.set('theme_id', params.theme_id);
+  if (params?.limit) query.set('limit', params.limit.toString());
+  const queryString = query.toString();
+  return fetchApi<HistoricalRollup[]>(`/api/summary/rollups${queryString ? `?${queryString}` : ''}`);
+}
+
+export async function triggerMemoryCompaction(ageDays?: number): Promise<{
+  status: string;
+  message: string;
+  rollups_created: number;
+  vectors_pruned: number;
+}> {
+  const query = new URLSearchParams();
+  if (ageDays !== undefined) query.set('age_days', ageDays.toString());
+  const queryString = query.toString();
+  return fetchApi<{
+    status: string;
+    message: string;
+    rollups_created: number;
+    vectors_pruned: number;
+  }>(`/api/summary/rollups/compact${queryString ? `?${queryString}` : ''}`, {
+    method: 'POST',
+  });
+}
+
+// Dynamic Source Credibility Leaderboard
+export async function getSourceCredibility(themeId?: number | string): Promise<{
+  status: string;
+  count: number;
+  sources: SourceCredibilityItem[];
+}> {
+  const query = new URLSearchParams();
+  if (themeId !== undefined) query.set('theme_id', themeId.toString());
+  const queryString = query.toString();
+  return fetchApi<{
+    status: string;
+    count: number;
+    sources: SourceCredibilityItem[];
+  }>(`/api/stats/sources/credibility${queryString ? `?${queryString}` : ''}`);
 }
 
 // Server Logs & Diagnostics

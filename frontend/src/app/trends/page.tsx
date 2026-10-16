@@ -10,9 +10,13 @@ import {
   Clock,
   Sparkles,
   ExternalLink,
+  Award,
+  Archive,
+  RefreshCw,
+  Layers,
 } from 'lucide-react';
-import { DashboardStats, NormalizedEvent } from '@/lib/types';
-import { getStats, getEvents } from '@/lib/api';
+import { DashboardStats, NormalizedEvent, SourceCredibilityItem, HistoricalRollup } from '@/lib/types';
+import { getStats, getEvents, getSourceCredibility, getHistoricalRollups, triggerMemoryCompaction } from '@/lib/api';
 import { VolumeChart } from '@/components/charts/VolumeChart';
 import { ScoreDistributionChart } from '@/components/charts/ScoreDistributionChart';
 import { SourceActivityChart } from '@/components/charts/SourceActivityChart';
@@ -26,18 +30,26 @@ import { formatRelativeTime, getEventAIProvenance } from '@/lib/utils';
 export default function TrendsPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [highPriorityEvents, setHighPriorityEvents] = useState<NormalizedEvent[]>([]);
+  const [sourceCredibility, setSourceCredibility] = useState<SourceCredibilityItem[]>([]);
+  const [historicalRollups, setHistoricalRollups] = useState<HistoricalRollup[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedEvent, setSelectedEvent] = useState<NormalizedEvent | null>(null);
+  const [compacting, setCompacting] = useState(false);
+  const [compactionMsg, setCompactionMsg] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadData() {
       try {
-        const [statsData, eventsData] = await Promise.all([
+        const [statsData, eventsData, credRes, rollupsRes] = await Promise.all([
           getStats(),
           getEvents({ min_score: 7, limit: 10 }),
+          getSourceCredibility().catch(() => ({ status: 'ok', count: 0, sources: [] })),
+          getHistoricalRollups({ limit: 10 }).catch(() => []),
         ]);
         setStats(statsData);
         setHighPriorityEvents(eventsData || []);
+        if (credRes?.sources) setSourceCredibility(credRes.sources);
+        if (rollupsRes) setHistoricalRollups(rollupsRes);
       } catch (err) {
         console.error('Failed to load trends data:', err);
       } finally {
@@ -46,6 +58,21 @@ export default function TrendsPage() {
     }
     loadData();
   }, []);
+
+  const handleTriggerCompaction = async () => {
+    setCompacting(true);
+    setCompactionMsg(null);
+    try {
+      const res = await triggerMemoryCompaction(7);
+      setCompactionMsg(`Compaction complete: ${res.rollups_created} rollups created, ${res.vectors_pruned} routine vectors pruned.`);
+      const updatedRollups = await getHistoricalRollups({ limit: 10 });
+      setHistoricalRollups(updatedRollups);
+    } catch (err: any) {
+      setCompactionMsg(`Compaction failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setCompacting(false);
+    }
+  };
 
   // Compute top entities from high priority events
   const entityCounts = React.useMemo(() => {
@@ -204,6 +231,176 @@ export default function TrendsPage() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Dynamic Source Credibility & Recency Calibration */}
+      <div className="card-slick rounded-xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 hairline-b">
+          <div className="flex items-center space-x-2">
+            <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <Award className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-zinc-100 tracking-tight">
+                Dynamic Source Credibility & Calibration Leaderboard
+              </h4>
+              <p className="text-xs text-zinc-400">
+                Continuous empirical source scoring weighted by continuous recency decay and independent corroboration
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-mono text-zinc-400 tabular">
+            {sourceCredibility.length} tracked sources
+          </span>
+        </div>
+
+        {sourceCredibility.length === 0 ? (
+          <p className="text-xs text-zinc-500 py-3">No source credibility metrics calculated yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-white/5 text-zinc-500 font-mono uppercase text-[11px]">
+                  <th className="pb-2.5 font-semibold">Source</th>
+                  <th className="pb-2.5 font-semibold">Credibility Tier</th>
+                  <th className="pb-2.5 font-semibold">Score</th>
+                  <th className="pb-2.5 font-semibold">Corroboration</th>
+                  <th className="pb-2.5 font-semibold">Avg Importance</th>
+                  <th className="pb-2.5 font-semibold">Reports</th>
+                  <th className="pb-2.5 font-semibold text-right">Recency Weight</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {sourceCredibility.map((src) => (
+                  <tr key={src.source_name} className="hover:bg-surface-card/60 transition-colors">
+                    <td className="py-2.5 pr-4 font-medium text-zinc-200">
+                      <div className="flex items-center space-x-2">
+                        <span>{src.source_name}</span>
+                        <span className="text-[10px] uppercase font-mono text-zinc-500 bg-surface-raised px-1.5 py-0.5 rounded">
+                          {src.source_type}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-2.5 pr-4 font-mono text-[11px]">
+                      <span className="px-2 py-0.5 rounded bg-surface-raised hairline-border text-zinc-300">
+                        {src.tier}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-4 font-mono text-emerald-400 font-semibold tabular">
+                      {src.credibility_score.toFixed(1)}/10
+                    </td>
+                    <td className="py-2.5 pr-4 font-mono text-zinc-300 tabular">
+                      {Math.round(src.corroboration_rate * 100)}%
+                    </td>
+                    <td className="py-2.5 pr-4 font-mono text-amber-400 tabular">
+                      {src.avg_importance_score.toFixed(1)}/10
+                    </td>
+                    <td className="py-2.5 pr-4 font-mono text-zinc-400 tabular">
+                      {src.total_reports}
+                    </td>
+                    <td className="py-2.5 text-right font-mono text-accent-cyan tabular">
+                      {src.recency_weight.toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Historical Memory Rollups & Compaction Engine */}
+      <div className="card-slick rounded-xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-2 hairline-b">
+          <div className="flex items-center space-x-2">
+            <div className="p-1.5 rounded-lg bg-accent-indigo/10 text-accent-indigo border border-accent-indigo/20">
+              <Archive className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-zinc-100 tracking-tight">
+                Historical Memory Rollups & Compaction Engine
+              </h4>
+              <p className="text-xs text-zinc-400">
+                Aged intelligence (&gt;7 days) compacted into semantic daily epochs to preserve long-term context while pruning routine vectors
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={handleTriggerCompaction}
+              disabled={compacting}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-surface-raised hover:bg-surface-overlay hairline-border text-xs font-medium text-accent-cyan transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${compacting ? 'animate-spin' : ''}`} />
+              <span>{compacting ? 'Compacting...' : 'Trigger Compaction'}</span>
+            </button>
+          </div>
+        </div>
+
+        {compactionMsg && (
+          <div className="p-3 rounded-lg bg-accent-cyan/10 border border-accent-cyan/20 text-xs font-mono text-accent-cyan">
+            {compactionMsg}
+          </div>
+        )}
+
+        {historicalRollups.length === 0 ? (
+          <div className="p-4 rounded-lg bg-surface-card/60 text-center space-y-1">
+            <p className="text-xs text-zinc-400">
+              No historical memory rollups generated yet. Click &quot;Trigger Compaction&quot; or wait for the automatic daily background task.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {historicalRollups.map((rollup) => (
+              <div
+                key={rollup.id}
+                className="p-4 rounded-lg bg-surface-card hairline-border space-y-2.5"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs font-semibold text-accent-indigo">
+                    Epoch: {rollup.epoch_key}
+                  </span>
+                  <span className="font-mono text-[10px] text-zinc-500 tabular">
+                    {rollup.period_start?.slice(0, 10)} to {rollup.period_end?.slice(0, 10)}
+                  </span>
+                </div>
+
+                <div className="flex items-center space-x-3 text-xs font-mono tabular">
+                  <span className="text-zinc-300">
+                    <strong className="text-zinc-100 font-semibold">{rollup.total_events}</strong> events
+                  </span>
+                  <span className="text-rose-400">
+                    <strong className="font-semibold">{rollup.critical_events_count}</strong> critical
+                  </span>
+                  <span className="text-amber-400">
+                    Peak: <strong className="font-semibold">{rollup.max_importance_score}/10</strong>
+                  </span>
+                  <span className="text-zinc-400">
+                    Avg: {rollup.avg_importance_score.toFixed(1)}/10
+                  </span>
+                </div>
+
+                <p className="text-xs text-zinc-300 leading-relaxed line-clamp-3">
+                  {rollup.executive_summary}
+                </p>
+
+                {rollup.entity_counts_json && Object.keys(rollup.entity_counts_json).length > 0 && (
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {Object.entries(rollup.entity_counts_json).slice(0, 5).map(([ent, count]) => (
+                      <span
+                        key={ent}
+                        className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-raised text-zinc-400"
+                      >
+                        #{ent} ({count})
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <EventDetailsModal

@@ -17,12 +17,12 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.db.models import Alert, Event, EventEmbedding, SystemSettings, Theme, utc_now
+from backend.app.db.models import Alert, Event, EventEmbedding, HistoricalRollup, SystemSettings, Theme, utc_now
 from backend.app.pipeline.models import ClusterSynthesisLLMItem, SituationBriefingLLMOutput
 from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
 from backend.app.pipeline.parser import extract_and_parse_json
 from backend.app.pipeline.providers.base import BaseAIProvider
-from backend.app.services.embedding_service import get_embedding_service
+from backend.app.services.embedding_service import compute_recency_weight, get_embedding_service
 
 logger = logging.getLogger("osint.services.summary")
 
@@ -127,22 +127,23 @@ def _build_deterministic_summary(
             ],
         )
 
-    # Determine threat trajectory & score
+    # Determine threat trajectory & score using recency-weighted scores if available
+    recency_avg = telemetry.get("recency_weighted_avg_score", avg_score)
     if critical_count >= 4 or max_score >= 9 or (critical_count >= 2 and velocity_status == "Surge"):
         trajectory = "Escalating"
         threat_score = min(10, max(8, max_score))
-    elif critical_count >= 2 or max_score >= 8:
+    elif critical_count >= 2 or max_score >= 8 or recency_avg >= 7.0:
         trajectory = "Elevated"
-        threat_score = max(7, min(9, round(avg_score + 1.5)))
+        threat_score = max(7, min(9, round(recency_avg + 1.2)))
     elif velocity_status == "Surge" or len(outlier_events) > total_events * 0.5:
         trajectory = "Volatile"
         threat_score = max(6, min(8, max_score))
-    elif max_score >= 5:
+    elif max_score >= 5 or recency_avg >= 5.0:
         trajectory = "Elevated" if critical_count >= 1 else "Stable"
-        threat_score = max(4, min(7, round(avg_score)))
+        threat_score = max(4, min(7, round(recency_avg)))
     else:
         trajectory = "De-escalating" if velocity_status == "Quiet" else "Stable"
-        threat_score = max(2, min(5, round(avg_score)))
+        threat_score = max(2, min(5, round(recency_avg)))
 
     # Build per-cluster assessments
     cluster_items: List[ClusterSynthesisLLMItem] = []
@@ -769,6 +770,9 @@ class SituationSummaryService:
                 "top_entities": c_top_ents,
                 "center_x": c.get("center_x", 0.0),
                 "center_y": c.get("center_y", 0.0),
+                "is_fresh": c.get("is_fresh", False),
+                "latest_event_age_hours": c.get("latest_event_age_hours", 999.0),
+                "cluster_recency_weight": c.get("cluster_recency_weight", 0.10),
                 "events": c_events,
             })
 
@@ -811,6 +815,27 @@ class SituationSummaryService:
         else:
             velocity_status = "Normal"
 
+        # Continuous recency-weighted average score
+        recency_scores = [
+            (ev.importance_score or 5) * compute_recency_weight(ev.published_at, now=now, half_life_hours=18.0)
+            for ev in events_in_window
+        ]
+        recency_weights = [
+            compute_recency_weight(ev.published_at, now=now, half_life_hours=18.0)
+            for ev in events_in_window
+        ]
+        recency_avg = round(sum(recency_scores) / max(0.1, sum(recency_weights)), 1) if events_in_window else 0.0
+
+        # Query historical rollups for long-range baseline context
+        historical_rollups: List[HistoricalRollup] = []
+        try:
+            stmt_roll = select(HistoricalRollup).order_by(HistoricalRollup.period_start.desc()).limit(10)
+            if theme_obj is not None:
+                stmt_roll = stmt_roll.where(HistoricalRollup.theme_id == theme_obj.id)
+            historical_rollups = list((await session.execute(stmt_roll)).scalars().all())
+        except Exception as r_err:
+            logger.debug(f"Historical rollups query omitted in summary: {r_err}")
+
         telemetry = {
             "total_events": total_events,
             "embedded_events": embedded_events,
@@ -822,10 +847,13 @@ class SituationSummaryService:
             "isolated_outliers_count": len(outlier_events),
             "critical_alerts_count": critical_alerts_count,
             "avg_importance_score": round(sum(scores_list) / len(scores_list), 1) if scores_list else 0.0,
+            "recency_weighted_avg_score": recency_avg,
             "max_importance_score": max(scores_list) if scores_list else 0,
             "velocity_status": velocity_status,
             "events_last_6h": events_last_6h,
             "events_prev_18h": events_prev_18h,
+            "historical_epochs_count": len(historical_rollups),
+            "historical_rollups": [r.to_dict() for r in historical_rollups[:5]],
             "source_breakdown": dict(source_breakdown),
             "top_entities": [{"name": k, "count": v} for k, v in entity_counter.most_common(12)],
             "top_locations": [{"name": k, "count": v} for k, v in location_counter.most_common(8)],
@@ -958,6 +986,9 @@ class SituationSummaryService:
                 "top_entities": c_meta["top_entities"],
                 "center_x": c_meta["center_x"],
                 "center_y": c_meta["center_y"],
+                "is_fresh": c_meta.get("is_fresh", False),
+                "latest_event_age_hours": c_meta.get("latest_event_age_hours", 999.0),
+                "cluster_recency_weight": c_meta.get("cluster_recency_weight", 0.10),
                 "events": c_meta["events"],
             })
 
@@ -993,6 +1024,18 @@ class SituationSummaryService:
         ]
         emb_prov = {"provider": emb_parts[0], "model": emb_parts[1]}
 
+        # Query source credibility leaderboard
+        source_credibility = []
+        try:
+            from backend.app.services.memory_rollup_service import get_memory_rollup_service
+            rollup_svc = get_memory_rollup_service()
+            source_credibility = await rollup_svc.get_dynamic_source_credibility(
+                session=session,
+                theme_id=theme_obj.id if theme_obj is not None else None,
+            )
+        except Exception as sc_err:
+            logger.debug(f"Source credibility query omitted in summary: {sc_err}")
+
         result_payload: Dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "generated_at": utc_now().isoformat(),
@@ -1012,6 +1055,8 @@ class SituationSummaryService:
             "strategic_assessment": llm_output.strategic_assessment or deterministic_ref.strategic_assessment,
             "key_developments": structured_developments,
             "clusters": final_clusters,
+            "source_credibility_leaderboard": source_credibility[:8],
+            "historical_rollups": [r.to_dict() for r in historical_rollups[:5]],
             "unverified_outliers": {
                 "assessment": (
                     llm_output.unverified_outlier_assessment
@@ -1076,8 +1121,9 @@ class SituationSummaryService:
         lines.append("")
         lines.append(f"=== SEMANTIC EMBEDDING STORYLINE CLUSTERS ({len(clusters_meta)} clusters) ===")
         for c in clusters_meta[:8]:
+            freshness_str = f" [Fresh Activity - {c.get('latest_event_age_hours', 0):.1f}h ago]" if c.get('is_fresh') else " [Aged Activity]"
             lines.append(
-                f"\n[Cluster ID: {c['cluster_id']}] Label: \"{c['label']}\" | "
+                f"\n[Cluster ID: {c['cluster_id']}] Label: \"{c['label']}\"{freshness_str} | "
                 f"Reports: {c['report_count']} | Max Score: {c['max_importance_score']}/10 | "
                 f"Avg Embedding Trust: {c['avg_trustworthiness_score']}% ({c['trustworthiness_label']}) | "
                 f"Sources: {', '.join(c['independent_sources'][:5])}"
@@ -1104,6 +1150,17 @@ class SituationSummaryService:
                 )
         else:
             lines.append("  * None.")
+
+        hist_rollups = telemetry.get('historical_rollups') or []
+        if hist_rollups:
+            lines.append("")
+            lines.append("=== HISTORICAL PRECEDENT EPOCHS (TIERED MEMORY ROLLUPS) ===")
+            for hr in hist_rollups[:3]:
+                lines.append(
+                    f"- Epoch {hr.get('epoch_key')} ({str(hr.get('period_start', ''))[:10]}): "
+                    f"{hr.get('total_events')} events (Peak Score {hr.get('max_importance_score')}/10). "
+                    f"Summary: {str(hr.get('executive_summary', ''))[:200]}..."
+                )
 
         lines.extend([
             "",
