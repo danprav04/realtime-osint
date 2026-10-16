@@ -430,7 +430,7 @@ async def test_seed_initial_data_5x_idempotency(session_factory):
         source_types = [s.source_type for s in all_sources]
         assert "rss" in source_types
         assert "telegram" in source_types
-        assert "reddit" in source_types
+        assert "reddit" not in source_types
         assert "maritime_ais" in source_types
 
         all_settings = (await session.execute(select(SystemSettings))).scalars().all()

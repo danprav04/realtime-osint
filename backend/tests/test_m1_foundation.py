@@ -289,7 +289,7 @@ async def test_seed_initial_data_idempotency():
         source_types = {s.source_type for s in theme.sources}
         assert "rss" in source_types
         assert "telegram" in source_types
-        assert "reddit" in source_types
+        assert "reddit" not in source_types
         assert "maritime_ais" in source_types
 
         # Verify system settings seeded

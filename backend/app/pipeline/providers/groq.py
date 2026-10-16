@@ -103,22 +103,22 @@ class GroqProvider(BaseAIProvider):
         max_attempts = max(self.max_retries + 1, len(keys) * 2)
 
         for attempt in range(max_attempts):
-            key_slot: Optional[GroqKey] = await self.key_pool.acquire_next_key()
+            key_slot: Optional[GroqKey] = await self.key_pool.acquire_next_key(model=model_name)
 
             if not key_slot:
-                # All keys in pool are either unauthorized or on cooldown
+                # All keys in pool are either unauthorized or on cooldown for this specific model
                 all_unauth = all(k.status == KeyStatus.UNAUTHORIZED for k in keys)
                 if all_unauth:
                     raise PermissionError(
                         "Groq API key is invalid or unauthorized (HTTP 401)"
                     )
-                reason_detail = last_429_reason or "All Groq API keys in pool are in cooldown or exhausted"
+                reason_detail = last_429_reason or f"All Groq API keys in pool are in cooldown for model '{model_name}'"
                 raise RuntimeError(
-                    f"Groq RateLimitError: 429 Rate limit reached ({reason_detail})"
+                    f"Groq RateLimitError: 429 Rate limit reached for model '{model_name}' ({reason_detail})"
                 )
 
-            # Enforce pacing slot for this specific key
-            await key_slot.acquire_pacing_slot()
+            # Enforce pacing slot for this specific key and model
+            await key_slot.acquire_pacing_slot(model=model_name)
 
             headers = {
                 "Content-Type": "application/json",
@@ -129,12 +129,17 @@ class GroqProvider(BaseAIProvider):
             try:
                 response = await client.post(GROQ_BASE_URL, json=payload, headers=headers)
 
-                # Dynamically update key rate-limit status from returned response headers
-                key_slot.update_from_response(response)
+                # Dynamically update key rate-limit status for this model from returned response headers
+                key_slot.update_from_response(response, model=model_name)
 
                 # HTTP 429: Rate Limit (Minute or Daily Quota)
                 if response.status_code == 429:
-                    last_429_reason = key_slot.cooldown_reason or "Groq Rate limit reached"
+                    last_429_reason = (
+                        key_slot._model_cooldown_reasons.get(model_name.lower())
+                        or key_slot.cooldown_reason
+                        or "Groq Rate limit reached"
+                    )
+                    model_lock_sec = key_slot.get_model_cooldown_remaining(model_name) or (key_slot.retry_after_sec or 1.0)
                     try:
                         get_usage_tracker().record_call(
                             provider="groq",
@@ -146,12 +151,14 @@ class GroqProvider(BaseAIProvider):
                             error_message=last_429_reason,
                             is_rate_limit=True,
                             is_daily_quota=key_slot.status == KeyStatus.DAILY_EXHAUSTED,
+                            cooldown_sec=model_lock_sec,
+                            is_key_level=False,
                         )
                     except Exception:
                         pass
                     logger.warning(
                         f"[groq:{model_name}] Key {key_slot.masked_key} received 429 ({last_429_reason}). "
-                        f"Rotating to next available key in pool (attempt {attempt + 1}/{max_attempts})..."
+                        f"Rotating to next available key in pool for model '{model_name}' (attempt {attempt + 1}/{max_attempts})..."
                     )
                     continue
 
@@ -184,7 +191,7 @@ class GroqProvider(BaseAIProvider):
                         fallback_payload.pop("response_format", None)
                         fallback_payload["max_tokens"] = max(payload.get("max_tokens", 1024), 3072)
                         fallback_resp = await client.post(GROQ_BASE_URL, json=fallback_payload, headers=headers)
-                        key_slot.update_from_response(fallback_resp)
+                        key_slot.update_from_response(fallback_resp, model=model_name)
                         if fallback_resp.status_code == 200:
                             setattr(fallback_resp, "_used_key", key_slot.key)
                             return fallback_resp
@@ -214,7 +221,7 @@ class GroqProvider(BaseAIProvider):
                 continue
 
         if last_429_reason:
-            raise RuntimeError(f"Groq RateLimitError: 429 Rate limit reached ({last_429_reason})")
+            raise RuntimeError(f"Groq RateLimitError: 429 Rate limit reached for model '{model_name}' ({last_429_reason})")
         raise RuntimeError(f"[groq:{model_name}] Request failed after {max_attempts} attempts: {last_error}")
 
     async def generate_text(

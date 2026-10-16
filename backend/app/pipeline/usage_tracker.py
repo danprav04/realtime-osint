@@ -22,6 +22,15 @@ def _get_utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _get_loop_time() -> float:
+    try:
+        import asyncio
+        return asyncio.get_running_loop().time()
+    except RuntimeError:
+        import time
+        return time.time()
+
+
 def _hash_key(key: str) -> str:
     """Generate short non-reversible fingerprint for key identification."""
     if not key:
@@ -66,6 +75,7 @@ class ProviderUsageTracker:
         reset_requests_sec: Optional[float] = None,
         reset_tokens_sec: Optional[float] = None,
         cooldown_sec: Optional[float] = None,
+        is_key_level: bool = False,
     ) -> None:
         """
         Record a perceived request outcome against provider, key, and model counters.
@@ -73,6 +83,7 @@ class ProviderUsageTracker:
         p_norm = (provider or "unknown").lower().strip()
         m_norm = (model or "default").strip()
         now_iso = _get_utc_now_iso()
+        now_loop = _get_loop_time()
 
         calc_tokens = total_tokens if total_tokens > 0 else (prompt_tokens + completion_tokens)
 
@@ -120,16 +131,23 @@ class ProviderUsageTracker:
                     "last_used_at": None,
                     "last_status_code": status_code,
                     "last_error": None,
+                    "cooldown_remaining_sec": 0.0,
+                    "cooldown_until_ts": 0.0,
                 }
             m_stats = self._models[m_key]
             m_stats["total_requests"] += 1
             if success:
                 m_stats["successful_requests"] += 1
+                m_stats["cooldown_remaining_sec"] = 0.0
+                m_stats["cooldown_until_ts"] = 0.0
             else:
                 m_stats["failed_requests"] += 1
                 m_stats["last_error"] = str(error_message or f"HTTP {status_code}")
             if is_rate_limit:
                 m_stats["rate_limited_count"] += 1
+                if cooldown_sec and float(cooldown_sec) > 0:
+                    m_stats["cooldown_remaining_sec"] = round(float(cooldown_sec), 1)
+                    m_stats["cooldown_until_ts"] = now_loop + float(cooldown_sec)
             m_stats["total_tokens"] += calc_tokens
             m_stats["prompt_tokens"] += prompt_tokens
             m_stats["completion_tokens"] += completion_tokens
@@ -166,22 +184,38 @@ class ProviderUsageTracker:
                         "reset_tokens_sec": None,
                         "cooldown_remaining_sec": 0.0,
                         "cooldown_reason": "",
+                        "throttled_models": {},
                     }
                 k_stats = self._keys[k_id]
                 k_stats["total_requests"] += 1
                 if success:
                     k_stats["successful_requests"] += 1
-                    k_stats["status"] = "active"
-                    k_stats["cooldown_remaining_sec"] = 0.0
-                    k_stats["cooldown_reason"] = ""
+                    # Successful call on key: restore active status if not unauthorized
+                    if k_stats["status"] != "unauthorized":
+                        k_stats["status"] = "active"
+                        k_stats["cooldown_remaining_sec"] = 0.0
+                        k_stats["cooldown_reason"] = ""
+                    if "throttled_models" in k_stats and m_norm in k_stats["throttled_models"]:
+                        k_stats["throttled_models"].pop(m_norm, None)
                 else:
                     k_stats["failed_requests"] += 1
                     if is_rate_limit:
                         k_stats["rate_limited_count"] += 1
-                        k_stats["status"] = "daily_exhausted" if is_daily_quota else "minute_cooldown"
-                        k_stats["cooldown_reason"] = str(error_message or "Rate limit 429")
-                        if cooldown_sec:
-                            k_stats["cooldown_remaining_sec"] = round(float(cooldown_sec), 1)
+                        if is_key_level or (is_daily_quota and not model):
+                            # Entire key is locked out (e.g. account-wide daily quota exhaustion)
+                            k_stats["status"] = "daily_exhausted" if is_daily_quota else "minute_cooldown"
+                            k_stats["cooldown_reason"] = str(error_message or "Rate limit 429")
+                            if cooldown_sec:
+                                k_stats["cooldown_remaining_sec"] = round(float(cooldown_sec), 1)
+                        else:
+                            # Per-model rate limit: key remains ACTIVE for all other models!
+                            if k_stats["status"] != "unauthorized":
+                                k_stats["status"] = "active"
+                            k_stats["cooldown_remaining_sec"] = 0.0
+                            if cooldown_sec and m_norm:
+                                th_dict = k_stats.setdefault("throttled_models", {})
+                                th_dict[m_norm] = round(float(cooldown_sec), 1)
+
                 k_stats["total_tokens"] += calc_tokens
                 k_stats["prompt_tokens"] += prompt_tokens
                 k_stats["completion_tokens"] += completion_tokens
@@ -263,12 +297,18 @@ class ProviderUsageTracker:
         except Exception:
             pass
 
-        # 3. Pull live GroqKeyPool keys
+        # 3. Pull live GroqKeyPool keys & model cooldowns
         groq_pool_keys: List[Dict[str, Any]] = []
+        groq_model_cooldowns: Dict[str, float] = {}
         try:
             pool = get_shared_groq_pool()
             groq_tel = pool.get_telemetry()
             groq_pool_keys = groq_tel.get("keys", [])
+            for pk in groq_pool_keys:
+                for m_k, cd_info in pk.get("model_cooldowns", {}).items():
+                    cd_val = cd_info.get("cooldown_remaining_sec", 0.0) if isinstance(cd_info, dict) else float(cd_info)
+                    if cd_val > groq_model_cooldowns.get(m_k, 0.0):
+                        groq_model_cooldowns[m_k] = cd_val
         except Exception:
             pass
 
@@ -303,6 +343,8 @@ class ProviderUsageTracker:
         except Exception:
             pass
 
+        now_loop = _get_loop_time()
+
         with self._lock:
             # Build models response
             models_list: List[Dict[str, Any]] = []
@@ -315,7 +357,10 @@ class ProviderUsageTracker:
                 known_models_seen.add(f"{p_name}:{m_name.lower()}")
 
                 cooldown_key = f"{p_name}:{m_name.strip()}"
-                active_cd = orchestrator_cooldowns.get(cooldown_key, 0.0)
+                orch_cd = orchestrator_cooldowns.get(cooldown_key, 0.0)
+                pool_cd = groq_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_name == "groq" else 0.0
+                recorded_cd = max(0.0, m_stats.get("cooldown_until_ts", 0.0) - now_loop)
+                active_cd = max(orch_cd, pool_cd, recorded_cd)
 
                 assigned_stages = sorted(list(stage_map.get(m_name, [])))
                 avg_lat = (
@@ -380,7 +425,9 @@ class ProviderUsageTracker:
                     known_models_seen.add(k_check)
                     assigned_stages = sorted(list(stage_map.get(m_name, [])))
                     cooldown_key = f"{p_cand}:{m_name.strip()}"
-                    active_cd = orchestrator_cooldowns.get(cooldown_key, 0.0)
+                    orch_cd = orchestrator_cooldowns.get(cooldown_key, 0.0)
+                    pool_cd = groq_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_cand == "groq" else 0.0
+                    active_cd = max(orch_cd, pool_cd)
                     models_list.append({
                         "model_name": m_name,
                         "provider": p_cand,
@@ -467,6 +514,8 @@ class ProviderUsageTracker:
                         "reset_tokens_sec": rst_tok,
                         "cooldown_remaining_sec": cd_sec,
                         "cooldown_reason": cd_rsn,
+                        "throttled_models": pool_match.get("throttled_models", []) if pool_match else [],
+                        "model_cooldowns": pool_match.get("model_cooldowns", {}) if pool_match else {},
                     })
                 elif pool_match:
                     # Update existing key with live pool headers
@@ -488,6 +537,10 @@ class ProviderUsageTracker:
                                 k["cooldown_remaining_sec"] = pool_match["cooldown_remaining_sec"]
                                 k["cooldown_reason"] = pool_match.get("cooldown_reason", "")
                                 k["status"] = pool_match.get("status", "minute_cooldown")
+                            if "throttled_models" in pool_match:
+                                k["throttled_models"] = pool_match["throttled_models"]
+                            if "model_cooldowns" in pool_match:
+                                k["model_cooldowns"] = pool_match["model_cooldowns"]
 
             # Check other providers configured in db_keys or environment
             single_key_providers = [

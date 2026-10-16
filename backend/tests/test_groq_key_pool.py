@@ -223,8 +223,11 @@ async def test_groq_provider_rotation_on_429():
     assert "Bearer gsk_key1" in calls[0]
     assert "Bearer gsk_key2" in calls[1]
 
-    # Key 1 is marked in cooldown; Key 2 marked success
-    assert pool.get_keys()[0].status == KeyStatus.MINUTE_COOLDOWN
+    # Key 1 is throttled for qwen/qwen3.8-27b but remains ACTIVE for other models; Key 2 marked success
+    assert pool.get_keys()[0].status == KeyStatus.ACTIVE
+    assert pool.get_keys()[0].is_available(model="qwen/qwen3.8-27b") is False
+    assert pool.get_keys()[0].is_available(model="llama-3.1-8b-instant") is True
+    assert pool.get_keys()[0].get_model_cooldown_remaining("qwen/qwen3.8-27b") > 0
     assert pool.get_keys()[1].status == KeyStatus.ACTIVE
     assert pool.get_keys()[1].success_requests == 1
 
@@ -400,4 +403,102 @@ def test_groq_provider_does_not_assume_pacing_delay():
     provider = GroqProvider(key_pool=pool)
     assert provider.min_interval_sec == 0.0
     assert provider.max_rpm == 0
+
+
+def test_groq_key_model_specific_cooldown_keeps_key_available_for_other_models():
+    """Verify that a model 429 locks strictly that model and keeps the key active for others."""
+    key = GroqKey(key="gsk_model_test_key")
+    req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    resp_429 = httpx.Response(
+        429,
+        request=req,
+        headers={"retry-after": "307"},
+        json={"error": {"message": "Rate limit reached for model llama-3.3-70b-versatile"}},
+    )
+
+    key.update_from_response(resp_429, model="llama-3.3-70b-versatile")
+
+    # Key status must remain ACTIVE!
+    assert key.status == KeyStatus.ACTIVE
+    assert key.is_available() is True
+    # The specific model is throttled
+    assert key.is_available(model="llama-3.3-70b-versatile") is False
+    # Other models are completely available
+    assert key.is_available(model="llama-3.1-8b-instant") is True
+    assert key.is_available(model="qwen/qwen3.8-27b") is True
+
+    # Cooldown remaining for throttled model is ~307s
+    model_rem = key.get_model_cooldown_remaining("llama-3.3-70b-versatile")
+    assert 300.0 <= model_rem <= 308.0
+
+    # Key dict reports active status and throttled models
+    d = key.to_dict()
+    assert d["status"] == "active"
+    assert d["cooldown_remaining_sec"] == 0.0
+    assert "llama-3.3-70b-versatile" in d["throttled_models"]
+
+
+@pytest.mark.asyncio
+async def test_pool_rotates_and_isolates_by_model():
+    """Verify GroqKeyPool isolates key rotation strictly by model."""
+    keys = ["gsk_keyA", "gsk_keyB"]
+    pool = GroqKeyPool(keys=keys)
+
+    # Key A gets throttled for llama-3.3-70b-versatile
+    key_a = pool.get_keys()[0]
+    key_a.mark_rate_limited(is_daily=False, retry_delay_sec=120.0, reason="TPM limit", model="llama-3.3-70b-versatile")
+
+    # When acquiring for llama-3.3-70b-versatile, key A is skipped, key B is returned
+    slot_llama = await pool.acquire_next_key(model="llama-3.3-70b-versatile")
+    assert slot_llama is not None
+    assert slot_llama.key == "gsk_keyB"
+
+    # When acquiring for qwen/qwen3.8-27b, key A IS AVAILABLE and returned!
+    slot_qwen = await pool.acquire_next_key(model="qwen/qwen3.8-27b")
+    assert slot_qwen is not None
+    assert slot_qwen.key == "gsk_keyA"
+
+
+@pytest.mark.asyncio
+async def test_groq_provider_fallback_model_succeeds_when_primary_model_exhausts_keys():
+    """Verify that when a primary model exhausts pool keys, a fallback model on Groq can run and succeed."""
+    keys = ["gsk_single_key"]
+    pool = GroqKeyPool(keys=keys)
+    provider = GroqProvider(key_pool=pool, default_model="llama-3.3-70b-versatile")
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+
+    async def mock_post(url, json=None, headers=None):
+        req = httpx.Request("POST", url)
+        model_req = json.get("model")
+        if model_req == "llama-3.3-70b-versatile":
+            return httpx.Response(
+                429,
+                request=req,
+                headers={"retry-after": "300"},
+                json={"error": {"message": "Rate limit reached for model llama-3.3-70b-versatile"}},
+            )
+        else:
+            return httpx.Response(
+                200,
+                request=req,
+                json={"choices": [{"message": {"content": '{"summary": "Fallback Success"}'}}]},
+            )
+
+    mock_client.post = mock_post
+    provider._client = mock_client
+
+    # 1. Primary model fails with 429 and exhausts key
+    with pytest.raises(RuntimeError) as exc_info:
+        await provider.generate_text("test prompt", model="llama-3.3-70b-versatile")
+    assert "Rate limit reached for model 'llama-3.3-70b-versatile'" in str(exc_info.value)
+
+    # 2. Key remains ACTIVE in pool
+    assert pool.get_keys()[0].status == KeyStatus.ACTIVE
+
+    # 3. Fallback model immediately runs on the same key and succeeds!
+    fallback_res = await provider.process_stage("summarization", "breaking event", model="qwen/qwen3.8-27b")
+    assert fallback_res == {"summary": "Fallback Success"}
+
 

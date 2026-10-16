@@ -29,7 +29,7 @@ from backend.app.pipeline.providers.factory import (
     get_provider_registry,
     resolve_api_key,
 )
-from backend.app.pipeline.providers.base import BaseAIProvider
+from backend.app.pipeline.providers.base import BaseAIProvider, parse_duration_seconds
 from backend.app.pipeline.stage1_extract import _heuristic_stage1_fallback, run_stage1_extract
 from backend.app.pipeline.stage2_score import (
     _heuristic_stage2_fallback,
@@ -110,7 +110,10 @@ class PipelineOrchestrator:
                 model_name="openai/gpt-oss-20b",
                 temperature=0.0,
                 fallbacks=[
+                    AIFallbackConfig(provider="mistral", model_name="ministral-3b-2512", temperature=0.0),
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.0),
+                    AIFallbackConfig(provider="cloudflare", model_name="@cf/meta/llama-3.2-1b-instruct", temperature=0.0),
+                    AIFallbackConfig(provider="zai", model_name="glm-4.7-flash", temperature=0.0),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.0),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.0),
                 ],
@@ -122,6 +125,9 @@ class PipelineOrchestrator:
                 temperature=0.2,
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.2),
+                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.2),
+                    AIFallbackConfig(provider="cloudflare", model_name="@cf/meta/llama-3.1-8b-instruct-fp8-fast", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
@@ -134,7 +140,9 @@ class PipelineOrchestrator:
                 temperature=0.1,
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
+                    AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.1),
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.1),
+                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.1),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.1),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.1),
                 ],
@@ -146,8 +154,10 @@ class PipelineOrchestrator:
                 temperature=0.2,
                 fallbacks=[
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.2),
                     AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
+                    AIFallbackConfig(provider="siliconflow", model_name="THUDM/glm-4-9b-chat", temperature=0.2),
                     AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-flash-free", temperature=0.2),
                 ],
             ),
@@ -158,6 +168,9 @@ class PipelineOrchestrator:
                 temperature=0.2,
                 fallbacks=[
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.2),
+                    AIFallbackConfig(provider="cloudflare", model_name="@cf/meta/llama-3.2-3b-instruct", temperature=0.2),
+                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
@@ -661,6 +674,13 @@ class PipelineOrchestrator:
                 continue
 
             api_key = resolve_api_key(p_name, k_override, self._db_api_keys)
+            if not self.use_mock and not api_key and idx < len(candidates) - 1:
+                logger.debug(
+                    f"[Pipeline Fallback] Stage '{stage_id}': Skipping candidate #{idx} "
+                    f"('{p_name}:{m_name}') because no API key is configured."
+                )
+                continue
+
             try:
                 provider_inst = self._registry.get_provider(
                     provider=p_name,
@@ -771,7 +791,17 @@ class PipelineOrchestrator:
                         err_str = str(exc).lower()
 
                 if is_rate_limit and not is_minute_only:
-                    self.mark_model_cooldown(p_name, m_name, duration_sec=60.0)
+                    cd_duration = 60.0
+                    m_retry = re.search(
+                        r"(?:retry-after|retry in|try again in|reset in)\s+([0-9.]+(?:\s*(?:ms|s|sec|secs|m|min|mins|h|hr|hrs))+)",
+                        err_str,
+                        re.IGNORECASE,
+                    )
+                    if m_retry:
+                        parsed_cd = parse_duration_seconds(m_retry.group(1))
+                        if parsed_cd and parsed_cd > 0:
+                            cd_duration = max(5.0, min(86400.0, parsed_cd))
+                    self.mark_model_cooldown(p_name, m_name, duration_sec=cd_duration)
                 elif is_gemma_tpm_saturation:
                     self.mark_model_cooldown(p_name, m_name, duration_sec=30.0)
 

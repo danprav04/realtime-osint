@@ -429,6 +429,8 @@ export interface KeyUsageTelemetry {
   reset_tokens_sec?: number | null;
   cooldown_remaining_sec: number;
   cooldown_reason?: string;
+  throttled_models?: string[];
+  model_cooldowns?: Record<string, { cooldown_remaining_sec: number; reason?: string }>;
 }
 
 export interface ModelUsageTelemetry {

@@ -89,6 +89,24 @@ class Settings(BaseSettings):
     AIHUBMIX_BASE_URL: str = "https://aihubmix.com/v1"
     AIHUBMIX_MAX_RPD: int = 100
     AIHUBMIX_MAX_TPD: int = 1_000_000
+
+    # Mistral AI (La Plateforme Experiment / Free Plan)
+    MISTRAL_API_KEY: Optional[str] = None
+    MISTRAL_BASE_URL: str = "https://api.mistral.ai/v1"
+
+    # Cloudflare Workers AI (10,000 Neurons/day free)
+    CLOUDFLARE_ACCOUNT_ID: Optional[str] = None
+    CLOUDFLARE_API_TOKEN: Optional[str] = None
+    CLOUDFLARE_BASE_URL: Optional[str] = None
+
+    # Z.ai / Zhipu AI ($0 Flash models, unlimited RPD/TPD)
+    ZAI_API_KEY: Optional[str] = None
+    ZAI_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4"
+
+    # SiliconFlow (Permanent $0 Open Weights Catalog)
+    SILICONFLOW_API_KEY: Optional[str] = None
+    SILICONFLOW_BASE_URL: str = "https://api.siliconflow.com/v1"
+
     HF_EMBEDDING_URL: Optional[str] = None  # Self-hosted unlimited HF Space TEI endpoint
     HF_API_KEY: Optional[str] = None
 

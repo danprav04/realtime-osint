@@ -11,7 +11,7 @@ class AIFallbackConfig(BaseModel):
     """
     Configuration model for a fallback AI model and provider in a stage's fallback chain.
     """
-    provider: Literal["gemini", "groq", "aihubmix"] = "gemini"
+    provider: Literal["gemini", "groq", "aihubmix", "mistral", "cloudflare", "zai", "siliconflow"] = "gemini"
     model_name: str = "gemini-3.1-flash-lite"
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     api_key_override: Optional[str] = None
@@ -26,6 +26,14 @@ class AIFallbackConfig(BaseModel):
             return "groq"
         if s in ("aihubmix", "aihub", "inferera"):
             return "aihubmix"
+        if s in ("mistral", "mistralai"):
+            return "mistral"
+        if s in ("cloudflare", "cf", "workers_ai", "workers-ai"):
+            return "cloudflare"
+        if s in ("zai", "zhipu", "z.ai", "bigmodel"):
+            return "zai"
+        if s in ("siliconflow", "silicon", "siliconcloud"):
+            return "siliconflow"
         return s
 
     @field_validator("model_name", mode="before")
@@ -37,11 +45,11 @@ class AIFallbackConfig(BaseModel):
 class AIStageConfig(BaseModel):
     """
     Configuration model for an individual pipeline stage.
-    Supports per-stage model provider (Gemini / Groq / AIHubMix), model selection,
-    temperature, API key override, and an ordered chain of fallbacks.
+    Supports per-stage model provider (Gemini / Groq / AIHubMix / Mistral / Cloudflare / Z.ai / SiliconFlow),
+    model selection, temperature, API key override, and an ordered chain of fallbacks.
     """
     stage_id: Literal["gatekeeper", "extraction", "scoring", "summarization", "visuals"]
-    provider: Literal["gemini", "groq", "aihubmix"] = "gemini"
+    provider: Literal["gemini", "groq", "aihubmix", "mistral", "cloudflare", "zai", "siliconflow"] = "gemini"
     model_name: str = "gemini-3.5-flash-lite"
     api_key_override: Optional[str] = None
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
@@ -72,6 +80,14 @@ class AIStageConfig(BaseModel):
             return "groq"
         if s in ("aihubmix", "aihub", "inferera"):
             return "aihubmix"
+        if s in ("mistral", "mistralai"):
+            return "mistral"
+        if s in ("cloudflare", "cf", "workers_ai", "workers-ai"):
+            return "cloudflare"
+        if s in ("zai", "zhipu", "z.ai", "bigmodel"):
+            return "zai"
+        if s in ("siliconflow", "silicon", "siliconcloud"):
+            return "siliconflow"
         return s
 
     @field_validator("model_name", mode="before")

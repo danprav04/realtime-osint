@@ -445,6 +445,16 @@ export function ProviderUsageModal({
                           </div>
                         )}
 
+                        {/* Per-model throttled notice when key is active for other models */}
+                        {!isCooldown && k.throttled_models && k.throttled_models.length > 0 && (
+                          <div className="p-2 rounded-lg bg-amber-500/5 border border-amber-500/15 text-[11px] font-mono text-amber-300/90 flex items-center space-x-1.5">
+                            <Clock className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                            <span>
+                              Throttled on {k.throttled_models.join(', ')} • Active for other models
+                            </span>
+                          </div>
+                        )}
+
                         {/* Metric Grid */}
                         <div className="grid grid-cols-3 gap-2 pt-2 border-t border-white/5 text-center">
                           <div className="p-2 rounded-lg bg-surface-card/60 hairline-border">

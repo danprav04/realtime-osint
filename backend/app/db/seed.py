@@ -371,79 +371,7 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
         "polling_interval_sec": 300,
         "is_enabled": True,
     },
-    # --- Community OSINT & Open-Source Forum Signals ---
-    {
-        "name": "Reddit Geopolitics, OSINT & CombatFootage",
-        "source_type": "reddit",
-        "config_json": {
-            "subreddits": ["worldnews", "geopolitics", "OSINT", "CombatFootage"],
-            "min_upvotes": 50,
-            "feed_mode": "hot",
-        },
-        "polling_interval_sec": 600,
-        "is_enabled": True,
-    },
-    # --- Reddit Live Field Chatter (/comments.json & /new.json: Tier 1 Citizen Sensors) ---
-    {
-        "name": "Reddit r/lebanon Live Field Comments",
-        "source_type": "reddit",
-        "config_json": {
-            "target": "lebanon",
-            "subreddits": ["lebanon"],
-            "feed_mode": "comments",
-            "limit": 35,
-        },
-        "polling_interval_sec": 45,
-        "is_enabled": True,
-    },
-    {
-        "name": "Reddit r/Israel Live Field Comments",
-        "source_type": "reddit",
-        "config_json": {
-            "target": "Israel",
-            "subreddits": ["Israel"],
-            "feed_mode": "comments",
-            "limit": 35,
-        },
-        "polling_interval_sec": 45,
-        "is_enabled": True,
-    },
-    {
-        "name": "Reddit r/NewIran Live Field Comments",
-        "source_type": "reddit",
-        "config_json": {
-            "target": "NewIran",
-            "subreddits": ["NewIran"],
-            "feed_mode": "comments",
-            "limit": 35,
-        },
-        "polling_interval_sec": 60,
-        "is_enabled": True,
-    },
-    {
-        "name": "Reddit Regional Ground Reports (/new)",
-        "source_type": "reddit",
-        "config_json": {
-            "target": "lebanon+Israel+NewIran+syriancivilwar+iraq+Yemen+arabs",
-            "subreddits": ["lebanon", "Israel", "NewIran", "syriancivilwar", "iraq", "Yemen", "arabs"],
-            "feed_mode": "new",
-            "limit": 25,
-        },
-        "polling_interval_sec": 90,
-        "is_enabled": True,
-    },
-    {
-        "name": "Reddit OSINT & Defense Megathreads (/new)",
-        "source_type": "reddit",
-        "config_json": {
-            "target": "CredibleDefense+LessCredibleDefence+OSINT+CombatFootage",
-            "subreddits": ["CredibleDefense", "LessCredibleDefence", "OSINT", "CombatFootage"],
-            "feed_mode": "new",
-            "limit": 25,
-        },
-        "polling_interval_sec": 120,
-        "is_enabled": True,
-    },
+
     # --- Additional Catalog Telegram Web Preview Channels (No Account Required) ---
     {
         "name": "Abu Ali Express (Arabic/Hebrew Tactical OSINT)",
@@ -704,6 +632,16 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
             session.add(new_src)
             seeded_counts["sources"] += 1
             logger.info(f"Seeded source '{new_src.name}' ({new_src.source_type})")
+
+    # 2b. Automatically purge deprecated Reddit sources from database
+    reddit_query = select(Source).where(Source.source_type == "reddit")
+    reddit_res = await session.execute(reddit_query)
+    reddit_sources = reddit_res.scalars().all()
+    if reddit_sources:
+        for r_src in reddit_sources:
+            await session.delete(r_src)
+        await session.flush()
+        logger.info(f"Purged {len(reddit_sources)} deprecated Reddit sources from database.")
 
     # 3. Seed default system settings
     for key, val in DEFAULT_SETTINGS_DATA.items():

@@ -14,6 +14,10 @@ from backend.app.pipeline.providers.base import BaseAIProvider
 from backend.app.pipeline.providers.gemini import GeminiProvider
 from backend.app.pipeline.providers.groq import GroqProvider
 from backend.app.pipeline.providers.aihubmix import AIHubMixProvider
+from backend.app.pipeline.providers.mistral import MistralProvider
+from backend.app.pipeline.providers.cloudflare import CloudflareProvider
+from backend.app.pipeline.providers.zai import ZaiProvider
+from backend.app.pipeline.providers.siliconflow import SiliconFlowProvider
 from backend.app.pipeline.providers.mock import MockAIProvider
 from backend.app.pipeline.providers.key_pool import GroqKeyPool, parse_key_list
 
@@ -64,7 +68,7 @@ def resolve_api_keys(
 
     # Tier 2: Dynamic DB SystemSettings
     db_k = db_keys or {}
-    for k_name in (f"{p_norm}_api_keys", f"{p_norm}_api_key"):
+    for k_name in (f"{p_norm}_api_keys", f"{p_norm}_api_key", f"{p_norm}_api_token"):
         val = db_k.get(k_name)
         if val and not str(val).startswith("***"):
             parsed = parse_key_list(val)
@@ -92,6 +96,27 @@ def resolve_api_keys(
 
     elif p_norm in ("aihubmix", "aihub", "inferera"):
         env_val = getattr(st, "AIHUBMIX_API_KEY", None) or os.environ.get("AIHUBMIX_API_KEY")
+        return parse_key_list(env_val)
+
+    elif p_norm in ("mistral", "mistralai"):
+        env_val = getattr(st, "MISTRAL_API_KEY", None) or os.environ.get("MISTRAL_API_KEY")
+        return parse_key_list(env_val)
+
+    elif p_norm in ("cloudflare", "cf", "workers_ai", "workers-ai"):
+        env_val = (
+            getattr(st, "CLOUDFLARE_API_TOKEN", None)
+            or os.environ.get("CLOUDFLARE_API_TOKEN")
+            or getattr(st, "CLOUDFLARE_API_KEY", None)
+            or os.environ.get("CLOUDFLARE_API_KEY")
+        )
+        return parse_key_list(env_val)
+
+    elif p_norm in ("zai", "zhipu", "z.ai", "bigmodel"):
+        env_val = getattr(st, "ZAI_API_KEY", None) or os.environ.get("ZAI_API_KEY")
+        return parse_key_list(env_val)
+
+    elif p_norm in ("siliconflow", "silicon", "siliconcloud"):
+        env_val = getattr(st, "SILICONFLOW_API_KEY", None) or os.environ.get("SILICONFLOW_API_KEY")
         return parse_key_list(env_val)
 
     return []
@@ -151,6 +176,14 @@ def get_stage_provider(
         )
     elif provider_name in ("aihubmix", "aihub", "inferera"):
         return AIHubMixProvider(api_key=primary_key, default_model=stage_config.model_name)
+    elif provider_name in ("mistral", "mistralai"):
+        return MistralProvider(api_key=primary_key, default_model=stage_config.model_name)
+    elif provider_name in ("cloudflare", "cf", "workers_ai", "workers-ai"):
+        return CloudflareProvider(api_key=primary_key, default_model=stage_config.model_name)
+    elif provider_name in ("zai", "zhipu", "z.ai", "bigmodel"):
+        return ZaiProvider(api_key=primary_key, default_model=stage_config.model_name)
+    elif provider_name in ("siliconflow", "silicon", "siliconcloud"):
+        return SiliconFlowProvider(api_key=primary_key, default_model=stage_config.model_name)
     else:
         raise ValueError(f"Unsupported AI provider: '{stage_config.provider}'")
 
@@ -206,6 +239,26 @@ class ProviderRegistry:
                 )
             elif p_norm in ("aihubmix", "aihub", "inferera"):
                 self._providers[key] = AIHubMixProvider(
+                    api_key=api_key,
+                    default_model=model_name,
+                )
+            elif p_norm in ("mistral", "mistralai"):
+                self._providers[key] = MistralProvider(
+                    api_key=api_key,
+                    default_model=model_name,
+                )
+            elif p_norm in ("cloudflare", "cf", "workers_ai", "workers-ai"):
+                self._providers[key] = CloudflareProvider(
+                    api_key=api_key,
+                    default_model=model_name,
+                )
+            elif p_norm in ("zai", "zhipu", "z.ai", "bigmodel"):
+                self._providers[key] = ZaiProvider(
+                    api_key=api_key,
+                    default_model=model_name,
+                )
+            elif p_norm in ("siliconflow", "silicon", "siliconcloud"):
+                self._providers[key] = SiliconFlowProvider(
                     api_key=api_key,
                     default_model=model_name,
                 )

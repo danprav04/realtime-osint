@@ -106,6 +106,11 @@ class GroqKey:
         self.auth_errors: int = 0
         self.last_used_at: Optional[str] = None
 
+        # Per-model cooldown tracking
+        self._model_cooldowns: Dict[str, float] = {}  # model_name.lower() -> cooldown_until loop timestamp
+        self._model_cooldown_reasons: Dict[str, str] = {}
+        self._model_rate_limits: Dict[str, int] = {}
+
         # Live rate limit headers returned by Groq
         self.remaining_requests: Optional[int] = None
         self.remaining_tokens: Optional[int] = None
@@ -115,28 +120,57 @@ class GroqKey:
         self.reset_tokens_sec: Optional[float] = None
         self.retry_after_sec: Optional[float] = None
 
-    def is_available(self, now: Optional[float] = None) -> bool:
-        """Check if key is available to accept requests."""
+    def is_available(self, now: Optional[float] = None, model: Optional[str] = None) -> bool:
+        """
+        Check if key is available to accept requests.
+        If model is specified, checks whether this specific model is currently
+        in a per-model rate limit cooldown on this key.
+        """
         if self.status == KeyStatus.UNAUTHORIZED:
             return False
 
         current_time = now if now is not None else _get_loop_time()
+
+        # Check key-level global cooldown (e.g. account/org daily quota or 401/403)
         if self.status in (KeyStatus.MINUTE_COOLDOWN, KeyStatus.DAILY_EXHAUSTED):
             if current_time >= self.cooldown_until:
                 # Cooldown expired, restore to active
                 logger.info(
-                    f"[GroqKey:{self.masked_key}] Cooldown expired. Restoring to ACTIVE status."
+                    f"[GroqKey:{self.masked_key}] Global key cooldown expired. Restoring to ACTIVE status."
                 )
                 self.status = KeyStatus.ACTIVE
                 self.cooldown_until = 0.0
                 self.cooldown_reason = ""
-                return True
-            return False
+            else:
+                return False
+
+        # If a specific model was requested, check per-model cooldown
+        if model:
+            norm_model = model.strip().lower()
+            model_expiry = self._model_cooldowns.get(norm_model, 0.0)
+            if model_expiry > 0:
+                if current_time >= model_expiry:
+                    # Model cooldown expired on this key
+                    self._model_cooldowns.pop(norm_model, None)
+                    self._model_cooldown_reasons.pop(norm_model, None)
+                    return True
+                return False
 
         return self.status == KeyStatus.ACTIVE
 
-    def get_seconds_until_ready(self, now: Optional[float] = None) -> float:
-        """Estimate how many seconds until this key can issue its next request."""
+    def get_model_cooldown_remaining(self, model: str, now: Optional[float] = None) -> float:
+        """Return remaining seconds of cooldown for a specific model on this key."""
+        if not model:
+            return 0.0
+        current_time = now if now is not None else _get_loop_time()
+        norm_model = model.strip().lower()
+        expiry = self._model_cooldowns.get(norm_model, 0.0)
+        if expiry > current_time:
+            return max(0.0, expiry - current_time)
+        return 0.0
+
+    def get_seconds_until_ready(self, now: Optional[float] = None, model: Optional[str] = None) -> float:
+        """Estimate how many seconds until this key can issue its next request (optionally for a model)."""
         current_time = now if now is not None else _get_loop_time()
         if self.status == KeyStatus.UNAUTHORIZED:
             return float("inf")
@@ -144,6 +178,11 @@ class GroqKey:
         if self.status in (KeyStatus.MINUTE_COOLDOWN, KeyStatus.DAILY_EXHAUSTED):
             if current_time < self.cooldown_until:
                 return max(0.0, self.cooldown_until - current_time)
+
+        if model:
+            model_wait = self.get_model_cooldown_remaining(model, now=current_time)
+            if model_wait > 0:
+                return model_wait
 
         # Sliding window check (only if max_rpm explicitly set > 0)
         wait_time = 0.0
@@ -159,7 +198,7 @@ class GroqKey:
 
         return max(0.0, wait_time)
 
-    async def acquire_pacing_slot(self) -> None:
+    async def acquire_pacing_slot(self, model: Optional[str] = None) -> None:
         """
         Enforce pacing and cooldown under the key's private lock.
         Requests on this key do not block requests on other keys in the pool.
@@ -168,16 +207,28 @@ class GroqKey:
             loop = asyncio.get_event_loop()
             now = loop.time()
 
-            # 1. Honor active cooldown if any (set strictly by what Groq returned)
+            # 1. Honor active key-level cooldown if any (set strictly by what Groq returned)
             if now < self.cooldown_until:
                 wait_rl = self.cooldown_until - now
                 logger.info(
-                    f"[GroqKey:{self.masked_key}] Waiting {wait_rl:.1f}s for cooldown reset..."
+                    f"[GroqKey:{self.masked_key}] Waiting {wait_rl:.1f}s for key cooldown reset..."
                 )
                 await asyncio.sleep(wait_rl)
                 now = loop.time()
 
-            # 2. Enforce 60-second sliding-window RPM cap (if configured)
+            # 2. Honor model-level cooldown if specified and pending
+            if model:
+                norm_model = model.strip().lower()
+                m_exp = self._model_cooldowns.get(norm_model, 0.0)
+                if now < m_exp:
+                    wait_m = m_exp - now
+                    logger.info(
+                        f"[GroqKey:{self.masked_key}] Waiting {wait_m:.1f}s for model '{model}' cooldown reset..."
+                    )
+                    await asyncio.sleep(wait_m)
+                    now = loop.time()
+
+            # 3. Enforce 60-second sliding-window RPM cap (if configured)
             if self.max_rpm > 0:
                 while self._request_timestamps and (now - self._request_timestamps[0]) >= 60.0:
                     self._request_timestamps.popleft()
@@ -194,7 +245,7 @@ class GroqKey:
                     while self._request_timestamps and (now - self._request_timestamps[0]) >= 60.0:
                         self._request_timestamps.popleft()
 
-            # 3. Enforce minimum spacing between consecutive requests on this key (if configured)
+            # 4. Enforce minimum spacing between consecutive requests on this key (if configured)
             if self.min_interval_sec > 0 and self._last_request_time > 0:
                 elapsed = now - self._last_request_time
                 if elapsed < self.min_interval_sec:
@@ -208,10 +259,11 @@ class GroqKey:
             self.total_requests += 1
             self.last_used_at = datetime.now(timezone.utc).isoformat()
 
-    def update_from_response(self, response: httpx.Response) -> None:
+    def update_from_response(self, response: httpx.Response, model: Optional[str] = None) -> None:
         """
         Dynamically update key status and rate-limit state using the exact HTTP headers
         returned by Groq (retry-after and x-ratelimit-*), eliminating arbitrary numbers.
+        If model is specified, rate limit cooldowns are isolated strictly to that model.
         """
         headers = response.headers
 
@@ -293,40 +345,64 @@ class GroqKey:
                 is_daily=is_daily,
                 retry_delay_sec=lock_delay,
                 reason=reason,
+                model=model,
             )
             return
 
         # 3. HTTP 200 (Success):
         if response.status_code == 200:
-            self.mark_success()
+            self.mark_success(model=model)
             # If Groq indicated that remaining tokens reached 0 on this request:
             if rem_tokens == 0 and reset_tokens_sec is not None and reset_tokens_sec > 0:
-                self.status = KeyStatus.MINUTE_COOLDOWN
-                self.cooldown_until = now + reset_tokens_sec
-                self.cooldown_reason = f"tokens depleted (reset in {reset_tokens_sec:g}s)"
-                logger.info(
-                    f"[GroqKey:{self.masked_key}] 200 OK with tokens=0. "
-                    f"Cooldown until reset in {reset_tokens_sec:g}s."
-                )
+                if model:
+                    norm_m = model.strip().lower()
+                    self._model_cooldowns[norm_m] = now + reset_tokens_sec
+                    self._model_cooldown_reasons[norm_m] = f"tokens depleted (reset in {reset_tokens_sec:g}s)"
+                    logger.info(
+                        f"[GroqKey:{self.masked_key}] 200 OK with tokens=0 for model '{model}'. "
+                        f"Model cooldown until reset in {reset_tokens_sec:g}s. Key remains ACTIVE."
+                    )
+                else:
+                    self.status = KeyStatus.MINUTE_COOLDOWN
+                    self.cooldown_until = now + reset_tokens_sec
+                    self.cooldown_reason = f"tokens depleted (reset in {reset_tokens_sec:g}s)"
+                    logger.info(
+                        f"[GroqKey:{self.masked_key}] 200 OK with tokens=0. "
+                        f"Cooldown until reset in {reset_tokens_sec:g}s."
+                    )
             # If Groq indicated that remaining daily requests reached 0 on this request:
             elif rem_requests == 0 and reset_requests_sec is not None and reset_requests_sec > 0:
-                self.status = KeyStatus.DAILY_EXHAUSTED if reset_requests_sec > 3600.0 else KeyStatus.MINUTE_COOLDOWN
-                self.cooldown_until = now + reset_requests_sec
-                self.cooldown_reason = f"requests depleted (reset in {reset_requests_sec:g}s)"
-                logger.info(
-                    f"[GroqKey:{self.masked_key}] 200 OK with requests=0. "
-                    f"Cooldown until reset in {reset_requests_sec:g}s."
-                )
+                if model:
+                    norm_m = model.strip().lower()
+                    self._model_cooldowns[norm_m] = now + reset_requests_sec
+                    self._model_cooldown_reasons[norm_m] = f"requests depleted (reset in {reset_requests_sec:g}s)"
+                    logger.info(
+                        f"[GroqKey:{self.masked_key}] 200 OK with requests=0 for model '{model}'. "
+                        f"Model cooldown until reset in {reset_requests_sec:g}s. Key remains ACTIVE."
+                    )
+                else:
+                    self.status = KeyStatus.DAILY_EXHAUSTED if reset_requests_sec > 3600.0 else KeyStatus.MINUTE_COOLDOWN
+                    self.cooldown_until = now + reset_requests_sec
+                    self.cooldown_reason = f"requests depleted (reset in {reset_requests_sec:g}s)"
+                    logger.info(
+                        f"[GroqKey:{self.masked_key}] 200 OK with requests=0. "
+                        f"Cooldown until reset in {reset_requests_sec:g}s."
+                    )
             else:
                 # Key is active and has available capacity
-                self.status = KeyStatus.ACTIVE
-                self.cooldown_until = 0.0
-                self.cooldown_reason = ""
+                if self.status != KeyStatus.UNAUTHORIZED:
+                    self.status = KeyStatus.ACTIVE
+                    self.cooldown_until = 0.0
+                    self.cooldown_reason = ""
 
-    def mark_success(self) -> None:
+    def mark_success(self, model: Optional[str] = None) -> None:
         """Record successful call on this key."""
         self.success_requests += 1
-        if self.status != KeyStatus.ACTIVE:
+        if model:
+            norm_m = model.strip().lower()
+            self._model_cooldowns.pop(norm_m, None)
+            self._model_cooldown_reasons.pop(norm_m, None)
+        if self.status != KeyStatus.ACTIVE and self.status != KeyStatus.UNAUTHORIZED:
             self.status = KeyStatus.ACTIVE
             self.cooldown_until = 0.0
             self.cooldown_reason = ""
@@ -336,16 +412,37 @@ class GroqKey:
         is_daily: bool,
         retry_delay_sec: Optional[float] = None,
         reason: str = "",
+        model: Optional[str] = None,
     ) -> None:
         """
-        Mark key in cooldown following HTTP 429 using the exact duration returned by Groq.
-        Locks key strictly using the returned delay, avoiding arbitrary multi-hour numbers.
+        Mark rate limit following HTTP 429 using the exact duration returned by Groq.
+        If model is provided, locks strictly that model on this key while keeping the key
+        active and available for all other models.
+        If model is None, sets key-level cooldown for backward compatibility.
         """
         now = _get_loop_time()
         self.cooldown_reason = reason or "HTTP 429 Rate Limit"
 
         # Lock for the exact delay returned by the provider (never arbitrary numbers)
         delay = float(retry_delay_sec) if (retry_delay_sec is not None and retry_delay_sec > 0) else (60.0 if is_daily else 1.0)
+
+        if model:
+            norm_model = model.strip().lower()
+            self._model_cooldowns[norm_model] = now + delay
+            self._model_cooldown_reasons[norm_model] = reason or f"Rate limit on {model}"
+            self._model_rate_limits[norm_model] = self._model_rate_limits.get(norm_model, 0) + 1
+            if is_daily:
+                self.daily_quota_exhaustions += 1
+            else:
+                self.minute_rate_limits += 1
+            logger.warning(
+                f"[GroqKey:{self.masked_key}] Model '{model}' rate limited ({reason}). "
+                f"Cooldown {delay:.2f}s applied strictly to model '{model}'. Key remains ACTIVE for other models."
+            )
+            # Ensure key itself is NOT locked
+            if self.status != KeyStatus.UNAUTHORIZED:
+                self.status = KeyStatus.ACTIVE
+            return
 
         if is_daily:
             self.status = KeyStatus.DAILY_EXHAUSTED
@@ -377,12 +474,29 @@ class GroqKey:
         now = _get_loop_time()
         cooldown_remaining = max(0.0, self.cooldown_until - now) if self.cooldown_until > 0 else 0.0
 
+        # Calculate active per-model cooldowns
+        active_model_cds: Dict[str, Dict[str, Any]] = {}
+        throttled_models_list: List[str] = []
+        for m_name, exp in list(self._model_cooldowns.items()):
+            if exp > now:
+                rem_m = round(max(0.0, exp - now), 1)
+                active_model_cds[m_name] = {
+                    "cooldown_remaining_sec": rem_m,
+                    "reason": self._model_cooldown_reasons.get(m_name, "Rate limit"),
+                }
+                throttled_models_list.append(m_name)
+            else:
+                self._model_cooldowns.pop(m_name, None)
+                self._model_cooldown_reasons.pop(m_name, None)
+
         return {
             "masked_key": self.masked_key,
             "status": self.status.value,
             "is_available": self.is_available(now),
             "cooldown_remaining_sec": round(cooldown_remaining, 1),
             "cooldown_reason": self.cooldown_reason,
+            "model_cooldowns": active_model_cds,
+            "throttled_models": throttled_models_list,
             "total_requests": self.total_requests,
             "success_requests": self.success_requests,
             "minute_rate_limits": self.minute_rate_limits,
@@ -451,10 +565,11 @@ class GroqKeyPool:
     def get_keys(self) -> List[GroqKey]:
         return list(self._keys)
 
-    async def acquire_next_key(self) -> Optional[GroqKey]:
+    async def acquire_next_key(self, model: Optional[str] = None) -> Optional[GroqKey]:
         """
         Select next available key using round-robin distribution with cooldown avoidance.
-        Returns None if all keys are unavailable.
+        If model is specified, filters out keys where that specific model is in cooldown.
+        Returns None if all keys are unavailable for that model.
         """
         async with self._pool_lock:
             if not self._keys:
@@ -464,27 +579,27 @@ class GroqKeyPool:
             now = loop.time()
             n = len(self._keys)
 
-            # 1. Round-robin scan for an immediately available key
+            # 1. Round-robin scan for an immediately available key (respecting model if given)
             for offset in range(n):
                 idx = (self._round_robin_idx + offset) % n
                 candidate = self._keys[idx]
-                if candidate.is_available(now):
+                if candidate.is_available(now, model=model):
                     self._round_robin_idx = (idx + 1) % n
                     return candidate
 
-            # 2. If no key is immediately active, inspect if any minute-cooldown key is closest to ready
+            # 2. If no key is immediately active for this model, inspect if any key is closest to ready (within 3s)
             best_key: Optional[GroqKey] = None
             best_wait = float("inf")
             for candidate in self._keys:
                 if candidate.status == KeyStatus.UNAUTHORIZED:
                     continue
-                wait = candidate.get_seconds_until_ready(now)
+                wait = candidate.get_seconds_until_ready(now, model=model)
                 if wait < best_wait:
                     best_wait = wait
                     best_key = candidate
 
-            # If the closest key will be ready within 60 seconds (e.g. 1-minute window reset), return it
-            if best_key and best_wait <= 60.0:
+            # If the closest key will be ready within 3.0 seconds (short jitter / window rollover), return it
+            if best_key and best_wait <= 3.0:
                 return best_key
 
             return None
@@ -495,13 +610,18 @@ class GroqKeyPool:
 
         key_stats = [k.to_dict() for k in self._keys]
         active_count = sum(1 for k in self._keys if k.is_available(now))
+        # Global key cooldown is only when status is MINUTE_COOLDOWN/DAILY_EXHAUSTED and cooldown_until > now
+        keys_in_cd = sum(
+            1 for k in self._keys
+            if k.status in (KeyStatus.MINUTE_COOLDOWN, KeyStatus.DAILY_EXHAUSTED) and k.cooldown_until > now
+        )
         total_requests = sum(k.total_requests for k in self._keys)
         total_success = sum(k.success_requests for k in self._keys)
 
         return {
             "total_keys": len(self._keys),
             "active_keys": active_count,
-            "keys_in_cooldown": len(self._keys) - active_count,
+            "keys_in_cooldown": keys_in_cd,
             "total_requests": total_requests,
             "total_success": total_success,
             "keys": key_stats,
