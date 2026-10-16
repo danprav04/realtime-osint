@@ -292,6 +292,8 @@ def calibrate_stage2_result(
     corrob_count = int(ctx.get("corroboration_count", 0))
     corrob_sources = list(ctx.get("corroborating_sources", []))
     is_same_source_echo = bool(ctx.get("is_same_source_echo", False))
+    is_contradiction = bool(ctx.get("is_contradiction", False))
+    contra_sources = list(ctx.get("contradicting_sources", []))
     src_tier = ctx.get("source_reliability_tier", "tier_2_regional_osint")
     related_reports = ctx.get("related_reports") or []
 
@@ -386,9 +388,6 @@ def calibrate_stage2_result(
             conf_score = min(conf_score, 4)
 
         # --- Calibration Guardrail 4: Multi-Source Embedding Corroboration & Contradiction Handling ---
-        is_contradiction = bool(ctx.get("is_contradiction", False))
-        contra_sources = list(ctx.get("contradicting_sources", []))
-
         if is_contradiction:
             old_score = score
             if score >= threshold and src_tier != "tier_1_wire_official":

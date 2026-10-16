@@ -662,16 +662,12 @@ async def emit_test_server_log(
 
     test_level = str(payload.get("level", "INFO")).upper()
     test_msg = str(payload.get("message", "Operator test log emitted from settings panel."))
-    target_logger = logging.getLogger("osint.test")
-
-    lvl_num = getattr(logging, test_level, logging.INFO)
-    target_logger.log(lvl_num, test_msg)
 
     buf = get_server_log_buffer()
-    recent = buf.get_logs(limit=1, reverse=True)
+    entry = buf.append_manual(test_level, "osint.test", test_msg)
     return {
         "status": "emitted",
         "message": "Test log entry created successfully",
-        "entry": recent[0] if recent else None,
+        "entry": entry,
     }
 

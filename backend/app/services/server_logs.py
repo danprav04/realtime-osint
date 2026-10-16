@@ -189,11 +189,12 @@ class ServerLogBuffer:
                 or search_filter in e["logger"].lower()
             ]
 
-        # Sorting: if reverse=True, newest first
+        # Sorting: if reverse=True, newest first; otherwise most recent entries in chronological order
         if reverse:
             entries.reverse()
+            return entries[:limit]
 
-        return entries[:limit]
+        return entries[-limit:]
 
     def clear(self) -> None:
         """Clear all entries in the ring buffer."""
