@@ -13,6 +13,7 @@ from backend.app.plugins.bluesky_plugin import BlueskySourcePlugin
 from backend.app.plugins.geophysical_plugin import GeophysicalSourcePlugin
 from backend.app.plugins.mastodon_plugin import MastodonSourcePlugin
 from backend.app.plugins.newsapi_plugin import NewsAPISourcePlugin
+from backend.app.plugins.oref_plugin import OrefSourcePlugin
 from backend.app.plugins.reddit_plugin import RedditSourcePlugin
 from backend.app.plugins.rss_plugin import RSSSourcePlugin
 from backend.app.plugins.telegram_plugin import TelegramSourcePlugin
@@ -57,6 +58,8 @@ def create_plugin_instance(
         return GeophysicalSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled, sensor_type="seismic")
     elif st == "ukmto":
         return GeophysicalSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled, sensor_type="ukmto")
+    elif st in ("oref", "pikud_haoref", "homefront", "hfc"):
+        return OrefSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled)
     else:
         logger.warning(f"Unknown source type '{source_type}', falling back to RSS plugin.")
         return RSSSourcePlugin(source_id, theme_id, name, cfg, poll_interval, is_enabled)

@@ -218,7 +218,8 @@ export default function DashboardPage() {
       if (selectedSource !== 'all') {
         const type = (ev.source_type || '').toLowerCase();
         if (selectedSource === 'ais' && !type.includes('ais')) return false;
-        if (selectedSource !== 'ais' && type !== selectedSource) return false;
+        if (selectedSource === 'oref' && !['oref', 'pikud_haoref', 'homefront', 'hfc'].includes(type)) return false;
+        if (selectedSource !== 'ais' && selectedSource !== 'oref' && type !== selectedSource) return false;
       }
 
       // Min score filter
@@ -248,8 +249,9 @@ export default function DashboardPage() {
 
   const sourceFilters = [
     { id: 'all', label: 'All Sources' },
-    { id: 'rss', label: 'RSS' },
+    { id: 'oref', label: 'OREF Alerts' },
     { id: 'telegram', label: 'Telegram' },
+    { id: 'rss', label: 'RSS' },
     { id: 'newsapi', label: 'News APIs' },
     { id: 'reddit', label: 'Reddit' },
     { id: 'ais', label: 'Maritime AIS' },

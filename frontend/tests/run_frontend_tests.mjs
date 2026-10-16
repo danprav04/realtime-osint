@@ -624,6 +624,32 @@ test('PWA Components & Layout - validates usePwaInstall hook, InstallPwaButton, 
   assert.ok(displayLayoutContent.includes('/display.webmanifest'), 'display layout must reference display.webmanifest');
 });
 
+// Test 29: OREF Source Type & Badge Config
+test('OREF Source - validates oref source type and badge configuration', async () => {
+  const sampleOrefEvent = {
+    id: 'oref-test-1',
+    theme_id: 'us-iran-conflict',
+    source_type: 'oref',
+    source_name: 'Israel Home Front Command Alerts (פיקוד העורף)',
+    source_url: 'https://alerts-history.oref.org.il/',
+    external_id: 'oref-hist-706605',
+    title: '🚨 צבע אדום: ירי רקטות וטילים - קריית שמונה',
+    raw_text: 'התרעת פיקוד העורף - ירי רקטות וטילים בקריית שמונה',
+    published_at: new Date().toISOString(),
+    ingested_at: new Date().toISOString(),
+  };
+
+  assert.equal(sampleOrefEvent.source_type, 'oref');
+  assert.ok(sampleOrefEvent.title.includes('צבע אדום'));
+
+  // Verify SourceBadge component contains oref case
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const badgeContent = fs.readFileSync(path.resolve('src/components/timeline/SourceBadge.tsx'), 'utf-8');
+  assert.ok(badgeContent.includes("'oref'"), 'SourceBadge must handle oref source_type');
+  assert.ok(badgeContent.includes('Red Alert / OREF'), 'SourceBadge must label OREF alerts');
+});
+
 console.log('Running frontend automated tests...');
 
 

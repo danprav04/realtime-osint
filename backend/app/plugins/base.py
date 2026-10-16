@@ -47,6 +47,10 @@ class NormalizedEvent(BaseModel):
         "emsc",
         "geophysical",
         "ukmto",
+        "oref",
+        "pikud_haoref",
+        "homefront",
+        "hfc",
     ]
     source_name: str
     source_url: Optional[str] = None
@@ -72,6 +76,8 @@ class NormalizedEvent(BaseModel):
             return "bluesky"
         if s in ("fediverse", "mastodon"):
             return "mastodon"
+        if s in ("oref", "pikud_haoref", "homefront", "hfc"):
+            return "oref"
         return s
 
     @field_validator("theme_id", mode="before")

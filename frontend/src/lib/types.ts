@@ -49,7 +49,7 @@ export interface NormalizedEvent {
   id: string;
   theme_id: string;
   source_id?: number | string | null;
-  source_type: 'rss' | 'telegram' | 'newsapi' | 'reddit' | 'ais' | 'bluesky' | 'mastodon' | 'seismic' | 'ukmto' | string;
+  source_type: 'rss' | 'telegram' | 'newsapi' | 'reddit' | 'ais' | 'bluesky' | 'mastodon' | 'seismic' | 'ukmto' | 'oref' | string;
   source_name: string;
   source_url?: string | null;
   external_id: string;
@@ -124,7 +124,7 @@ export interface Source {
   id: string;
   theme_id: string;
   name: string;
-  source_type: 'rss' | 'telegram' | 'newsapi' | 'reddit' | 'ais' | 'bluesky' | 'mastodon' | 'seismic' | 'ukmto' | string;
+  source_type: 'rss' | 'telegram' | 'newsapi' | 'reddit' | 'ais' | 'bluesky' | 'mastodon' | 'seismic' | 'ukmto' | 'oref' | string;
   target: string;
   config_json: Record<string, any>;
   is_enabled: boolean;

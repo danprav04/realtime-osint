@@ -52,6 +52,10 @@ DEFAULT_THEME_DATA: Dict[str, Any] = {
         "פיצוץ",
         "אזעקה",
         "יירוט",
+        "צבע אדום",
+        "פיקוד העורף",
+        "חדירת כלי טיס",
+        "ירי רקטות",
     ],
     "entities": [
         "United States",
@@ -81,6 +85,20 @@ DEFAULT_THEME_DATA: Dict[str, Any] = {
 }
 
 DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
+    # --- Official Civil Defense & Siren Sensors (Israel Home Front Command / Pikud HaOref) ---
+    {
+        "name": "Israel Home Front Command Alerts (פיקוד העורף)",
+        "source_type": "oref",
+        "config_json": {
+            "target": "https://alerts-history.oref.org.il/Shared/Ajax/GetAlarmsHistory.aspx?lang=he&mode=1",
+            "url": "https://alerts-history.oref.org.il/Shared/Ajax/GetAlarmsHistory.aspx?lang=he&mode=1",
+            "realtime_url": "https://www.oref.org.il/WarningMessages/alert/alerts.json",
+            "lang": "he",
+            "poll_realtime": True,
+        },
+        "polling_interval_sec": 30,
+        "is_enabled": True,
+    },
     # --- Tactical Siren & Threat Feeds (High-Priority Fast Ingestion: Tier 1) ---
     {
         "name": "Rocket Alert (Tactical Sirens)",

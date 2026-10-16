@@ -566,7 +566,8 @@ export default function PublicDisplayPage() {
       if (selectedSource !== 'all') {
         const type = (ev.source_type || '').toLowerCase();
         if (selectedSource === 'ais' && !type.includes('ais')) return false;
-        if (selectedSource !== 'ais' && type !== selectedSource) return false;
+        if (selectedSource === 'oref' && !['oref', 'pikud_haoref', 'homefront', 'hfc'].includes(type)) return false;
+        if (selectedSource !== 'ais' && selectedSource !== 'oref' && type !== selectedSource) return false;
       }
       const score = ev.importance_score ?? 0;
       if (minScore > 0 && score < minScore) return false;
@@ -590,8 +591,9 @@ export default function PublicDisplayPage() {
 
   const sourceFilters = [
     { id: 'all', label: 'All Sources' },
-    { id: 'rss', label: 'RSS' },
+    { id: 'oref', label: 'OREF Alerts' },
     { id: 'telegram', label: 'Telegram' },
+    { id: 'rss', label: 'RSS' },
     { id: 'newsapi', label: 'News APIs' },
     { id: 'reddit', label: 'Reddit' },
     { id: 'ais', label: 'Maritime AIS' },

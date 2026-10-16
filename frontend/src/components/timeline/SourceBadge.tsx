@@ -93,6 +93,17 @@ export function SourceBadge({ sourceType, sourceName, showName = true }: SourceB
           bgColor: 'bg-cyan-400/10',
           borderColor: 'border-cyan-400/20',
         };
+      case 'oref':
+      case 'pikud_haoref':
+      case 'homefront':
+      case 'hfc':
+        return {
+          icon: ShieldAlert,
+          label: 'Red Alert / OREF',
+          textColor: 'text-rose-400',
+          bgColor: 'bg-rose-500/10',
+          borderColor: 'border-rose-500/20',
+        };
       default:
         return {
           icon: Radio,

@@ -316,6 +316,7 @@ export function SourceManager({ sources, activeThemeId, onRefresh }: SourceManag
                   <option value="mastodon">Mastodon / Fediverse Public Timeline</option>
                   <option value="seismic">EMSC Seismic &amp; LastQuake Felt Sensor</option>
                   <option value="ukmto">UKMTO Maritime Security Advisories</option>
+                  <option value="oref">Israel Home Front Command (פיקוד העורף / Red Alert)</option>
                   <option value="newsapi">News API / GDELT</option>
                   <option value="ais">Maritime AIS Vessel Stream</option>
                 </select>

@@ -1262,7 +1262,7 @@ class PipelineOrchestrator:
                                 event_id=db_event.id,
                                 importance_score=analyzed.importance_score,
                                 channel="telegram",
-                                status="sent",
+                                status="pending",
                             )
                             session.add(alert)
 
@@ -1408,6 +1408,11 @@ class PipelineOrchestrator:
         await bus.publish(CHANNEL_EVENTS_NEW, payload)
 
         if should_alert:
+            meta = analyzed.metadata_json or analyzed.metadata or {}
+            scoring_bd = meta.get("scoring_breakdown") or {}
+            corrob_status = scoring_bd.get("corroboration_status")
+            corrob_count = scoring_bd.get("corroboration_count", 0)
+
             alert_payload = {
                 "event_id": analyzed.id,
                 "id": analyzed.id,
@@ -1415,11 +1420,17 @@ class PipelineOrchestrator:
                 "headline": analyzed.headline,
                 "summary": analyzed.summary,
                 "importance_score": analyzed.importance_score,
+                "score_rationale": analyzed.score_rationale,
                 "source_name": analyzed.source_name,
+                "source_type": analyzed.source_type,
                 "published_at": analyzed.published_at.isoformat() if analyzed.published_at else None,
                 "source_url": analyzed.source_url,
+                "trend_category": analyzed.trend_category or meta.get("trend_category"),
+                "entities": analyzed.entities or analyzed.entities_json or [],
+                "corroboration_status": corrob_status,
+                "corroboration_count": corrob_count,
                 "ai_provenance": analyzed.ai_provenance,
-                "metadata_json": analyzed.metadata,
+                "metadata_json": meta,
             }
             await bus.publish(CHANNEL_EVENTS_ALERT, alert_payload)
 

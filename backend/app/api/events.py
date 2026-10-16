@@ -222,6 +222,8 @@ async def ingest_event(
             theme_threshold = t_row.alert_threshold
 
         if score is not None and score >= theme_threshold:
+            meta = serialized.get("metadata_json") or {}
+            scoring_bd = meta.get("scoring_breakdown") or {}
             alert_payload = {
                 "event_id": serialized["id"],
                 "id": serialized["id"],
@@ -229,11 +231,17 @@ async def ingest_event(
                 "headline": serialized.get("headline"),
                 "summary": serialized.get("summary") or serialized["title"],
                 "importance_score": score,
+                "score_rationale": serialized.get("score_rationale"),
                 "source_name": serialized["source_name"],
+                "source_type": serialized.get("source_type"),
                 "published_at": serialized["published_at"],
                 "source_url": serialized.get("source_url"),
+                "trend_category": serialized.get("trend_category") or meta.get("trend_category"),
+                "entities": serialized.get("entities") or serialized.get("entities_json") or [],
+                "corroboration_status": scoring_bd.get("corroboration_status"),
+                "corroboration_count": scoring_bd.get("corroboration_count", 0),
                 "ai_provenance": serialized.get("ai_provenance"),
-                "metadata_json": serialized.get("metadata_json"),
+                "metadata_json": meta,
             }
             await bus.publish(CHANNEL_EVENTS_ALERT, alert_payload)
     except Exception as exc:

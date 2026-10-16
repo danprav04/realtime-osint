@@ -264,7 +264,7 @@ class Stage0Gatekeeper:
                 return "fast_drop"
 
         # 4. Direct Sensor & Tactical Siren Fast-Pass
-        if source_type in ("ais", "maritime_ais", "ukmto", "seismic", "emsc", "geophysical"):
+        if source_type in ("ais", "maritime_ais", "ukmto", "seismic", "emsc", "geophysical", "oref", "pikud_haoref", "homefront", "hfc"):
             self._recent_texts.append(combined)
             return "fast_pass"
 

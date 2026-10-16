@@ -54,10 +54,10 @@ def classify_source_reliability(source_name: str, source_type: str) -> Tuple[str
     s_name = (source_name or "").strip().lower()
     s_type = (source_type or "").strip().lower()
 
-    if s_type in ("ais", "maritime_ais", "ukmto", "seismic", "emsc", "geophysical"):
-        return "tier_1_wire_official", f"Tier 1 — Direct Sensor / Maritime Telemetry ({s_type.upper()})"
+    if s_type in ("ais", "maritime_ais", "ukmto", "seismic", "emsc", "geophysical", "oref", "pikud_haoref", "homefront", "hfc"):
+        return "tier_1_wire_official", f"Tier 1 — Direct Sensor / Civil Defense Alert ({s_type.upper()})"
 
-    if any(k in s_name for k in TIER1_WIRE_AND_OFFICIAL_KEYWORDS) or s_name == "ap" or "ukmto" in s_name or "emsc" in s_name:
+    if any(k in s_name for k in TIER1_WIRE_AND_OFFICIAL_KEYWORDS) or s_name == "ap" or "ukmto" in s_name or "emsc" in s_name or "oref" in s_name or "פיקוד העורף" in s_name:
         return "tier_1_wire_official", "Tier 1 — Major Wire / Official Feed"
 
     if s_type == "reddit" or any(k in s_name for k in TIER3_UNVERIFIED_SOCIAL_KEYWORDS):

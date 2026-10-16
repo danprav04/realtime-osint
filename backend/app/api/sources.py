@@ -168,7 +168,7 @@ async def create_source(
     target = payload.get("target")
     if target:
         config["target"] = target
-        if source_type in ("rss", "mastodon", "seismic", "emsc", "ukmto") and "url" not in config:
+        if source_type in ("rss", "mastodon", "seismic", "emsc", "ukmto", "oref", "pikud_haoref", "homefront", "hfc") and "url" not in config:
             config["url"] = target
         elif source_type == "telegram" and "channels" not in config:
             config["channels"] = [target]
@@ -260,7 +260,7 @@ async def update_source(
         current_cfg.update(payload["config_json"])
     if "target" in payload:
         current_cfg["target"] = payload["target"]
-        if source.source_type in ("rss", "mastodon", "seismic", "emsc", "ukmto"):
+        if source.source_type in ("rss", "mastodon", "seismic", "emsc", "ukmto", "oref", "pikud_haoref", "homefront", "hfc"):
             current_cfg["url"] = payload["target"]
     if "feed_mode" in payload and payload["feed_mode"]:
         current_cfg["feed_mode"] = payload["feed_mode"]

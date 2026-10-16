@@ -4,6 +4,8 @@ Dispatches high-importance alerts via Telegram Bot API with token-bucket cooldow
 importance score 10 bypass, 24-hour URL deduplication, and database alert tracking.
 """
 
+import html
+import re
 import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -13,7 +15,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.config import get_settings
@@ -37,6 +39,12 @@ class TelegramAlertPayload(BaseModel):
     source_name: str
     published_at: datetime
     source_url: Optional[str] = None
+    headline: Optional[str] = None
+    trend_category: Optional[str] = None
+    entities: List[str] = Field(default_factory=list)
+    corroboration_status: Optional[str] = None
+    corroboration_count: Optional[int] = 0
+    score_rationale: Optional[str] = None
 
 
 class TelegramBotService:
@@ -101,6 +109,108 @@ class TelegramBotService:
             f"*Time:* {time_str}\n\n"
             f"*Link:* {link}"
         )
+
+    def format_html_message(self, payload: TelegramAlertPayload) -> str:
+        """
+        Format alert into Rich Intelligence HTML template with colored badges,
+        punchy headline, verification confidence, key entities, and telemetry.
+        """
+        score = payload.importance_score
+        if score >= 10:
+            badge = "🔴 <b>CRITICAL FLASH ALERT</b> [10/10]"
+        elif score == 9:
+            badge = "🔴 <b>CRITICAL ALERT</b> [9/10]"
+        elif score == 8:
+            badge = "🟠 <b>HIGH IMPORTANCE ALERT</b> [8/10]"
+        elif score == 7:
+            badge = "🟡 <b>ELEVATED ALERT</b> [7/10]"
+        else:
+            badge = f"⚪ <b>OSINT ALERT</b> [{score}/10]"
+
+        lines = [badge, ""]
+
+        # 1. Headline / Title
+        headline = (payload.headline or payload.title or "").strip()
+        if headline:
+            lines.append(f"<b>{html.escape(headline)}</b>")
+            lines.append("")
+
+        # 2. Executive Summary
+        summary = (payload.summary or "").strip()
+        if summary:
+            lines.append(html.escape(summary[:3000]))
+            lines.append("")
+
+        # 3. Intelligence Breakdown & Metadata
+        intel_lines = []
+        if payload.trend_category:
+            intel_lines.append(f"🎯 <b>Category:</b> {html.escape(payload.trend_category)}")
+
+        if payload.corroboration_status:
+            cnt = payload.corroboration_count or 0
+            icon = "🛡️"
+            st_lower = payload.corroboration_status.lower()
+            if cnt >= 2 or "highly" in st_lower:
+                icon = "✅"
+            elif "unverified" in st_lower or "single" in st_lower:
+                icon = "⚠️"
+            corrob_desc = html.escape(payload.corroboration_status)
+            if cnt > 0:
+                corrob_desc += f" ({cnt} source{'s' if cnt > 1 else ''})"
+            intel_lines.append(f"{icon} <b>Verification:</b> {corrob_desc}")
+
+        if payload.entities:
+            tags = []
+            for ent in payload.entities[:5]:
+                if isinstance(ent, str) and ent.strip():
+                    clean_tag = re.sub(r"[^\w]", "", ent.strip().replace(" ", ""))
+                    if clean_tag:
+                        tags.append(f"#{clean_tag}")
+            if tags:
+                intel_lines.append(f"🏷️ <b>Entities:</b> {' '.join(tags)}")
+
+        if isinstance(payload.published_at, datetime):
+            time_str = payload.published_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        else:
+            time_str = str(payload.published_at)
+
+        source_name = html.escape(payload.source_name or "OSINT Stream")
+        intel_lines.append(f"📡 <b>Source:</b> {source_name} | ⏱️ {time_str}")
+
+        if payload.source_url:
+            intel_lines.append(f"🔗 <b>Link:</b> <a href=\"{html.escape(payload.source_url)}\">{source_name}</a>")
+
+        lines.extend(intel_lines)
+        return "\n".join(lines)
+
+    def build_inline_keyboard(self, payload: TelegramAlertPayload) -> Optional[Dict[str, Any]]:
+        """Construct Telegram inline keyboard action buttons for alert messages."""
+        from urllib.parse import urlparse
+        row = []
+        if payload.source_url and payload.source_url.startswith(("http://", "https://")):
+            try:
+                parsed = urlparse(payload.source_url)
+                if parsed.hostname and "." in parsed.hostname:
+                    row.append({"text": "🌐 Open Source", "url": payload.source_url})
+            except Exception:
+                pass
+
+        frontend_url = os.environ.get("FRONTEND_URL") or os.environ.get("PUBLIC_URL")
+        tailscale_ip = os.environ.get("DEPLOY_TAILSCALE_IP") or os.environ.get("TAILSCALE_IP")
+        if not frontend_url and tailscale_ip:
+            frontend_url = f"http://{tailscale_ip}:26816"
+
+        if frontend_url and frontend_url.startswith(("http://", "https://")):
+            try:
+                parsed = urlparse(frontend_url)
+                if parsed.hostname and "." in parsed.hostname:
+                    row.append({"text": "⚡ Live Feed", "url": frontend_url})
+            except Exception:
+                pass
+
+        if not row:
+            return None
+        return {"inline_keyboard": [row]}
 
     def _get_dedup_hash(self, payload: TelegramAlertPayload) -> str:
         """Compute SHA-256 hash for 24h deduplication."""
@@ -279,8 +389,11 @@ class TelegramBotService:
             )
             return {"status": "throttled", "reason": "rate_limit_cooldown"}
 
-        # 4. Format message text
+        # 4. Format message text (HTML and plain fallback)
+        formatted_html = self.format_html_message(payload)
         formatted_text = self.format_message(payload)
+        disable_audio = payload.importance_score < 9
+        keyboard = self.build_inline_keyboard(payload)
 
         # 5. Check credentials (attempt auto-discovery if token is present but chat_id is missing outside pytest)
         if self.bot_token and not self.chat_id and not os.environ.get("PYTEST_CURRENT_TEST"):
@@ -295,8 +408,11 @@ class TelegramBotService:
             message_record = {
                 "message_id": len(self.sent_messages) + 1,
                 "text": formatted_text,
+                "html_text": formatted_html,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "payload": payload.model_dump(),
+                "disable_notification": disable_audio,
+                "reply_markup": keyboard,
             }
             self.sent_messages.append(message_record)
             await self._record_alert_in_db(
@@ -312,27 +428,43 @@ class TelegramBotService:
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         body = {
             "chat_id": self.chat_id,
-            "text": formatted_text,
-            "parse_mode": "Markdown",
+            "text": formatted_html,
+            "parse_mode": "HTML",
             "disable_web_page_preview": False,
+            "disable_notification": disable_audio,
         }
+        if keyboard:
+            body["reply_markup"] = keyboard
 
         try:
             response = await self.http_client.post(url, json=body)
             self.last_sent_timestamp = time.time()
 
-            # Automatic fallback: if Telegram rejected markdown (e.g. unclosed entities, Hebrew/Arabic symbols, underscores)
-            if response.status_code == 400 and ("parse" in response.text.lower() or "entity" in response.text.lower()):
+            # Automatic fallback: if Telegram rejected HTML (e.g. unclosed entities, tag error), retry with stripped text
+            if response.status_code == 400 and ("parse" in response.text.lower() or "entity" in response.text.lower() or "tag" in response.text.lower()):
                 logger.warning(
-                    f"Telegram Markdown parse failed: {response.text}. Retrying with clean plain text..."
+                    f"Telegram HTML parse failed: {response.text}. Retrying with clean plain text..."
                 )
-                plain_text = formatted_text.replace("*", "").replace("`", "")
+                plain_text = re.sub(r"<[^>]+>", "", formatted_html)
                 plain_body = {
                     "chat_id": self.chat_id,
                     "text": plain_text,
                     "disable_web_page_preview": False,
+                    "disable_notification": disable_audio,
                 }
+                if keyboard:
+                    plain_body["reply_markup"] = keyboard
                 response = await self.http_client.post(url, json=plain_body)
+                self.last_sent_timestamp = time.time()
+
+            # Automatic fallback 2: if Telegram rejected inline keyboard button URL, retry without reply_markup
+            if response.status_code == 400 and keyboard and ("button" in response.text.lower() or "url" in response.text.lower()):
+                logger.warning(
+                    f"Telegram keyboard URL rejected: {response.text}. Retrying without reply_markup..."
+                )
+                body_no_kb = dict(body)
+                body_no_kb.pop("reply_markup", None)
+                response = await self.http_client.post(url, json=body_no_kb)
                 self.last_sent_timestamp = time.time()
 
             if response.status_code == 200:
@@ -341,8 +473,11 @@ class TelegramBotService:
                 message_record = {
                     "message_id": msg_id,
                     "text": formatted_text,
+                    "html_text": formatted_html,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "payload": payload.model_dump(),
+                    "disable_notification": disable_audio,
+                    "reply_markup": keyboard,
                 }
                 self.sent_messages.append(message_record)
                 await self._record_alert_in_db(
@@ -487,11 +622,14 @@ class TelegramBotService:
 
             try:
                 response = await self.http_client.post(url, json=body)
-                if response.status_code == 400 and ("parse" in response.text.lower() or "entity" in response.text.lower()):
+                if response.status_code == 400 and ("parse" in response.text.lower() or "entity" in response.text.lower() or "tag" in response.text.lower()):
                     logger.warning(
-                        f"Telegram Markdown parse failed: {response.text}. Retrying with clean plain text..."
+                        f"Telegram message parse failed: {response.text}. Retrying with clean plain text..."
                     )
-                    plain_text = chunk.replace("*", "").replace("`", "").replace("_", "")
+                    if parse_mode.lower() == "html":
+                        plain_text = re.sub(r"<[^>]+>", "", chunk)
+                    else:
+                        plain_text = chunk.replace("*", "").replace("`", "").replace("_", "")
                     plain_body = {
                         "chat_id": target_chat_id,
                         "text": plain_text,
@@ -664,7 +802,9 @@ class TelegramBotService:
                 "  _Windows:_ `6h`, `24h`, `3d`, `7d`, `all` (default: `24h`)\n"
                 "  _Examples:_ `/summary`, `/summary 6h`, `/summary all refresh`\n"
                 "• `/briefing` or `/sitrep` - Aliases for `/summary`\n"
-                "• `/status` - View current monitoring telemetry, active theme, and alert velocity\n"
+                "• `/latest` - View the 5 most recent critical alerts\n"
+                "• `/threshold [score]` - View or adjust alert sensitivity threshold (1-10)\n"
+                "• `/status` - View current monitoring telemetry, active theme, and alert rules\n"
                 "• `/help` - Show this guidance menu"
             )
             await self.send_text_message(help_msg, chat_id=chat_id_str)
@@ -695,12 +835,168 @@ class TelegramBotService:
                 f"🛰️ *OSINT Watch Station Status*\n\n"
                 f"🎯 *Active Theme:* {theme_name}\n"
                 f"🚨 *Alert Threshold:* ≥{alert_thresh}/10\n"
+                f"🔊 *Audio Alerts:* Scores 9-10 (Loud & Vibration)\n"
+                f"🔕 *Silent Alerts:* Scores 7-8 (Silent Notification)\n"
                 f"⏱️ *Rate Limit Cooldown:* {self.rate_limit_seconds}s\n"
                 f"📊 *Reports Ingested (Last 24h):* {ev_count}\n"
                 f"🤖 *Alert Dispatcher:* Operational"
             )
             await self.send_text_message(status_msg, chat_id=chat_id_str)
             return {"status": "delivered", "command": "status"}
+
+        # Command: /latest or /recent or /alerts
+        elif cmd in ("/latest", "/recent", "/alerts"):
+            try:
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    theme_stmt = select(Theme).where(Theme.is_active == True).limit(1)
+                    active_t = (await session.execute(theme_stmt)).scalars().first()
+                    thresh = active_t.alert_threshold if active_t and active_t.alert_threshold else 7
+
+                    ev_stmt = (
+                        select(Event)
+                        .where(Event.importance_score >= thresh)
+                        .order_by(Event.published_at.desc())
+                        .limit(5)
+                    )
+                    recent_evs = list((await session.execute(ev_stmt)).scalars().all())
+
+                    if not recent_evs:
+                        ev_stmt_top = (
+                            select(Event)
+                            .order_by(Event.importance_score.desc(), Event.published_at.desc())
+                            .limit(5)
+                        )
+                        recent_evs = list((await session.execute(ev_stmt_top)).scalars().all())
+
+                if not recent_evs:
+                    await self.send_text_message(
+                        "ℹ️ No recorded alerts in current observation window.",
+                        chat_id=chat_id_str,
+                    )
+                    return {"status": "delivered", "command": "latest", "count": 0}
+
+                lines = [f"🚨 <b>Recent Critical OSINT Alerts (Top {len(recent_evs)})</b>\n"]
+                for i, ev in enumerate(recent_evs, 1):
+                    sc = ev.importance_score or 5
+                    badge = "🔴" if sc >= 9 else ("🟠" if sc >= 8 else "🟡")
+                    head = (ev.headline or ev.title or "Untitled Report").strip()
+                    time_s = ev.published_at.strftime("%m-%d %H:%M UTC") if ev.published_at else "Recent"
+                    source = ev.source_name or "OSINT Stream"
+
+                    if ev.source_url:
+                        title_line = f"<a href=\"{html.escape(ev.source_url)}\">{html.escape(head)}</a>"
+                    else:
+                        title_line = html.escape(head)
+
+                    lines.append(f"{i}. {badge} <b>[{sc}/10]</b> {title_line}")
+                    lines.append(f"   📡 <i>{html.escape(source)}</i> | ⏱️ <i>{time_s}</i>")
+                    if ev.summary:
+                        brief_sum = html.escape(ev.summary.strip()[:180])
+                        if len(ev.summary.strip()) > 180:
+                            brief_sum += "..."
+                        lines.append(f"   <i>{brief_sum}</i>")
+                    lines.append("")
+
+                recap_msg = "\n".join(lines).strip()
+                await self.send_text_message(recap_msg, chat_id=chat_id_str, parse_mode="HTML")
+                return {"status": "delivered", "command": "latest", "count": len(recent_evs)}
+            except Exception as exc:
+                logger.error(f"Failed to fetch latest alerts for Telegram: {exc}", exc_info=True)
+                await self.send_text_message(
+                    f"⚠️ Failed to retrieve recent alerts: `{str(exc)}`",
+                    chat_id=chat_id_str,
+                )
+                return {"status": "failed", "command": "latest", "error": str(exc)}
+
+        # Command: /threshold or /sensitivity
+        elif cmd in ("/threshold", "/sensitivity", "/cutoff"):
+            if not args:
+                current_thresh = 7
+                try:
+                    session_factory = get_session_factory()
+                    async with session_factory() as session:
+                        theme_stmt = select(Theme).where(Theme.is_active == True).limit(1)
+                        active_t = (await session.execute(theme_stmt)).scalars().first()
+                        if active_t and active_t.alert_threshold:
+                            current_thresh = active_t.alert_threshold
+                except Exception as exc:
+                    logger.debug(f"Threshold query error: {exc}")
+
+                info_msg = (
+                    f"🚨 <b>Alert Sensitivity Threshold</b>\n\n"
+                    f"🎯 <b>Current Threshold:</b> ≥{current_thresh}/10\n"
+                    f"🔊 <b>Audio Notification:</b> Scores 9-10\n"
+                    f"🔕 <b>Silent Notification:</b> Scores 7-8\n\n"
+                    f"To adjust threshold, send: <code>/threshold &lt;1-10&gt;</code>\n"
+                    f"<i>Example:</i> <code>/threshold 8</code>"
+                )
+                await self.send_text_message(info_msg, chat_id=chat_id_str, parse_mode="HTML")
+                return {"status": "delivered", "command": "threshold", "threshold": current_thresh}
+
+            try:
+                new_thresh = int(args[0])
+                if not (1 <= new_thresh <= 10):
+                    raise ValueError()
+            except Exception:
+                err_text = (
+                    "⚠️ <b>Invalid Threshold Value</b>\n\n"
+                    "Please provide an integer between <b>1</b> and <b>10</b>.\n"
+                    "<i>Example:</i> <code>/threshold 8</code>"
+                )
+                await self.send_text_message(err_text, chat_id=chat_id_str, parse_mode="HTML")
+                return {"status": "invalid_argument", "command": "threshold"}
+
+            try:
+                from sqlalchemy.orm.attributes import flag_modified
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    theme_stmt = select(Theme).where(Theme.is_active == True)
+                    themes = (await session.execute(theme_stmt)).scalars().all()
+                    for t in themes:
+                        t.alert_threshold = new_thresh
+
+                    st_thresh = (
+                        await session.execute(
+                            select(SystemSettings).where(SystemSettings.key == "notification_threshold")
+                        )
+                    ).scalars().first()
+                    if st_thresh:
+                        st_thresh.value_json = {"threshold": new_thresh}
+                        flag_modified(st_thresh, "value_json")
+                    else:
+                        session.add(SystemSettings(key="notification_threshold", value_json={"threshold": new_thresh}))
+
+                    st_cfg = (
+                        await session.execute(
+                            select(SystemSettings).where(SystemSettings.key == "notification_settings")
+                        )
+                    ).scalars().first()
+                    if st_cfg and isinstance(st_cfg.value_json, dict):
+                        updated = dict(st_cfg.value_json)
+                        updated["default_alert_threshold"] = new_thresh
+                        st_cfg.value_json = updated
+                        flag_modified(st_cfg, "value_json")
+
+                    await session.commit()
+
+                if self.redis_bus and self.redis_bus.is_connected:
+                    await self.redis_bus.publish(
+                        CHANNEL_CONFIG_RELOAD,
+                        {"source": "telegram_command", "threshold": new_thresh},
+                    )
+
+                confirm_msg = (
+                    f"✅ <b>Alert Notification Threshold Updated</b>\n\n"
+                    f"🎯 <b>New Sensitivity:</b> ≥{new_thresh}/10\n"
+                    f"Alerts with importance score ≥{new_thresh} will now trigger notifications."
+                )
+                await self.send_text_message(confirm_msg, chat_id=chat_id_str, parse_mode="HTML")
+                return {"status": "delivered", "command": "threshold", "new_threshold": new_thresh}
+            except Exception as exc:
+                logger.error(f"Failed to update threshold from Telegram: {exc}", exc_info=True)
+                await self.send_text_message(f"⚠️ Failed to update threshold: `{str(exc)}`", chat_id=chat_id_str)
+                return {"status": "failed", "command": "threshold", "error": str(exc)}
 
         # Command: /summary, /briefing, /sitrep, /ai_summary
         elif cmd in ("/summary", "/briefing", "/sitrep", "/ai_summary"):
@@ -859,14 +1155,28 @@ class TelegramBotService:
             else:
                 pub_date = utc_now()
 
+            # Extract rich fields
+            meta = data.get("metadata_json") or data.get("metadata") or {}
+            scoring_bd = meta.get("scoring_breakdown") or {}
+            corrob_st = data.get("corroboration_status") or scoring_bd.get("corroboration_status")
+            corrob_cnt = data.get("corroboration_count") or scoring_bd.get("corroboration_count", 0)
+            trend_cat = data.get("trend_category") or meta.get("trend_category")
+            entities = data.get("entities") or meta.get("entities") or []
+
             payload = TelegramAlertPayload(
                 event_id=str(event_id),
                 title=str(data.get("title", "")),
+                headline=data.get("headline"),
                 summary=str(data.get("summary") or data.get("title", "")),
                 importance_score=int(data.get("importance_score", 7)),
                 source_name=str(data.get("source_name", "OSINT Stream")),
                 published_at=pub_date,
                 source_url=data.get("source_url"),
+                trend_category=trend_cat,
+                entities=entities if isinstance(entities, list) else [],
+                corroboration_status=corrob_st,
+                corroboration_count=int(corrob_cnt or 0),
+                score_rationale=data.get("score_rationale"),
             )
             res = await self.send_alert(payload)
             # If throttled by cooldown, wait for remaining cooldown under lock and retry once so breaking news batches aren't discarded
@@ -881,6 +1191,29 @@ class TelegramBotService:
                     await self.send_alert(payload)
         except Exception as exc:
             logger.error(f"Error handling bus alert: {exc}", exc_info=True)
+
+    async def register_bot_commands(self) -> bool:
+        """Register Telegram Bot commands menu with Telegram API."""
+        if not self.bot_token or os.environ.get("PYTEST_CURRENT_TEST"):
+            return True
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/setMyCommands"
+            body = {
+                "commands": [
+                    {"command": "summary", "description": "Generate AI Situational Summary (SitRep)"},
+                    {"command": "latest", "description": "View recent critical alerts recap"},
+                    {"command": "threshold", "description": "View or adjust alert sensitivity threshold"},
+                    {"command": "status", "description": "View station telemetry & audio rules"},
+                    {"command": "help", "description": "Show bot commands guidance menu"},
+                ]
+            }
+            resp = await self.http_client.post(url, json=body, timeout=8.0)
+            if resp.status_code == 200:
+                logger.info("Registered Telegram bot commands menu.")
+                return True
+        except Exception as exc:
+            logger.debug(f"Failed to register Telegram bot commands: {exc}")
+        return False
 
     async def _handle_bus_config_reload(self, channel: str, data: Any) -> None:
         """Hot-reload bot configuration and credentials from DB upon reload event."""
@@ -928,6 +1261,10 @@ class TelegramBotService:
         self._is_running = True
 
         if not os.environ.get("PYTEST_CURRENT_TEST") and self.bot_token:
+            try:
+                await self.register_bot_commands()
+            except Exception as cmd_exc:
+                logger.debug(f"Could not register Telegram bot commands: {cmd_exc}")
             if self._polling_task is None or self._polling_task.done():
                 self._polling_task = asyncio.create_task(self._poll_updates_loop())
 

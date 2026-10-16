@@ -138,6 +138,11 @@ export function RelevanceMap({
             return '#fb923c';
           case 'ais':
             return '#60a5fa';
+          case 'oref':
+          case 'pikud_haoref':
+          case 'homefront':
+          case 'hfc':
+            return '#f43f5e';
           default:
             return '#94a3b8';
         }
@@ -1373,6 +1378,10 @@ export function RelevanceMap({
             </>
           ) : colorMode === 'source' ? (
             <>
+              <div className="flex items-center space-x-1">
+                <span className="w-2 h-2 rounded-full bg-rose-500" />
+                <span>OREF Alerts</span>
+              </div>
               <div className="flex items-center space-x-1">
                 <span className="w-2 h-2 rounded-full bg-sky-400" />
                 <span>Telegram</span>
