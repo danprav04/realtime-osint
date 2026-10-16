@@ -130,7 +130,7 @@ class MemoryRollupService:
                 # Category frequencies
                 cat_counter: Counter = Counter()
                 for e in epoch_events:
-                    cat_val = (e.category or "General Intelligence").strip()
+                    cat_val = (getattr(e, "category", None) or (e.metadata_json or {}).get("trend_category") or "General Intelligence").strip()
                     cat_counter[cat_val] += 1
 
                 # Source statistics
@@ -265,6 +265,7 @@ class MemoryRollupService:
                 f"{vectors_pruned} routine vectors pruned, {len(events)} events processed."
             )
             return {
+                "status": "ok",
                 "rollups_created": rollups_created,
                 "rollups_updated": rollups_updated,
                 "vectors_pruned": vectors_pruned,
