@@ -112,7 +112,7 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
               <h2 className="text-lg font-semibold text-zinc-100 tracking-tight leading-snug flex-1 min-w-0">
                 {displayTitle}
               </h2>
-              <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
+                {!isPending && summarizationProv && <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />}
             </div>
           </div>
           <button
@@ -199,7 +199,7 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                     <Sparkles className="w-3.5 h-3.5" />
                     <span>AI INTELLIGENCE SUMMARY</span>
                   </div>
-                  <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
+                  {!isPending && summarizationProv && <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />}
                 </div>
                 <p className="text-sm text-zinc-200 leading-relaxed">
                   {displaySummary || 'Summary pending processing...'}
@@ -214,7 +214,7 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                       <div className="text-xs font-semibold text-accent-amber">
                         IMPORTANCE SCORING RATIONALE & CALIBRATION
                       </div>
-                      <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />
+                      {!isPending && scoringProv && <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />}
                     </div>
                     {scoringBreakdown?.source_reliability_label && (
                       <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-surface-raised hairline-border text-zinc-300">
@@ -319,7 +319,7 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                             <span className="text-[10px] font-semibold uppercase tracking-wider text-accent-cyan block">
                               Semantically Related Recent Reports (Vector Embedding Matches)
                             </span>
-                            <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings />
+                            {!isPending && embeddingProv && <AIModelBadge provenance={embeddingProv} size="xs" linkToSettings />}
                           </div>
                           <div className="space-y-1.5">
                             {scoringBreakdown.related_reports.map((rel, idx) => (
@@ -357,7 +357,7 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                       <Globe className="w-3.5 h-3.5" />
                       <span>ENGLISH TRANSLATION</span>
                     </div>
-                    <AIModelBadge provenance={extractionProv} size="xs" linkToSettings />
+                    {!isPending && extractionProv && <AIModelBadge provenance={extractionProv} size="xs" linkToSettings />}
                   </div>
                   <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap">
                     {event.translated_text}
@@ -373,7 +373,7 @@ export function EventDetailsModal({ event, isOpen, onClose }: EventDetailsModalP
                       <Tag className="w-3.5 h-3.5" />
                       <span>DETECTED ENTITIES & KEYWORDS</span>
                     </div>
-                    <AIModelBadge provenance={extractionProv} size="xs" linkToSettings />
+                    {!isPending && extractionProv && <AIModelBadge provenance={extractionProv} size="xs" linkToSettings />}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {entities.map((ent, idx) => (

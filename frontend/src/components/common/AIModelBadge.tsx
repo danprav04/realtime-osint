@@ -27,6 +27,11 @@ export function AIModelBadge({
   linkToSettings = false,
   className,
 }: AIModelBadgeProps) {
+  // If neither provenance nor model is provided, don't show anything
+  if (!provenance && !propModel) {
+    return null;
+  }
+
   // Resolve model and provider
   let finalProvider = propProvider;
   let finalModel = propModel;
@@ -36,12 +41,22 @@ export function AIModelBadge({
     finalModel = provenance.model;
   } else if (propModel && !propProvider) {
     const parsed = parseModelProvider(propModel);
-    finalProvider = parsed.provider;
-    finalModel = parsed.model;
+    finalProvider = parsed?.provider;
+    finalModel = parsed?.model;
+  }
+
+  // If no real model is determined, don't show anything
+  if (
+    !finalModel ||
+    !finalModel.trim() ||
+    finalModel === 'pipeline-model' ||
+    finalModel === 'pipeline-default'
+  ) {
+    return null;
   }
 
   const cleanProvider = formatProviderName(finalProvider || 'AI');
-  const cleanModel = finalModel || 'pipeline-model';
+  const cleanModel = finalModel.trim();
   const styles = getProviderBadgeStyles(cleanProvider);
 
   // Select appropriate brand icon

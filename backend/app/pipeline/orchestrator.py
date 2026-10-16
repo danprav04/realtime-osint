@@ -83,6 +83,8 @@ class PipelineOrchestrator:
         self._queue: asyncio.Queue[NormalizedEvent] = asyncio.Queue(maxsize=queue_maxsize)
         self._worker_tasks: List[asyncio.Task] = []
         self._backfill_task: Optional[asyncio.Task] = None
+        self._sweeper_task: Optional[asyncio.Task] = None
+        self._in_flight_ids: set[str] = set()
         self._bg_tasks: set[asyncio.Task] = set()
         self._num_workers = num_workers
         self._running: bool = False
@@ -152,10 +154,10 @@ class PipelineOrchestrator:
             "visuals": AIStageConfig(
                 stage_id="visuals",
                 provider="groq",
-                model_name="openai/qwen3.8-27b",
+                model_name="qwen/qwen3.8-27b",
                 temperature=0.2,
                 fallbacks=[
-                    AIFallbackConfig(provider="groq", model_name="qwen/gpt-oss-20b", temperature=0.2),
+                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
@@ -266,6 +268,9 @@ class PipelineOrchestrator:
             # Backfill any existing unanalyzed events from database
             self._backfill_task = asyncio.create_task(self._backfill_unanalyzed_events())
 
+            # Periodic background sweeper to prevent any events getting stranded
+            self._sweeper_task = asyncio.create_task(self._periodic_unanalyzed_sweeper())
+
             logger.info(f"Pipeline Orchestrator started with {self._num_workers} workers.")
 
     async def stop(self) -> None:
@@ -290,6 +295,11 @@ class PipelineOrchestrator:
                 all_tasks.append(self._backfill_task)
             self._backfill_task = None
 
+            if self._sweeper_task is not None and not self._sweeper_task.done():
+                self._sweeper_task.cancel()
+                all_tasks.append(self._sweeper_task)
+            self._sweeper_task = None
+
             for task in self._worker_tasks:
                 if not task.done():
                     task.cancel()
@@ -312,6 +322,8 @@ class PipelineOrchestrator:
         """Put an incoming NormalizedEvent into the bounded processing queue."""
         try:
             self._queue.put_nowait(event)
+            if hasattr(event, "id") and event.id:
+                self._in_flight_ids.add(str(event.id))
             return True
         except asyncio.QueueFull:
             logger.warning(f"Pipeline queue full ({self._queue.maxsize} events). Dropping event {event.id}.")
@@ -328,6 +340,8 @@ class PipelineOrchestrator:
                 except Exception as exc:
                     logger.error(f"Worker {worker_id} failed processing event {event.id}: {exc}", exc_info=True)
                 finally:
+                    if hasattr(event, "id") and event.id:
+                        self._in_flight_ids.discard(str(event.id))
                     self._queue.task_done()
             except asyncio.CancelledError:
                 break
@@ -408,6 +422,58 @@ class PipelineOrchestrator:
         except Exception as exc:
             logger.warning(f"Backfill unanalyzed events encountered error: {exc}")
 
+    async def _periodic_unanalyzed_sweeper(self) -> None:
+        """Periodic background sweeper to detect and re-enqueue any stranded unanalyzed events."""
+        while self._running:
+            try:
+                await asyncio.sleep(25)
+                if not self._running:
+                    break
+
+                # If queue is heavily backed up, wait for workers to catch up
+                capacity = self._queue.maxsize - self._queue.qsize()
+                if capacity <= 5:
+                    continue
+
+                async def _fetch_stranded():
+                    factory = self._get_session_factory()
+                    async with factory() as session:
+                        stmt = (
+                            select(Event)
+                            .where(Event.is_analyzed == False)
+                            .order_by(Event.published_at.desc())
+                            .limit(min(50, capacity))
+                        )
+                        return list((await session.execute(stmt)).scalars().all())
+
+                async with self._db_lock:
+                    stranded_events = await asyncio.shield(_fetch_stranded())
+
+                for ev in (stranded_events or []):
+                    if not self._running:
+                        break
+                    if str(ev.id) not in self._in_flight_ids:
+                        norm = NormalizedEvent(
+                            id=ev.id,
+                            theme_id=str(ev.theme_id),
+                            source_type=ev.source_type,
+                            source_name=ev.source_name,
+                            source_url=ev.source_url,
+                            external_id=ev.external_id,
+                            title=ev.title,
+                            raw_text=ev.raw_text,
+                            language=ev.language,
+                            author=ev.author,
+                            published_at=ev.published_at,
+                            ingested_at=ev.ingested_at,
+                        )
+                        await self.enqueue_event(norm)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug(f"Periodic unanalyzed sweeper suppressed exception: {exc}")
+                await asyncio.sleep(5)
+
     async def handle_config_reload(self, channel: str, message: Any) -> None:
         """Dynamic hot-reload subscriber callback."""
         logger.info(f"Pipeline received reload signal on '{channel}': {message}")
@@ -434,6 +500,8 @@ class PipelineOrchestrator:
                                 key=lambda item: 1 if str(item[0]).lower().strip() in canonical_keys else 0,
                             )
                             for stage_id, cfg_data in sorted_items:
+                                if stage_id.startswith("_") or not isinstance(cfg_data, dict):
+                                    continue
                                 norm_id = self._normalize_stage_id(stage_id)
                                 raw_fallbacks = cfg_data.get("fallbacks")
                                 if raw_fallbacks is None and norm_id in self._stage_configs:
@@ -671,9 +739,11 @@ class PipelineOrchestrator:
                     )
                 )
 
-                # If the model hit a per-minute rate limit (RPM/TPM) or Gemma TPM/gateway saturation,
-                # wait for the minute window reset and retry the same model before falling back or locking it out.
-                if (is_minute_only or is_gemma_tpm_saturation) and not self.use_mock:
+                # If the model hit a per-minute rate limit (RPM/TPM), wait for the minute window reset.
+                # However, for Gemma 500/timeout saturation, fail over immediately if downstream fallback candidates exist!
+                has_downstream_candidates = (idx < len(candidates) - 1)
+                should_wait_and_retry = is_minute_only or (is_gemma_tpm_saturation and not has_downstream_candidates)
+                if should_wait_and_retry and not self.use_mock:
                     try:
                         now_loop = asyncio.get_event_loop().time()
                         rl_until = getattr(provider_inst, "_rate_limit_until", 0.0)
@@ -702,6 +772,8 @@ class PipelineOrchestrator:
 
                 if is_rate_limit and not is_minute_only:
                     self.mark_model_cooldown(p_name, m_name, duration_sec=60.0)
+                elif is_gemma_tpm_saturation:
+                    self.mark_model_cooldown(p_name, m_name, duration_sec=30.0)
 
                 if idx < len(candidates) - 1:
                     next_cand = candidates[idx + 1]
@@ -1347,7 +1419,7 @@ class PipelineOrchestrator:
                 "published_at": analyzed.published_at.isoformat() if analyzed.published_at else None,
                 "source_url": analyzed.source_url,
                 "ai_provenance": analyzed.ai_provenance,
-                "metadata_json": metadata,
+                "metadata_json": analyzed.metadata,
             }
             await bus.publish(CHANNEL_EVENTS_ALERT, alert_payload)
 

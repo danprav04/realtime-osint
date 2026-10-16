@@ -65,12 +65,12 @@ DEFAULT_AI_STAGES = {
     },
     "visuals": {
         "provider": "groq",
-        "model_name": "openai/qwen3.8-27b",
+        "model_name": "qwen/qwen3.8-27b",
         "temperature": 0.2,
         "fallbacks": [
-            {"provider": "groq", "model_name": "qwen/gpt-oss-20b", "temperature": 0.2},
+            {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.2},
+            {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
-            {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
         ],
     },

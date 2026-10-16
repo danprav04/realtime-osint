@@ -74,10 +74,10 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
             { provider: 'groq', model_name: 'qwen/qwen3.8-27b', temperature: 0.2 },
             { provider: 'aihubmix', model_name: 'coding-glm-5.3-flash-free', temperature: 0.2 },
           ]),
-          visuals: defaultStage('groq', 'openai/qwen3.8-27b', [
-            { provider: 'groq', model_name: 'qwen/gpt-oss-20b', temperature: 0.2 },
+          visuals: defaultStage('groq', 'qwen/qwen3.8-27b', [
+            { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.2 },
+            { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
-            { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
           ]),
         }

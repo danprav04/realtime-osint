@@ -440,12 +440,9 @@ export function formatProviderName(provider?: string): string {
 export function parseModelProvider(
   modelString?: string,
   defaultProvider?: string
-): AIModelInfo {
-  if (!modelString) {
-    return {
-      provider: formatProviderName(defaultProvider || 'AI'),
-      model: 'pipeline-default',
-    };
+): AIModelInfo | undefined {
+  if (!modelString || !modelString.trim()) {
+    return undefined;
   }
 
   const s = modelString.trim();
@@ -482,13 +479,20 @@ export function parseModelProvider(
 
 /**
  * Retrieve AI model and provider provenance for a specific pipeline stage of an event.
+ * Returns undefined if the event is pending/un-analyzed or if no real model has been recorded.
  */
 export function getEventAIProvenance(
   event?: NormalizedEvent | null,
   stage: 'extraction' | 'scoring' | 'summarization' | 'visuals' | 'embedding' = 'summarization'
-): AIModelInfo {
+): AIModelInfo | undefined {
   if (!event) {
-    return parseModelProvider('', 'AI');
+    return undefined;
+  }
+
+  // If the event is still being analyzed or pending, the real model has not completed the job yet
+  const isPending = !event.is_analyzed && (event.importance_score === null || event.importance_score === undefined);
+  if (isPending) {
+    return undefined;
   }
 
   let metadataJson = event.metadata_json;
@@ -514,7 +518,7 @@ export function getEventAIProvenance(
     }
   }
 
-  if (prov && prov[stage]) {
+  if (prov && prov[stage] && prov[stage].model && String(prov[stage].model).trim()) {
     const item = prov[stage]!;
     return {
       provider: formatProviderName(item.provider),
@@ -522,21 +526,9 @@ export function getEventAIProvenance(
     };
   }
 
-  // Graceful stage defaults based on production configuration matrix
-  switch (stage) {
-    case 'extraction':
-      return { provider: 'Groq', model: 'qwen/qwen3.8-27b' };
-    case 'scoring':
-      return { provider: 'Gemini', model: 'gemini-3.5-flash-lite' };
-    case 'summarization':
-      return { provider: 'AIHubMix', model: 'coding-glm-5.3-free' };
-    case 'visuals':
-      return { provider: 'Groq', model: 'openai/gpt-oss-20b' };
-    case 'embedding':
-      return { provider: 'Gemini', model: 'gemini-embedding-2' };
-    default:
-      return { provider: 'Gemini', model: 'gemini-3.5-flash-lite' };
-  }
+  // Never return fabricated placeholder or fallback models.
+  // Don't show anything until the real model that did the job is determined.
+  return undefined;
 }
 
 /**

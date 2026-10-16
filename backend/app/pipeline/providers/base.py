@@ -507,13 +507,13 @@ class BaseAIProvider(abc.ABC):
 
                 # Status 500: Internal Server Error (Gemma frequently throws 500 when TPM quota is saturated)
                 if response.status_code == 500:
-                    if attempt == self.max_retries:
+                    if attempt >= 1 or attempt == self.max_retries:
                         response.raise_for_status()
                     is_gemma = "gemma" in (getattr(self, "default_model", "") or "").lower()
-                    delay = (14.0 + random.uniform(1.0, 4.0)) if is_gemma else (max(3.5, self.base_backoff * (2 ** attempt)) + random.uniform(0.5, 1.5))
+                    delay = (3.5 + random.uniform(0.5, 1.5)) if is_gemma else (max(2.0, self.base_backoff * (2 ** attempt)) + random.uniform(0.5, 1.5))
                     logger.warning(
                         f"[{self.provider_name}:{self.default_model}] HTTP 500 Internal Error (TPM saturation/transient cluster error). "
-                        f"Waiting {delay:.1f}s before retry (attempt {attempt + 1}/{self.max_retries})..."
+                        f"Waiting {delay:.1f}s before retry (attempt {attempt + 1}/2)..."
                     )
                     now_loop = asyncio.get_event_loop().time()
                     self._rate_limit_until = max(self._rate_limit_until, now_loop + delay)

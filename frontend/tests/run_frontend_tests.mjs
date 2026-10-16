@@ -444,14 +444,19 @@ test('Utils - parseModelProvider correctly parses prefixed and bare model names'
   const p4 = parseModelProvider('deterministic-fusion-engine');
   assert.equal(p4.provider, 'Rule-Based');
   assert.equal(p4.model, 'deterministic-fusion-engine');
+
+  assert.equal(parseModelProvider(''), undefined);
+  assert.equal(parseModelProvider(undefined), undefined);
 });
 
-// Test 24: Utils - getEventAIProvenance resolves event stage provenance and fallbacks
-test('Utils - getEventAIProvenance extracts stage models and provides stage fallbacks', async () => {
+// Test 24: Utils - getEventAIProvenance resolves real stage provenance and returns undefined when undetermined
+test('Utils - getEventAIProvenance extracts stage models and returns undefined when not determined', async () => {
   const { getEventAIProvenance } = await import('../src/lib/utils.ts');
 
   const eventWithProv = {
     id: 'evt-1',
+    is_analyzed: true,
+    importance_score: 8,
     ai_provenance: {
       extraction: { provider: 'groq', model: 'qwen/qwen3.8-27b' },
       summarization: { provider: 'aihubmix', model: 'coding-glm-5.3-free' },
@@ -466,15 +471,31 @@ test('Utils - getEventAIProvenance extracts stage models and provides stage fall
   assert.equal(sumProv.provider, 'AIHubMix');
   assert.equal(sumProv.model, 'coding-glm-5.3-free');
 
-  // Fallback for stage not in event
+  // Stage not determined in event returns undefined (never fabricated models)
   const scoreProv = getEventAIProvenance(eventWithProv, 'scoring');
-  assert.equal(scoreProv.provider, 'Gemini');
-  assert.equal(scoreProv.model, 'gemini-3.5-flash-lite');
+  assert.equal(scoreProv, undefined);
+
+  // Unanalyzed / pending event returns undefined
+  const pendingEvent = {
+    id: 'evt-pending',
+    is_analyzed: false,
+    importance_score: null,
+    ai_provenance: {
+      scoring: { provider: 'gemini', model: 'gemini-3.5-flash-lite' },
+    },
+  };
+  assert.equal(getEventAIProvenance(pendingEvent, 'scoring'), undefined);
+
+  // Null/undefined event returns undefined
+  assert.equal(getEventAIProvenance(null, 'scoring'), undefined);
+  assert.equal(getEventAIProvenance(undefined, 'scoring'), undefined);
 
   // Verify provenance extracted from AlertItem format
   const alertItem = {
     id: 'alt-5',
     title: 'Drone intercept',
+    is_analyzed: true,
+    importance_score: 9,
     ai_provenance: {
       scoring: { provider: 'Groq', model: 'qwen/qwen3.8-27b' },
       summarization: { provider: 'Groq', model: 'openai/gpt-oss-120b' },
@@ -491,6 +512,8 @@ test('Utils - getEventAIProvenance extracts stage models and provides stage fall
   // Verify stringified metadata_json handling
   const eventWithStringMeta = {
     id: 'evt-2',
+    is_analyzed: true,
+    importance_score: 7,
     metadata_json: JSON.stringify({
       ai_provenance: {
         scoring: { provider: 'groq', model: 'qwen/qwen3.8-27b' },

@@ -940,6 +940,10 @@ async def test_minute_rate_limit_waits_and_retries_same_model_no_qwen_switch(mon
             ],
         ),
     )
+    orchestrator.set_stage_config(
+        "visuals",
+        AIStageConfig(stage_id="visuals", provider="groq", model_name="openai/gpt-oss-20b"),
+    )
 
     models_invoked = []
 

@@ -110,7 +110,7 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
             <span>{formatRelativeTime(event.published_at)}</span>
           </div>
           <ImportanceBadge score={event.importance_score} isPending={isPending} size="sm" />
-          <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />
+          {!isPending && scoringProv && <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />}
         </div>
       </div>
 
@@ -122,7 +122,7 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
         >
           {displayTitle}
         </h3>
-        <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
+        {!isPending && summarizationProv && <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />}
       </div>
 
       {/* AI Intelligence Summary */}
@@ -155,7 +155,7 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
             +{entities.length - 4} more
           </span>
         )}
-        {entities.length > 0 && (
+        {entities.length > 0 && !isPending && extractionProv && (
           <AIModelBadge provenance={extractionProv} size="xs" labelPrefix="Entities:" linkToSettings />
         )}
       </div>
@@ -170,7 +170,7 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
                   <span className="font-semibold text-accent-amber text-[11px]">
                     AI SCORING RATIONALE & CALIBRATION
                   </span>
-                  <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />
+                  {!isPending && scoringProv && <AIModelBadge provenance={scoringProv} size="xs" linkToSettings />}
                 </div>
                 {scoringBreakdown?.corroboration_status && (
                   <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-raised hairline-border text-zinc-300">
@@ -219,7 +219,7 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
                 <span className="font-semibold text-accent-indigo text-[11px]">
                   TRANSLATED CONTENT
                 </span>
-                <AIModelBadge provenance={extractionProv} size="xs" linkToSettings />
+                {!isPending && extractionProv && <AIModelBadge provenance={extractionProv} size="xs" linkToSettings />}
               </div>
               <p className="text-zinc-300 text-xs leading-relaxed">{event.translated_text}</p>
             </div>
