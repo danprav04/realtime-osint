@@ -91,7 +91,7 @@ class PipelineOrchestrator:
         self._reload_subscribed: bool = False
         self._model_cooldowns: Dict[str, float] = {}
         from backend.app.pipeline.stage0_gatekeeper import Stage0Gatekeeper
-        self._gatekeeper = Stage0Gatekeeper(batch_size=12)
+        self._gatekeeper = Stage0Gatekeeper(batch_size=6)
 
         # Seed initial default stage configs
         self._init_default_configs()
@@ -657,17 +657,30 @@ class PipelineOrchestrator:
                         )
                     )
                 )
+                is_gemma_tpm_saturation = (
+                    "gemma" in m_name.lower()
+                    and any(
+                        s in err_str
+                        for s in (
+                            "500",
+                            "internal error",
+                            "internal server error",
+                            "readtimeout",
+                            "timeout",
+                        )
+                    )
+                )
 
-                # If the model only hit a per-minute rate limit (RPM/TPM), wait for the minute
-                # window reset and retry the same model before falling back or locking it out.
-                if is_minute_only and not self.use_mock:
+                # If the model hit a per-minute rate limit (RPM/TPM) or Gemma TPM/gateway saturation,
+                # wait for the minute window reset and retry the same model before falling back or locking it out.
+                if (is_minute_only or is_gemma_tpm_saturation) and not self.use_mock:
                     try:
                         now_loop = asyncio.get_event_loop().time()
                         rl_until = getattr(provider_inst, "_rate_limit_until", 0.0)
                         recovery_wait = max(4.5, min(30.0, rl_until - now_loop)) if rl_until > now_loop else 5.0
                         logger.info(
                             f"[Pipeline Minute Rate Limit] Stage '{stage_id}': Model '{p_name}:{m_name}' "
-                            f"reached minute rate limit ({exc}). Waiting {recovery_wait:.1f}s to retry '{p_name}:{m_name}'..."
+                            f"reached minute limit or TPM saturation ({exc}). Waiting {recovery_wait:.1f}s to retry '{p_name}:{m_name}'..."
                         )
                         await asyncio.sleep(recovery_wait)
                         result = await runner_fn(
@@ -1046,7 +1059,7 @@ class PipelineOrchestrator:
             "visuals": prov_s4,
             "embedding": {
                 "provider": "gemini",
-                "model": scoring_ctx.get("embedding_model_name") or "gemini-embedding-001",
+                "model": scoring_ctx.get("embedding_model_name") or "gemini-embedding-2",
             },
         }
         metadata["ai_provenance"] = ai_provenance
@@ -1201,7 +1214,7 @@ class PipelineOrchestrator:
                                 EventEmbedding(
                                     event_id=db_event.id,
                                     embedding_vector=emb_vec,
-                                    model_name=ctx.get("embedding_model_name") or "gemini-embedding-001",
+                                    model_name=ctx.get("embedding_model_name") or "gemini-embedding-2",
                                     corroboration_count=corrob_cnt,
                                     trustworthiness_score=trust_est,
                                     embedded_at=utc_now(),

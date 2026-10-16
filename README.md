@@ -139,7 +139,7 @@ The primary operations view provides continuous real-time intelligence monitorin
 - **Interactive Citation Inspection**: Click any inline citation badge to inspect the underlying corroborated source events and original raw wire text.
 
 ### 3. 2D Semantic Relevance Map (`/map`)
-- **Spatial Intelligence Galaxy**: Projects high-dimensional event embeddings (`gemini-embedding-001` or self-hosted Hugging Face TEI `all-MiniLM-L6-v2`) onto an interactive 2D canvas with topical clustering and multi-source corroboration scoring.
+- **Spatial Intelligence Galaxy**: Projects high-dimensional event embeddings (`gemini-embedding-2` / `gemini-embedding-001` or self-hosted Hugging Face TEI `all-MiniLM-L6-v2`) onto an interactive 2D canvas with topical clustering and multi-source corroboration scoring.
 - **Consensus & Trustworthiness Badges**: Highlights stories corroborated independently across multiple source engines (RSS, Telegram, NewsAPI, Reddit, AIS).
 
 ### 4. Analytics & Trends (`/trends` & `/`)

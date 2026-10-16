@@ -257,28 +257,27 @@ async def test_embeddings_rest_api_endpoints():
 
 
 @pytest.mark.asyncio
-async def test_failover_gemini_1_to_gemini_2_and_hf_tei(monkeypatch):
-    """Verify that 429 quota exhaustion on Gemini 1 cleanly fails over to Gemini 2."""
+async def test_failover_gemini_2_to_gemini_1_and_hf_tei(monkeypatch):
+    """Verify that 429 quota exhaustion on Gemini 2 cleanly fails over to Gemini 1."""
     service = EmbeddingService(api_key="valid-test-key")
 
     call_log = []
 
     async def mock_call_gemini(texts, model, api_key):
         call_log.append(model)
-        if model == "gemini-embedding-001":
+        if model == "gemini-embedding-2":
             raise RuntimeError("QUOTA_EXCEEDED: 429 rate limit exceeded")
-        # Gemini 2 succeeds
+        # Gemini 1 succeeds
         return [generate_deterministic_mock_embedding(t) for t in texts]
 
     monkeypatch.setattr(service, "call_gemini_batch_api", mock_call_gemini)
 
     vectors, used_model = await service.generate_embeddings_batch(
         texts=["Report on drone activity over border area"],
-        preferred_model="gemini-embedding-001",
     )
 
-    assert used_model == "gemini-embedding-2"
-    assert call_log == ["gemini-embedding-001", "gemini-embedding-2"]
+    assert used_model == "gemini-embedding-001"
+    assert call_log == ["gemini-embedding-2", "gemini-embedding-001"]
     assert len(vectors) == 1
     assert len(vectors[0]) == 3072
 

@@ -64,6 +64,16 @@ def extract_and_parse_json(
         except Exception:
             text = bracketed_content
 
+    # Tier 3b: Search individual candidate JSON blocks (handles Gemma thinking chains) from last to first
+    cand_blocks = re.findall(r"\{[^{}]*\}", raw_text)
+    for cand in reversed(cand_blocks):
+        try:
+            cand_data = json.loads(cand)
+            if isinstance(cand_data, dict):
+                return target_model.model_validate(cand_data)
+        except Exception:
+            continue
+
     # Tier 4: Regex sanitization & syntax repair
     try:
         cleaned = text

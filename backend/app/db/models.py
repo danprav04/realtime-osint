@@ -255,7 +255,7 @@ class EventEmbedding(Base):
         String(36), ForeignKey("events.id", ondelete="CASCADE"), unique=True, nullable=False, index=True
     )
     embedding_vector: Mapped[List[float]] = mapped_column(JSON, nullable=False)
-    model_name: Mapped[str] = mapped_column(String(100), default="gemini-embedding-001", nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), default="gemini-embedding-2", nullable=False)
     x_coord: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     y_coord: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     trustworthiness_score: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True, index=True)

@@ -89,11 +89,11 @@ export function Navbar() {
       : allProviderStatuses.filter((p) => p.id === 'gemini' || p.id === 'groq');
 
   const navItems = [
-    { href: '/', label: 'Live Feed', icon: Radio },
-    { href: '/summary', label: 'AI Summary', icon: Sparkles },
-    { href: '/map', label: 'Relevance Map', icon: Compass },
-    { href: '/trends', label: 'Trends & Analytics', icon: BarChart3 },
-    { href: '/settings', label: 'Settings', icon: Sliders },
+    { href: '/', label: 'Live Feed', shortLabel: 'Feed', icon: Radio },
+    { href: '/summary', label: 'AI Summary', shortLabel: 'Summary', icon: Sparkles },
+    { href: '/map', label: 'Relevance Map', shortLabel: 'Map', icon: Compass },
+    { href: '/trends', label: 'Trends & Analytics', shortLabel: 'Trends', icon: BarChart3 },
+    { href: '/settings', label: 'Settings', shortLabel: 'Settings', icon: Sliders },
   ];
 
   if (isDisplay) {
@@ -103,23 +103,25 @@ export function Navbar() {
   return (
     <>
       <header className="sticky top-0 z-40 w-full bg-canvas-subtle/95 backdrop-blur hairline-b">
-        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8 gap-4">
           {/* Logo & Brand */}
-          <div className="flex items-center space-x-6">
-            <Link href="/" className="flex items-center space-x-2.5 group">
-              <div className="relative flex items-center justify-center rounded-lg bg-surface-card hairline-border group-hover:border-accent-cyan/50 transition-colors p-0.5">
-                <AppIcon size={30} withBeacon />
+          <div className="flex items-center gap-3 lg:gap-6 shrink-0 min-w-0">
+            <Link href="/" className="flex items-center gap-2.5 group shrink-0">
+              <div className="relative flex items-center justify-center rounded-lg bg-surface-card hairline-border group-hover:border-accent-cyan/50 transition-colors p-1">
+                <AppIcon size={28} withBeacon />
               </div>
-              <div className="flex flex-col">
-                <span className="text-xs font-bold tracking-tight text-zinc-100 uppercase">
+              <div className="flex flex-col whitespace-nowrap min-w-0">
+                <span className="text-xs font-bold tracking-tight text-zinc-100 uppercase whitespace-nowrap leading-none">
                   OSINT <span className="text-accent-cyan">REALTIME</span>
                 </span>
-                <span className="text-[10px] text-zinc-400 font-mono">v1.0 • PRODUCTION</span>
+                <span className="text-[10px] text-zinc-400 font-mono tracking-tight whitespace-nowrap mt-1 leading-none">
+                  v1.0 <span className="text-zinc-600">•</span> PRODUCTION
+                </span>
               </div>
             </Link>
 
             {/* Navigation links */}
-            <nav className="hidden md:flex items-center space-x-1">
+            <nav className="hidden md:flex items-center gap-1 xl:gap-1.5 shrink-0">
               {navItems.map((item) => {
                 const Icon = item.icon;
                 const isActive = pathname === item.href;
@@ -128,14 +130,15 @@ export function Navbar() {
                     key={item.href}
                     href={item.href}
                     className={cn(
-                      'flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors pressable',
+                      'flex items-center gap-1.5 h-8 px-2.5 xl:px-3 rounded-lg text-xs font-medium transition-all pressable whitespace-nowrap shrink-0',
                       isActive
                         ? 'bg-surface-raised text-zinc-100 hairline-border shadow-sm'
                         : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-card/60'
                     )}
                   >
-                    <Icon className={cn('w-3.5 h-3.5', isActive ? 'text-accent-cyan' : 'text-zinc-400')} />
-                    <span>{item.label}</span>
+                    <Icon className={cn('w-3.5 h-3.5 shrink-0', isActive ? 'text-accent-cyan' : 'text-zinc-400')} />
+                    <span className="hidden xl:inline">{item.label}</span>
+                    <span className="xl:hidden">{item.shortLabel}</span>
                   </Link>
                 );
               })}
@@ -143,17 +146,19 @@ export function Navbar() {
           </div>
 
           {/* Right Header Status Bar */}
-          <div className="flex items-center space-x-2.5">
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
             {/* Active Theme Chip */}
             {activeTheme && (
               <Link
                 href="/settings"
-                title="Active Topic Theme (Click to switch or edit in Settings)"
-                className="hidden lg:flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-surface-card hairline-border text-[11px] text-zinc-300 hover:bg-surface-raised transition-colors"
+                title={`Active Theme: ${activeTheme.name} (Click to switch or edit in Settings)`}
+                className="hidden lg:flex items-center gap-1.5 h-8 px-2.5 rounded-md bg-surface-card hairline-border text-[11px] text-zinc-300 hover:bg-surface-raised transition-colors shrink-0 whitespace-nowrap"
               >
-                <Layers className="w-3 h-3 text-accent-amber" />
-                <span className="text-zinc-400">Theme:</span>
-                <span className="font-medium text-zinc-200 truncate max-w-[130px]">{activeTheme.name}</span>
+                <Layers className="w-3.5 h-3.5 text-accent-amber shrink-0" />
+                <span className="text-zinc-400 font-normal">Theme:</span>
+                <span className="font-medium text-zinc-200 truncate max-w-[105px] xl:max-w-[150px]">
+                  {activeTheme.name}
+                </span>
               </Link>
             )}
 
@@ -164,17 +169,17 @@ export function Navbar() {
                 onClick={() => setIsLimitsOpen((prev) => !prev)}
                 title="Shortcut links to rate limits of connected providers"
                 className={cn(
-                  'flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-[11px] hairline-border transition-colors pressable',
+                  'flex items-center gap-1.5 h-8 px-2.5 rounded-md text-[11px] hairline-border transition-colors pressable shrink-0 whitespace-nowrap',
                   isLimitsOpen
                     ? 'bg-surface-raised text-accent-cyan border-accent-cyan/40'
                     : 'bg-surface-card text-zinc-300 hover:text-zinc-100 hover:bg-surface-raised'
                 )}
               >
-                <Gauge className="w-3.5 h-3.5 text-accent-cyan" />
-                <span className="hidden sm:inline font-medium">Rate Limits</span>
+                <Gauge className="w-3.5 h-3.5 text-accent-cyan shrink-0" />
+                <span className="hidden sm:inline font-medium whitespace-nowrap">Rate Limits</span>
                 <ChevronDown
                   className={cn(
-                    'w-3 h-3 text-zinc-400 transition-transform duration-150',
+                    'w-3 h-3 text-zinc-400 transition-transform duration-150 shrink-0',
                     isLimitsOpen && 'rotate-180 text-accent-cyan'
                   )}
                 />
@@ -256,7 +261,7 @@ export function Navbar() {
             {/* WebSocket Connection Status Beacon */}
             <div
               className={cn(
-                'flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono tracking-wide tabular hairline-border',
+                'flex items-center gap-1.5 h-8 px-2.5 rounded-md text-[11px] font-mono tracking-wide tabular hairline-border shrink-0 whitespace-nowrap',
                 isConnected
                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                   : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
@@ -264,16 +269,16 @@ export function Navbar() {
             >
               {isConnected ? (
                 <>
-                  <span className="relative flex h-2 w-2">
+                  <span className="relative flex h-2 w-2 shrink-0">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-beacon"></span>
                   </span>
-                  <span className="font-semibold text-[10px]">LIVE</span>
+                  <span className="font-semibold text-[10px] whitespace-nowrap">LIVE</span>
                 </>
               ) : (
                 <>
-                  <WifiOff className="w-3 h-3 text-rose-400 animate-pulse" />
-                  <span className="font-semibold text-[10px]">OFFLINE</span>
+                  <WifiOff className="w-3.5 h-3.5 text-rose-400 animate-pulse shrink-0" />
+                  <span className="font-semibold text-[10px] whitespace-nowrap">OFFLINE</span>
                 </>
               )}
             </div>
@@ -283,14 +288,15 @@ export function Navbar() {
               label="Install App"
               variant="compact"
               appName="OSINT Realtime"
-              className="hidden sm:flex"
+              hideLabelOnMobile={true}
+              className="hidden sm:flex shrink-0 whitespace-nowrap"
             />
 
             {/* Auth Key config button */}
             <button
               onClick={() => setIsAuthOpen(true)}
               title="Configure API Key"
-              className="p-1.5 rounded-lg bg-surface-card hairline-border text-zinc-400 hover:text-zinc-200 hover:bg-surface-raised pressable transition-colors"
+              className="flex items-center justify-center h-8 w-8 rounded-md bg-surface-card hairline-border text-zinc-400 hover:text-zinc-200 hover:bg-surface-raised pressable transition-colors shrink-0"
             >
               <Shield className="w-4 h-4" />
             </button>
@@ -298,7 +304,7 @@ export function Navbar() {
         </div>
 
         {/* Mobile Navigation bar */}
-        <div className="flex md:hidden border-t border-white/5 px-4 py-2 space-x-1 bg-canvas-base items-center">
+        <div className="flex md:hidden border-t border-white/5 px-2.5 py-2 gap-1 bg-canvas-base items-center">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = pathname === item.href;
@@ -307,14 +313,14 @@ export function Navbar() {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  'flex-1 flex items-center justify-center space-x-1.5 py-1.5 rounded-md text-xs font-medium',
+                  'flex-1 flex flex-col items-center justify-center py-1.5 px-1 rounded-md text-[10px] font-medium transition-colors gap-1 whitespace-nowrap min-w-0',
                   isActive
                     ? 'bg-surface-raised text-zinc-100 hairline-border'
                     : 'text-zinc-400 hover:text-zinc-200'
                 )}
               >
-                <Icon className={cn('w-3.5 h-3.5', isActive ? 'text-accent-cyan' : 'text-zinc-400')} />
-                <span>{item.label}</span>
+                <Icon className={cn('w-4 h-4 shrink-0', isActive ? 'text-accent-cyan' : 'text-zinc-400')} />
+                <span className="truncate">{item.shortLabel}</span>
               </Link>
             );
           })}
@@ -322,7 +328,8 @@ export function Navbar() {
             label="Install"
             variant="compact"
             appName="OSINT Realtime"
-            className="px-2 py-1.5 text-xs shrink-0"
+            hideLabelOnMobile={true}
+            className="h-8 px-2 text-xs shrink-0"
           />
         </div>
       </header>

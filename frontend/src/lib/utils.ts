@@ -533,7 +533,7 @@ export function getEventAIProvenance(
     case 'visuals':
       return { provider: 'Groq', model: 'openai/gpt-oss-20b' };
     case 'embedding':
-      return { provider: 'Gemini', model: 'gemini-embedding-001' };
+      return { provider: 'Gemini', model: 'gemini-embedding-2' };
     default:
       return { provider: 'Gemini', model: 'gemini-3.5-flash-lite' };
   }

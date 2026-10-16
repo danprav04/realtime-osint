@@ -399,7 +399,7 @@ class SituationSummaryService:
             "time_range": norm_time_range,
             "cached": True,
             "active_ai_model": "deterministic-fusion-engine",
-            "active_embedding_model": "gemini-embedding-001",
+            "active_embedding_model": "gemini-embedding-2",
             "threat_trajectory": fallback_llm.threat_trajectory,
             "threat_level_score": fallback_llm.threat_level_score,
             "executive_bluf": fallback_llm.executive_bluf,

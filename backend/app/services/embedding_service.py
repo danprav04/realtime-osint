@@ -34,10 +34,10 @@ logger = logging.getLogger("osint.services.embedding")
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # Available Gemini embedding models matching the user's quota tiers:
-# Gemini Embedding 1 -> models/gemini-embedding-001 (100 RPM, 30K TPM, 1,000 RPD)
 # Gemini Embedding 2 -> models/gemini-embedding-2   (100 RPM, 30K TPM, 1,000 RPD)
-DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
-FALLBACK_EMBEDDING_MODEL = "gemini-embedding-2"
+# Gemini Embedding 1 -> models/gemini-embedding-001 (100 RPM, 30K TPM, 1,000 RPD)
+DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
+FALLBACK_EMBEDDING_MODEL = "gemini-embedding-001"
 
 # Safe batch and pacing constants
 MAX_ITEMS_PER_BATCH = 20  # Keep batch reasonable to stay well within 30K TPM
@@ -636,7 +636,7 @@ class EmbeddingService:
         """
         Generate embeddings for a list of texts.
         Chunk into batches of up to MAX_ITEMS_PER_BATCH.
-        Handles failover from Gemini Embedding 1 -> Gemini Embedding 2 -> HF Space TEI -> Mock.
+        Handles failover from Gemini Embedding 2 -> Gemini Embedding 1 -> HF Space TEI -> Mock.
         Returns (list_of_embeddings, model_name_used).
         """
         if not texts:
@@ -697,7 +697,7 @@ class EmbeddingService:
                     logger.warning(
                         f"Primary model {primary} exhausted quota, failing over to {secondary}..."
                     )
-                    # Attempt fallback model (Gemini Embedding 2)
+                    # Attempt fallback model (Gemini Embedding 1)
                     try:
                         vectors = await self.call_gemini_batch_api(
                             batch, secondary, active_key

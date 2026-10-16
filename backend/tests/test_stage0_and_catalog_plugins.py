@@ -1285,3 +1285,52 @@ class TestGemma4AndOrchestratorGatekeeper:
         assert stats["evaluated_count"] == 4
         assert stats["passed_count"] >= 2
 
+    @pytest.mark.asyncio
+    async def test_gemma_tpm_pacing_and_output_token_clamping(self):
+        """Verify Gemma models enforce 13.5K TPM limit, clamp maxOutputTokens, and pace when tokens exceed threshold."""
+        from backend.app.pipeline.providers.gemini import GeminiProvider
+
+        prov = GeminiProvider(api_key="test-key", default_model="gemma-4-26b-a4b-it")
+        assert prov.max_tpm == 13500
+
+        # Verify maxOutputTokens clamping for Gemma json_mode
+        payloads = []
+
+        async def fake_post(self_client, url, json=None, headers=None, **kwargs):
+            payloads.append(json)
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"candidates": [{"content": {"parts": [{"text": "OK"}]}}]}
+            return resp
+
+        with patch("httpx.AsyncClient.post", new=fake_post):
+            await prov.generate_text(
+                prompt="Short prompt",
+                max_tokens=1024,
+                json_mode=True,
+            )
+
+        assert len(payloads) == 1
+        # Confirmed maxOutputTokens was clamped from 1024 to 384 for Gemma
+        assert payloads[0]["generationConfig"]["maxOutputTokens"] == 384
+
+        # Test sliding window TPM enforcement
+        prov.max_tpm = 1000
+        prov.min_interval_sec = 0.0
+        prov.max_rpm = 100
+        prov._token_records.clear()
+
+        loop = asyncio.get_event_loop()
+        t0 = loop.time()
+        # Seed 900 tokens 10s ago
+        prov._token_records.append((t0 - 10.0, 900))
+
+        # Request with 200 tokens should trigger wait for the 900 tokens to roll off the 60s window
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await prov._acquire_pacing_slot(estimated_tokens=200)
+            mock_sleep.assert_called_once()
+            slept = mock_sleep.call_args[0][0]
+            # Since 900 tokens were seeded 10s ago, rollover is at (t0 - 10 + 60.2) - t0 = ~50.2s
+            assert 49.0 <= slept <= 51.0
+
+

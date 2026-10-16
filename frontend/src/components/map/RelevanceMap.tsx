@@ -1129,11 +1129,11 @@ export function RelevanceMap({
                 className="inline-flex items-center space-x-1.5 hover:text-accent-cyan transition-colors"
               >
                 <span>
-                  Gemini 1: <strong className="text-zinc-100">{m1Count}</strong>/1K
+                  Gemini 2: <strong className="text-zinc-100">{m2Count}</strong>/1K
                 </span>
                 <span className="text-zinc-600">|</span>
                 <span>
-                  Gemini 2: <strong className="text-zinc-100">{m2Count}</strong>/1K
+                  Gemini 1: <strong className="text-zinc-100">{m1Count}</strong>/1K
                 </span>
                 <ExternalLink className="w-2.5 h-2.5 text-accent-cyan" />
               </a>

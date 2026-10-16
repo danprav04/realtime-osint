@@ -60,7 +60,7 @@ DEFAULT_AI_STAGES = {
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
             {"provider": "groq", "model_name": "qwen/qwen3.8-27b", "temperature": 0.2},
-            {"provider": "aihubmix", "model_name": "coding-glm-5.3-flash-free", "temperature": 0.2},
+            {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
         ],
     },
     "visuals": {

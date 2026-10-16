@@ -244,11 +244,13 @@ class BaseAIProvider(abc.ABC):
         self.jitter = jitter_sec
         self.min_interval_sec: float = 1.0
         self.max_rpm: int = 0
+        self.max_tpm: int = 0
         self.max_minute_wait_sec: float = 65.0
         self._pacing_lock = asyncio.Lock()
         self._last_request_time: float = 0.0
         self._rate_limit_until: float = 0.0
         self._request_timestamps: Deque[float] = deque()
+        self._token_records: Deque[Tuple[float, int]] = deque()
         self._client: Optional[httpx.AsyncClient] = None
         self.call_history: list[Dict[str, Any]] = []
 
@@ -296,12 +298,12 @@ class BaseAIProvider(abc.ABC):
         """Process structured stage execution returning parsed dictionary."""
         pass
 
-    async def _acquire_pacing_slot(self) -> None:
+    async def _acquire_pacing_slot(self, estimated_tokens: int = 0) -> None:
         """
-        Enforce per-minute sliding-window RPM limits, active 429 minute-window pauses,
+        Enforce per-minute sliding-window RPM and TPM limits, active 429 minute-window pauses,
         and minimum inter-request spacing under a shared async lock.
         """
-        if self.min_interval_sec <= 0 and self.max_rpm <= 0 and self._rate_limit_until <= 0:
+        if self.min_interval_sec <= 0 and self.max_rpm <= 0 and self.max_tpm <= 0 and self._rate_limit_until <= 0:
             return
 
         async with self._pacing_lock:
@@ -334,7 +336,34 @@ class BaseAIProvider(abc.ABC):
                     while self._request_timestamps and (now - self._request_timestamps[0]) >= 60.0:
                         self._request_timestamps.popleft()
 
-            # 3. Enforce minimum spacing between consecutive requests
+            # 3. Enforce 60-second sliding-window TPM cap so we never exceed minute token limits (e.g. 16K TPM for Gemma)
+            if self.max_tpm > 0 and estimated_tokens > 0:
+                while self._token_records and (now - self._token_records[0][0]) >= 60.0:
+                    self._token_records.popleft()
+
+                current_tokens = sum(tok for _, tok in self._token_records)
+                if (current_tokens + estimated_tokens) > self.max_tpm:
+                    # Calculate wait time for enough tokens to roll off the 60s sliding window
+                    tokens_needed = (current_tokens + estimated_tokens) - self.max_tpm
+                    freed = 0
+                    tpm_wait = 0.0
+                    for ts, tok in self._token_records:
+                        freed += tok
+                        tpm_wait = max(tpm_wait, (ts + 60.2) - now)
+                        if freed >= tokens_needed:
+                            break
+                    if tpm_wait > 0:
+                        logger.warning(
+                            f"[{self.provider_name}:{self.default_model}] Approaching {self.max_tpm} TPM limit "
+                            f"({current_tokens} + {estimated_tokens} = {current_tokens + estimated_tokens} tokens / 60s); "
+                            f"pacing {tpm_wait:.1f}s for token bucket rollover..."
+                        )
+                        await asyncio.sleep(tpm_wait)
+                        now = loop.time()
+                    while self._token_records and (now - self._token_records[0][0]) >= 60.0:
+                        self._token_records.popleft()
+
+            # 4. Enforce minimum spacing between consecutive requests
             if self.min_interval_sec > 0 and self._last_request_time > 0:
                 elapsed = now - self._last_request_time
                 if elapsed < self.min_interval_sec:
@@ -344,13 +373,16 @@ class BaseAIProvider(abc.ABC):
             self._last_request_time = now
             if self.max_rpm > 0:
                 self._request_timestamps.append(now)
+            if self.max_tpm > 0 and estimated_tokens > 0:
+                self._token_records.append((now, estimated_tokens))
 
     async def _execute_with_retry(
         self,
         call_fn: Callable[[], Coroutine[Any, Any, httpx.Response]],
+        estimated_tokens: int = 0,
     ) -> httpx.Response:
         """
-        Executes HTTP requests with sliding-window RPM pacing, minute-limit recovery,
+        Executes HTTP requests with sliding-window RPM/TPM pacing, minute-limit recovery,
         and daily-quota failover classification.
         """
         if not self.api_key or not self.api_key.strip():
@@ -361,7 +393,7 @@ class BaseAIProvider(abc.ABC):
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
-                await self._acquire_pacing_slot()
+                await self._acquire_pacing_slot(estimated_tokens=estimated_tokens)
 
                 response = await call_fn()
 
@@ -457,6 +489,20 @@ class BaseAIProvider(abc.ABC):
                     if attempt == self.max_retries:
                         raise RuntimeError(f"{self.provider_name.capitalize()} Service Unavailable (HTTP 503)")
                     delay = self.base_backoff * (2 ** attempt) + random.uniform(0.1, self.jitter)
+                    await asyncio.sleep(delay)
+                    continue
+
+                # Status 500: Internal Server Error (Gemma frequently throws 500 when TPM quota is saturated)
+                if response.status_code == 500:
+                    if attempt == self.max_retries:
+                        response.raise_for_status()
+                    delay = max(3.5, self.base_backoff * (2 ** attempt)) + random.uniform(0.5, 1.5)
+                    logger.warning(
+                        f"[{self.provider_name}:{self.default_model}] HTTP 500 Internal Error (TPM saturation/transient cluster error). "
+                        f"Waiting {delay:.1f}s before retry (attempt {attempt + 1}/{self.max_retries})..."
+                    )
+                    now_loop = asyncio.get_event_loop().time()
+                    self._rate_limit_until = max(self._rate_limit_until, now_loop + delay)
                     await asyncio.sleep(delay)
                     continue
 

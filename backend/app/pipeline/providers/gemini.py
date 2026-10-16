@@ -36,21 +36,25 @@ class GeminiProvider(BaseAIProvider):
             or getattr(st, "GEMINI_API_KEY", None)
             or os.environ.get("GEMINI_API_KEY", "")
         )
+        is_gemma = "gemma" in (default_model or "").lower()
+        effective_timeout = max(timeout_seconds, 40.0) if is_gemma else timeout_seconds
         super().__init__(
             api_key=resolved_key,
             default_model=default_model,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=effective_timeout,
             max_retries=max_retries,
             base_backoff_sec=base_backoff_sec,
             jitter_sec=jitter_sec,
         )
-        # Safe pacing for Gemini free tier (15 RPM limit = 4.0s minimum gap; 30 RPM for gemma-4)
-        if "gemma" in (default_model or "").lower():
+        # Safe pacing for Gemini free tier (15 RPM limit = 4.0s minimum gap; 28 RPM & 13.5K TPM for gemma-4)
+        if is_gemma:
             self.min_interval_sec = 2.1
             self.max_rpm = 28
+            self.max_tpm = 13500  # Strict 13.5K TPM limit (Google AI Studio allows 16K TPM)
         else:
             self.min_interval_sec = 4.1
             self.max_rpm = 14
+            self.max_tpm = 0
 
     @property
     def provider_name(self) -> str:
@@ -66,6 +70,7 @@ class GeminiProvider(BaseAIProvider):
         json_mode: bool = False,
     ) -> str:
         model_name = model or self.default_model or "gemini-3.5-flash-lite"
+        is_gemma = "gemma" in model_name.lower()
         client = await self.get_client()
         url = f"{GEMINI_BASE_URL}/{model_name}:generateContent"
 
@@ -73,6 +78,17 @@ class GeminiProvider(BaseAIProvider):
             "Content-Type": "application/json",
             "x-goog-api-key": self.api_key,
         }
+
+        # Gemma token budgeting: clamp maxOutputTokens so Google's quota counter
+        # does not pre-allocate 1,024 tokens from the strict 16K TPM bucket on every request.
+        if is_gemma:
+            effective_max_tokens = min(max_tokens, 384) if (json_mode and max_tokens >= 512) else min(max_tokens, 512)
+        else:
+            effective_max_tokens = max_tokens
+
+        prompt_chars = len(prompt) + (len(system_prompt) if system_prompt else 0)
+        est_input_tokens = int(prompt_chars / 3.5) + 15
+        total_est_tokens = est_input_tokens + effective_max_tokens
 
         payload: Dict[str, Any] = {
             "contents": [
@@ -83,7 +99,7 @@ class GeminiProvider(BaseAIProvider):
             ],
             "generationConfig": {
                 "temperature": temperature,
-                "maxOutputTokens": max_tokens,
+                "maxOutputTokens": effective_max_tokens,
             },
         }
 
@@ -99,7 +115,7 @@ class GeminiProvider(BaseAIProvider):
             return await client.post(url, json=payload, headers=headers)
 
         try:
-            response = await self._execute_with_retry(_call)
+            response = await self._execute_with_retry(_call, estimated_tokens=total_est_tokens)
         except httpx.HTTPStatusError as http_err:
             # Gemma models on Google AI Studio may reject systemInstruction or responseMimeType="application/json"
             # with HTTP 400 INVALID_ARGUMENT. Fold system_prompt into user prompt and retry on the same model.
@@ -120,14 +136,14 @@ class GeminiProvider(BaseAIProvider):
                     ],
                     "generationConfig": {
                         "temperature": temperature,
-                        "maxOutputTokens": max_tokens,
+                        "maxOutputTokens": effective_max_tokens,
                     },
                 }
 
                 async def _call_compat() -> httpx.Response:
                     return await client.post(url, json=compat_payload, headers=headers)
 
-                response = await self._execute_with_retry(_call_compat)
+                response = await self._execute_with_retry(_call_compat, estimated_tokens=total_est_tokens)
             else:
                 raise
 

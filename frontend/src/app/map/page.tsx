@@ -38,7 +38,7 @@ export default function RelevanceMapPage() {
       total_nodes: 0,
       total_edges: 0,
       total_clusters: 0,
-      active_model: 'gemini-embedding-001',
+      active_model: 'gemini-embedding-2',
     },
   });
 
@@ -259,7 +259,7 @@ export default function RelevanceMapPage() {
             <Server className="w-3 h-3 text-accent-cyan" />
             <span>Active Model:</span>
             <span className="text-zinc-200 font-medium">
-              {mapData.stats?.active_model || 'gemini-embedding-001'}
+              {mapData.stats?.active_model || 'gemini-embedding-2'}
             </span>
           </div>
           {status?.hf_space_configured && (

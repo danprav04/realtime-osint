@@ -175,7 +175,7 @@ export default function PublicDisplayPage() {
     nodes: [],
     edges: [],
     clusters: [],
-    stats: { total_nodes: 0, total_edges: 0, total_clusters: 0, active_model: 'gemini-embedding-001' },
+    stats: { total_nodes: 0, total_edges: 0, total_clusters: 0, active_model: 'gemini-embedding-2' },
   });
 
   const [loading, setLoading] = useState<boolean>(true);
@@ -275,7 +275,7 @@ export default function PublicDisplayPage() {
       nodes: [],
       edges: [],
       clusters: [],
-      stats: { total_nodes: 0, total_edges: 0, total_clusters: 0, active_model: 'gemini-embedding-001' },
+      stats: { total_nodes: 0, total_edges: 0, total_clusters: 0, active_model: 'gemini-embedding-2' },
     });
     window.dispatchEvent(new Event('osint_viewer_logout'));
   };

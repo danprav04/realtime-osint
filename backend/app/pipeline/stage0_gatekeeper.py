@@ -153,7 +153,7 @@ class Stage0Gatekeeper:
     Evaluates batches of newly polled events before DB persistence and Stages 1-4.
     """
 
-    def __init__(self, batch_size: int = 12, recent_buffer_size: int = 150):
+    def __init__(self, batch_size: int = 6, recent_buffer_size: int = 150):
         self.batch_size = max(1, min(batch_size, 25))
         self._recent_texts: Deque[str] = deque(maxlen=recent_buffer_size)
         self.evaluated_count: int = 0
@@ -299,7 +299,7 @@ class Stage0Gatekeeper:
                 system_prompt=STAGE0_SYSTEM_PROMPT,
                 model=model,
                 temperature=temperature if temperature is not None else 0.0,
-                max_tokens=256,
+                max_tokens=384,
                 json_mode=True,
             )
             self.last_model_used = f"{provider.provider_name}:{model or provider.default_model}"

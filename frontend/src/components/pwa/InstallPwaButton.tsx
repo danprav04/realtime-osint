@@ -55,17 +55,17 @@ export function InstallPwaButton({
   let buttonClasses = '';
   if (variant === 'prominent') {
     buttonClasses =
-      'w-full flex items-center justify-center space-x-2 py-2.5 px-4 rounded-xl bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/40 text-xs font-semibold text-accent-cyan transition-all shadow-sm pressable';
+      'w-full flex items-center justify-center space-x-2 py-2.5 px-4 rounded-xl bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/40 text-xs font-semibold text-accent-cyan transition-all shadow-sm pressable whitespace-nowrap shrink-0';
   } else if (variant === 'pill') {
     buttonClasses =
-      'inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-accent-cyan/10 hover:bg-accent-cyan/20 border border-accent-cyan/30 text-xs font-medium text-accent-cyan transition-colors pressable';
+      'inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-accent-cyan/10 hover:bg-accent-cyan/20 border border-accent-cyan/30 text-xs font-medium text-accent-cyan transition-colors pressable whitespace-nowrap shrink-0';
   } else if (variant === 'header') {
     buttonClasses =
-      'flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-accent-cyan/10 hover:bg-accent-cyan/20 hairline-border border-accent-cyan/30 text-[11px] font-medium text-accent-cyan transition-colors pressable';
+      'flex items-center space-x-1.5 h-8 px-2.5 rounded-md bg-accent-cyan/10 hover:bg-accent-cyan/20 hairline-border border-accent-cyan/30 text-[11px] font-medium text-accent-cyan transition-colors pressable whitespace-nowrap shrink-0';
   } else {
     // Compact default
     buttonClasses =
-      'flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-surface-card hover:bg-surface-raised hairline-border text-[11px] text-zinc-300 hover:text-zinc-100 transition-colors pressable';
+      'flex items-center space-x-1.5 h-8 px-2.5 rounded-md bg-surface-card hover:bg-surface-raised hairline-border text-[11px] text-zinc-300 hover:text-zinc-100 transition-colors pressable whitespace-nowrap shrink-0';
   }
 
   return (
@@ -78,18 +78,18 @@ export function InstallPwaButton({
       >
         {installSuccess ? (
           <>
-            <Check className="w-3.5 h-3.5 text-emerald-400" />
-            <span className={cn("text-emerald-400 font-medium", hideLabelOnMobile && "hidden sm:inline")}>Installed!</span>
+            <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span className={cn("text-emerald-400 font-medium whitespace-nowrap", hideLabelOnMobile && "hidden sm:inline")}>Installed!</span>
           </>
         ) : isStandalone ? (
           <>
-            <Check className="w-3.5 h-3.5 text-accent-cyan" />
-            <span className={cn(hideLabelOnMobile && "hidden sm:inline")}>PWA Active</span>
+            <Check className="w-3.5 h-3.5 text-accent-cyan shrink-0" />
+            <span className={cn("whitespace-nowrap", hideLabelOnMobile && "hidden sm:inline")}>PWA Active</span>
           </>
         ) : (
           <>
-            <Download className="w-3.5 h-3.5 text-accent-cyan" />
-            <span className={cn(hideLabelOnMobile && "hidden sm:inline")}>{label}</span>
+            <Download className="w-3.5 h-3.5 text-accent-cyan shrink-0" />
+            <span className={cn("whitespace-nowrap", hideLabelOnMobile && "hidden sm:inline")}>{label}</span>
           </>
         )}
       </button>
