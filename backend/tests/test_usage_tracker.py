@@ -235,3 +235,49 @@ def test_model_rate_limit_isolates_from_key_status():
     assert m["status"] == "cooldown"
     assert m["cooldown_remaining_sec"] > 250.0
 
+
+def test_provider_classification_and_catalog_defaults():
+    """Verify that Groq GPT-OSS models are classified under Groq, Gemini Embeddings under Gemini, etc."""
+    tracker = ProviderUsageTracker()
+    tracker.reset_for_testing()
+
+    ai_settings = {
+        "summarization": {
+            "provider": "groq",
+            "model_name": "openai/gpt-oss-20b",
+            "fallbacks": [
+                {"provider": "gemini", "model_name": "gemini-3.5-flash-lite"},
+            ],
+        },
+        "scoring": {
+            "provider": "gemini",
+            "model_name": "gemma-4-26b-a4b-it",
+            "fallbacks": [
+                {"provider": "groq", "model_name": "openai/gpt-oss-120b"},
+            ],
+        },
+    }
+
+    tel = tracker.get_telemetry(ai_settings=ai_settings)
+    models = tel["all_models"]
+
+    # openai/gpt-oss-20b and openai/gpt-oss-120b must belong to groq
+    gpt_20b = next((m for m in models if m["model_name"] == "openai/gpt-oss-20b"), None)
+    assert gpt_20b is not None
+    assert gpt_20b["provider"] == "groq"
+
+    gpt_120b = next((m for m in models if m["model_name"] == "openai/gpt-oss-120b"), None)
+    assert gpt_120b is not None
+    assert gpt_120b["provider"] == "groq"
+
+    # gemini-embedding-2 must belong to gemini
+    gemini_emb2 = next((m for m in models if m["model_name"] == "gemini-embedding-2"), None)
+    assert gemini_emb2 is not None
+    assert gemini_emb2["provider"] == "gemini"
+
+    # gemma-4-26b-a4b-it must belong to gemini
+    gemma = next((m for m in models if m["model_name"] == "gemma-4-26b-a4b-it"), None)
+    assert gemma is not None
+    assert gemma["provider"] == "gemini"
+
+

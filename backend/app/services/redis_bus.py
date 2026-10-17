@@ -76,9 +76,9 @@ class RedisBus:
             self._fallback_mode = False
             logger.info(f"Connected to Redis Pub/Sub at {self.redis_url}")
 
-            # Initialize pubsub and start background listener if we have subscriptions
+            # Initialize pubsub and start background listener if we have active subscriptions
             self._pubsub = self._client.pubsub()
-            if self._subscribers:
+            if any(len(handlers) > 0 for handlers in self._subscribers.values()):
                 await self._refresh_redis_subscriptions()
                 if self._listener_task is None or self._listener_task.done():
                     self._listener_task = asyncio.create_task(
@@ -199,6 +199,9 @@ class RedisBus:
         """Background loop reading published messages from Redis."""
         logger.debug("Redis PubSub listener loop started.")
         while self._is_connected and self._pubsub:
+            if not self._subscribed_redis_channels:
+                await asyncio.sleep(0.2)
+                continue
             try:
                 message = await self._pubsub.get_message(
                     ignore_subscribe_messages=True, timeout=1.0

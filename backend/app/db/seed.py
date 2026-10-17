@@ -467,14 +467,14 @@ DEFAULT_SOURCES_DATA: List[Dict[str, Any]] = [
         "source_type": "rss",
         "config_json": {"url": "https://middleeast.liveuamap.com/rss"},
         "polling_interval_sec": 120,
-        "is_enabled": True,
+        "is_enabled": False,
     },
     {
         "name": "PPRuNe Military Aviation Rumour Network",
         "source_type": "rss",
         "config_json": {"url": "https://www.pprune.org/external.php?type=RSS2&forumids=14"},
         "polling_interval_sec": 240,
-        "is_enabled": True,
+        "is_enabled": False,
     },
     {
         "name": "RadioReference HF/MilAir Monitoring Forum",
@@ -634,7 +634,20 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
             seeded_counts["sources"] += 1
             logger.info(f"Seeded source '{new_src.name}' ({new_src.source_type})")
 
-    # 2b. Automatically purge deprecated Reddit sources from database
+    # 2b. Automatically disable broken/WAF-blocked RSS sources in database
+    broken_rss_names = [
+        "Liveuamap Middle East Tactical Feed",
+        "PPRuNe Military Aviation Rumour Network",
+    ]
+    broken_rss_query = select(Source).where(Source.name.in_(broken_rss_names))
+    broken_rss_res = await session.execute(broken_rss_query)
+    for b_src in broken_rss_res.scalars().all():
+        if b_src.is_enabled:
+            b_src.is_enabled = False
+            session.add(b_src)
+            logger.info(f"Auto-disabled broken/WAF-blocked RSS source in database: {b_src.name}")
+
+    # 2c. Automatically purge deprecated Reddit sources from database
     reddit_query = select(Source).where(Source.source_type == "reddit")
     reddit_res = await session.execute(reddit_query)
     reddit_sources = reddit_res.scalars().all()
@@ -686,10 +699,14 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
                             break
                     if matched_cur:
                         target_stage = cur_stages[matched_cur]
-                        # Check and migrate primary model if deprecated
+                        # Check and migrate primary model if deprecated or 0-RPM/403
                         for m_field in ("model", "model_name"):
-                            if target_stage.get(m_field) == "llama-3.3-70b-versatile":
+                            m_val = target_stage.get(m_field)
+                            if m_val == "llama-3.3-70b-versatile":
                                 target_stage[m_field] = "openai/gpt-oss-120b"
+                                repaired = True
+                            elif m_val in ("mistral-small-2603", "mistral-large-2512"):
+                                target_stage[m_field] = "ministral-14b-2512"
                                 repaired = True
                         # Check fallbacks
                         if not target_stage.get("fallbacks"):
@@ -698,8 +715,15 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
                         else:
                             for fb in target_stage["fallbacks"]:
                                 for m_field in ("model", "model_name"):
-                                    if fb.get(m_field) == "llama-3.3-70b-versatile":
+                                    fb_val = fb.get(m_field)
+                                    if fb_val == "llama-3.3-70b-versatile":
                                         fb[m_field] = "openai/gpt-oss-120b"
+                                        repaired = True
+                                    elif fb_val == "mistral-small-2603":
+                                        fb[m_field] = "ministral-14b-2512"
+                                        repaired = True
+                                    elif fb_val == "mistral-large-2512":
+                                        fb[m_field] = "codestral-2508"
                                         repaired = True
                             # Ensure Gemma 4 is present at every fallback chain at least somewhere (highest RPD: 14,400)
                             has_gemma = any(

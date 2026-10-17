@@ -140,7 +140,17 @@ class GroqProvider(BaseAIProvider):
                         or key_slot.cooldown_reason
                         or "Groq Rate limit reached"
                     )
-                    model_lock_sec = key_slot.get_model_cooldown_remaining(model_name) or (key_slot.retry_after_sec or 1.0)
+                    model_lock_sec = key_slot.get_model_cooldown_remaining(model_name) or (key_slot.retry_after_sec or 3.0)
+                    is_daily = key_slot.status == KeyStatus.DAILY_EXHAUSTED
+                    # Groq rate limits apply at the Organization level across all keys in the pool.
+                    # Broadcast once all individual keys have been attempted or on daily exhaustion.
+                    if is_daily or attempt >= len(keys) - 1:
+                        self.key_pool.broadcast_model_cooldown(
+                            model=model_name,
+                            cooldown_sec=model_lock_sec,
+                            reason=last_429_reason,
+                            is_daily=is_daily,
+                        )
                     try:
                         get_usage_tracker().record_call(
                             provider="groq",
@@ -151,7 +161,7 @@ class GroqProvider(BaseAIProvider):
                             status_code=429,
                             error_message=last_429_reason,
                             is_rate_limit=True,
-                            is_daily_quota=key_slot.status == KeyStatus.DAILY_EXHAUSTED,
+                            is_daily_quota=is_daily,
                             cooldown_sec=model_lock_sec,
                             is_key_level=False,
                         )
@@ -184,19 +194,61 @@ class GroqProvider(BaseAIProvider):
                         except Exception:
                             pass
 
-                        logger.info(
-                            f"[groq:{model_name}] Retrying on key {key_slot.masked_key} without "
-                            f"strict json_object wrapper after json_validate_failed..."
-                        )
-                        fallback_payload = dict(payload)
-                        fallback_payload.pop("response_format", None)
-                        fallback_payload["max_tokens"] = max(payload.get("max_tokens", 1024), 3072)
-                        fallback_resp = await client.post(GROQ_BASE_URL, json=fallback_payload, headers=headers)
-                        key_slot.update_from_response(fallback_resp, model=model_name)
-                        if fallback_resp.status_code == 200:
-                            setattr(fallback_resp, "_used_key", key_slot.key)
-                            return fallback_resp
-                        response = fallback_resp
+                        if key_slot.remaining_tokens is not None and key_slot.remaining_tokens < 1000:
+                            logger.info(
+                                f"[groq:{model_name}] Tokens depleted ({key_slot.remaining_tokens} remaining); "
+                                f"skipping json_validate_failed retry to avoid 429."
+                            )
+                        else:
+                            logger.info(
+                                f"[groq:{model_name}] Retrying on key {key_slot.masked_key} without "
+                                f"strict json_object wrapper after json_validate_failed..."
+                            )
+                            fallback_payload = dict(payload)
+                            fallback_payload.pop("response_format", None)
+                            fallback_payload["max_tokens"] = min(max(payload.get("max_tokens", 1024), 1024), 1536)
+                            fallback_resp = await client.post(GROQ_BASE_URL, json=fallback_payload, headers=headers)
+                            key_slot.update_from_response(fallback_resp, model=model_name)
+                            if fallback_resp.status_code == 200:
+                                setattr(fallback_resp, "_used_key", key_slot.key)
+                                return fallback_resp
+                            if fallback_resp.status_code == 429:
+                                last_429_reason = (
+                                    key_slot._model_cooldown_reasons.get(model_name.lower())
+                                    or key_slot.cooldown_reason
+                                    or "Groq Rate limit reached"
+                                )
+                                model_lock_sec = key_slot.get_model_cooldown_remaining(model_name) or (key_slot.retry_after_sec or 3.0)
+                                is_daily = key_slot.status == KeyStatus.DAILY_EXHAUSTED
+                                if is_daily or attempt >= len(keys) - 1:
+                                    self.key_pool.broadcast_model_cooldown(
+                                        model=model_name,
+                                        cooldown_sec=model_lock_sec,
+                                        reason=last_429_reason,
+                                        is_daily=is_daily,
+                                    )
+                                try:
+                                    get_usage_tracker().record_call(
+                                        provider="groq",
+                                        model=model_name,
+                                        key=key_slot.key,
+                                        key_field="groq_api_key",
+                                        success=False,
+                                        status_code=429,
+                                        error_message=last_429_reason,
+                                        is_rate_limit=True,
+                                        is_daily_quota=is_daily,
+                                        cooldown_sec=model_lock_sec,
+                                        is_key_level=False,
+                                    )
+                                except Exception:
+                                    pass
+                                logger.warning(
+                                    f"[groq:{model_name}] Fallback retry received 429 ({last_429_reason}). "
+                                    f"Rotating key..."
+                                )
+                                continue
+                            response = fallback_resp
 
                 # HTTP 503: Service Unavailable
                 if response.status_code == 503:

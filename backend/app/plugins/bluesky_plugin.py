@@ -123,7 +123,8 @@ class BlueskySourcePlugin(BaseSourcePlugin):
     async def _fetch_posts(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
         if self.mode == "search":
             q = self.target[7:].strip() if self.target.lower().startswith("search:") else self.target
-            url = f"{BSKY_PUBLIC_API}/app.bsky.feed.searchPosts"
+            # Use api.bsky.app to avoid cloud datacenter IP 403 blocks on public.api.bsky.app
+            url = "https://api.bsky.app/xrpc/app.bsky.feed.searchPosts"
             params = {"q": q, "limit": self.limit, "sort": "latest"}
             data = await self._get_json(client, url, params)
             return data.get("posts", []) if isinstance(data, dict) else []
@@ -206,6 +207,12 @@ class BlueskySourcePlugin(BaseSourcePlugin):
         response = await client.get(url, params=params, headers=req_headers)
         if response.status_code == 304:
             return {}
+        if response.status_code == 403 and "public.api.bsky.app" in url:
+            alt_url = url.replace("public.api.bsky.app", "api.bsky.app")
+            self.logger.info(f"Bluesky XRPC 403 on public CDN, retrying via {alt_url}...")
+            response = await client.get(alt_url, params=params, headers=req_headers)
+            if response.status_code == 304:
+                return {}
         if response.status_code != 200:
             self.logger.warning(f"Bluesky XRPC {url} returned status {response.status_code}")
             return {}

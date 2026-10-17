@@ -260,6 +260,7 @@ class ProviderUsageTracker:
 
         # 1. Discover stage assignments from ai_settings
         stage_map: Dict[str, Set[str]] = {}
+        model_provider_map: Dict[str, str] = {}
         primary_models: Set[str] = set()
         fallback_models: Set[str] = set()
 
@@ -267,17 +268,36 @@ class ProviderUsageTracker:
             for stage_name, stage_val in ai_settings.items():
                 if isinstance(stage_val, dict):
                     p_model = stage_val.get("model_name") or stage_val.get("model")
+                    p_prov = stage_val.get("provider")
                     if p_model:
                         clean_m = str(p_model).strip()
                         stage_map.setdefault(clean_m, set()).add(stage_name)
                         primary_models.add(clean_m)
+                        if p_prov:
+                            model_provider_map[clean_m] = str(p_prov).strip().lower()
                     for fb in stage_val.get("fallbacks") or []:
                         if isinstance(fb, dict):
                             fb_model = fb.get("model_name") or fb.get("model")
+                            fb_prov = fb.get("provider")
                             if fb_model:
                                 clean_fb = str(fb_model).strip()
                                 stage_map.setdefault(clean_fb, set()).add(f"{stage_name} (fallback)")
                                 fallback_models.add(clean_fb)
+                                if fb_prov:
+                                    model_provider_map[clean_fb] = str(fb_prov).strip().lower()
+
+        # Map active embedding models to stage_map
+        try:
+            from backend.app.services.embedding_service import get_embedding_service
+            emb_srv = get_embedding_service()
+            if emb_srv.default_model:
+                stage_map.setdefault(emb_srv.default_model, set()).add("embeddings")
+                model_provider_map[emb_srv.default_model] = "gemini"
+            if emb_srv.fallback_model:
+                stage_map.setdefault(emb_srv.fallback_model, set()).add("embeddings (fallback)")
+                model_provider_map[emb_srv.fallback_model] = "gemini"
+        except Exception:
+            pass
 
         # 2. Check live orchestrator model cooldowns
         orchestrator_cooldowns: Dict[str, float] = {}
@@ -399,17 +419,21 @@ class ProviderUsageTracker:
                 })
 
             catalog_defaults = [
-                ("gemini", "gemini-2.5-flash"),
-                ("gemini", "gemini-2.5-flash-lite"),
+                ("gemini", "gemini-3.5-flash-lite"),
+                ("gemini", "gemini-3.1-flash-lite"),
                 ("gemini", "gemma-4-26b-a4b-it"),
-                ("gemini", "text-embedding-004"),
+                ("gemini", "gemma-4-31b-it"),
+                ("gemini", "gemini-embedding-2"),
+                ("gemini", "gemini-embedding-001"),
                 ("groq", "qwen/qwen3.8-27b"),
-                ("groq", "llama-3.3-70b-versatile"),
-                ("groq", "llama-3.1-8b-instant"),
+                ("groq", "openai/gpt-oss-120b"),
+                ("groq", "openai/gpt-oss-20b"),
                 ("aihubmix", "coding-glm-5.3-free"),
                 ("aihubmix", "coding-minimax-m3-free"),
                 ("aihubmix", "nemotron-3-super-120b"),
                 ("mistral", "ministral-3b-2512"),
+                ("mistral", "ministral-14b-2512"),
+                ("mistral", "codestral-2508"),
                 ("mistral", "ministral-8b-2512"),
                 ("mistral", "open-mistral-nemo"),
                 ("cloudflare", "@cf/meta/llama-3.2-1b-instruct"),
@@ -424,18 +448,22 @@ class ProviderUsageTracker:
             # Add any explicitly configured models from stage_map
             for m_name, stages in stage_map.items():
                 m_lower = m_name.lower()
-                if any(tag in m_lower for tag in ("ministral", "mistral", "codestral", "open-mistral")):
+                if m_name in model_provider_map:
+                    p_cand = model_provider_map[m_name]
+                elif any(tag in m_lower for tag in ("ministral", "mistral", "codestral", "open-mistral")):
                     p_cand = "mistral"
                 elif any(tag in m_lower for tag in ("@cf/", "cloudflare")):
                     p_cand = "cloudflare"
                 elif any(tag in m_lower for tag in ("glm-4.7", "glm-4.5", "glm-4-flash", "zai")):
                     p_cand = "zai"
-                elif any(tag in m_lower for tag in ("siliconflow",)):
+                elif any(tag in m_lower for tag in ("siliconflow", "qwen2.5", "glm-4-9b")):
                     p_cand = "siliconflow"
-                elif any(tag in m_lower for tag in ("coding", "glm", "minimax", "nemotron")):
+                elif any(tag in m_lower for tag in ("coding", "minimax", "nemotron")):
                     p_cand = "aihubmix"
-                elif any(tag in m_lower for tag in ("qwen", "llama", "groq")):
+                elif any(tag in m_lower for tag in ("qwen3.8", "gpt-oss", "groq", "llama")):
                     p_cand = "groq"
+                elif any(tag in m_lower for tag in ("gemini", "gemma")):
+                    p_cand = "gemini"
                 else:
                     p_cand = "gemini"
                 catalog_defaults.append((p_cand, m_name))

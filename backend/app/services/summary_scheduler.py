@@ -155,9 +155,10 @@ class SummaryScheduler:
                         ).scalar_one_or_none()
                         max_ingested_str = max_ingested.isoformat() if max_ingested else None
 
-                        has_new_events = (
-                            current_count > last_count
-                            or (max_ingested_str and max_ingested_str != last_ingested)
+                        has_new_events = bool(
+                            (max_ingested_str and max_ingested_str != last_ingested)
+                            or (last_count == 0 and current_count > 0)
+                            or (last_count > 0 and current_count > last_count)
                         )
 
                         if has_new_events and current_count > 0:
@@ -172,11 +173,25 @@ class SummaryScheduler:
                                 time_range="all",
                                 force_refresh=True,
                             )
-                            await broadcast_summary_update(summary)
-                            logger.info(
-                                f"SummaryScheduler: Successfully synthesized scheduled summary "
-                                f"(Theme: {summary.get('theme_name')}, Threat: {summary.get('threat_trajectory')})."
-                            )
+                            is_stale = bool(summary.get("is_stale") or summary.get("warning"))
+                            if is_stale:
+                                logger.warning(
+                                    f"SummaryScheduler: AI situational summary failed to synthesize cleanly "
+                                    f"({summary.get('warning', 'stale summary returned')}). Backing off 5 minutes."
+                                )
+                                # Advance timer by (interval - 300) so we retry in 5 minutes instead of every 30s
+                                service.record_generation(
+                                    utc_now() - timedelta(seconds=self.interval_seconds - 300),
+                                    current_count,
+                                    max_ingested_str,
+                                )
+                            else:
+                                await broadcast_summary_update(summary)
+                                logger.info(
+                                    f"SummaryScheduler: Successfully synthesized scheduled summary "
+                                    f"(Theme: {summary.get('theme_name')}, Threat: {summary.get('threat_trajectory')})."
+                                )
+                                service.record_generation(utc_now(), current_count, max_ingested_str)
                         else:
                             logger.debug(
                                 f"SummaryScheduler: {elapsed:.0f}s elapsed, but zero new events detected "

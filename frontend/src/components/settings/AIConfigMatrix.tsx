@@ -53,13 +53,14 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   });
 
   const defaultSituationSummaryStage = (): AIStageConfig => ({
-    provider: 'mistral',
-    model_name: 'mistral-large-2512',
+    provider: 'gemini',
+    model_name: 'gemini-3.5-flash-lite',
     temperature: 0.2,
     fallbacks: [
+      { provider: 'mistral', model_name: 'ministral-14b-2512', temperature: 0.2 },
       { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
       { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
-      { provider: 'mistral', model_name: 'mistral-small-2603', temperature: 0.2 },
+      { provider: 'mistral', model_name: 'codestral-2508', temperature: 0.2 },
       { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.2 },
     ],
   });
@@ -74,34 +75,37 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
       : {
           gatekeeper: defaultGatekeeperStage(),
           extraction: defaultStage('groq', 'qwen/qwen3.8-27b', [
-            { provider: 'mistral', model_name: 'mistral-small-2603', temperature: 0.2 },
+            { provider: 'mistral', model_name: 'ministral-14b-2512', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
-            { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
             { provider: 'siliconflow', model_name: 'Qwen/Qwen2.5-7B-Instruct', temperature: 0.2 },
           ]),
-          scoring: defaultStage('mistral', 'mistral-small-2603', [
-            { provider: 'mistral', model_name: 'mistral-large-2512', temperature: 0.1 },
+          scoring: defaultStage('gemini', 'gemma-4-26b-a4b-it', [
+            { provider: 'mistral', model_name: 'ministral-14b-2512', temperature: 0.1 },
+            { provider: 'mistral', model_name: 'codestral-2508', temperature: 0.1 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.1 },
-            { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.1 },
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.1 },
             { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.1 },
             { provider: 'siliconflow', model_name: 'Qwen/Qwen2.5-7B-Instruct', temperature: 0.1 },
           ]),
-          summarization: defaultStage('groq', 'openai/gpt-oss-120b', [
-            { provider: 'mistral', model_name: 'mistral-small-2603', temperature: 0.2 },
-            { provider: 'mistral', model_name: 'mistral-large-2512', temperature: 0.2 },
-            { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+          summarization: defaultStage('gemini', 'gemini-3.5-flash-lite', [
             { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
+            { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
+            { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.2 },
             { provider: 'aihubmix', model_name: 'coding-glm-5.3-flash-free', temperature: 0.2 },
             { provider: 'siliconflow', model_name: 'THUDM/glm-4-9b-chat', temperature: 0.2 },
+            { provider: 'mistral', model_name: 'ministral-14b-2512', temperature: 0.2 },
+            { provider: 'mistral', model_name: 'codestral-2508', temperature: 0.2 },
           ]),
-          visuals: defaultStage('groq', 'openai/gpt-oss-20b', [
+          visuals: defaultStage('gemini', 'gemini-3.1-flash-lite', [
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
+            { provider: 'mistral', model_name: 'codestral-2508', temperature: 0.2 },
+            { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.2 },
             { provider: 'mistral', model_name: 'ministral-8b-2512', temperature: 0.2 },
             { provider: 'cloudflare', model_name: '@cf/meta/llama-3.2-3b-instruct', temperature: 0.2 },
-            { provider: 'siliconflow', model_name: 'Qwen/Qwen2.5-7B-Instruct', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
           ]),
           situation_summary: defaultSituationSummaryStage(),
@@ -1205,17 +1209,17 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                     <>
                                       <button
                                         type="button"
-                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'mistral-small-2603')}
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'ministral-14b-2512')}
                                         className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-semibold"
                                       >
-                                        🎯 small-2603 (1.0 RPS)
+                                        🎯 ministral-14b (30 RPM)
                                       </button>
                                       <button
                                         type="button"
-                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'mistral-large-2512')}
+                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'codestral-2508')}
                                         className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-semibold"
                                       >
-                                        👑 large-2512 (1.0 RPS)
+                                        💻 codestral (125 RPM)
                                       </button>
                                       <button
                                         type="button"

@@ -302,6 +302,9 @@ class GroqKey:
             reason: str = ""
             is_daily = False
 
+            # Check error body and fallback classifier first
+            is_daily_cls, fallback_delay, fallback_reason = classify_rate_limit_429(response, "groq")
+
             # Priority 1: retry-after header returned by Groq on 429
             if retry_after is not None and retry_after > 0:
                 lock_delay = retry_after
@@ -312,8 +315,8 @@ class GroqKey:
                     is_daily = False
                     reason = f"rate limit (retry-after {retry_after:g}s)"
 
-            # Priority 2: tokens exhausted (TPM reset)
-            elif (rem_tokens == 0 or (rem_tokens is not None and rem_tokens < 1000)) and reset_tokens_sec is not None and reset_tokens_sec > 0:
+            # Priority 2: tokens exhausted (TPM reset) - require >= 1.0s to avoid sub-millisecond storms
+            elif (rem_tokens == 0 or (rem_tokens is not None and rem_tokens < 1000)) and reset_tokens_sec is not None and reset_tokens_sec >= 1.0:
                 lock_delay = reset_tokens_sec
                 is_daily = False
                 reason = f"tokens exhausted (reset in {reset_tokens_sec:g}s)"
@@ -324,8 +327,14 @@ class GroqKey:
                 is_daily = True
                 reason = f"daily requests exhausted (reset in {reset_requests_sec:g}s)"
 
-            # Priority 4: any reset header present
-            elif reset_tokens_sec is not None and reset_tokens_sec > 0:
+            # Priority 4: delay parsed from body (e.g. "Please try again in 4.2s")
+            elif fallback_delay is not None and fallback_delay > 0:
+                lock_delay = fallback_delay
+                is_daily = is_daily_cls
+                reason = fallback_reason or f"rate limit (body parsed {fallback_delay:g}s)"
+
+            # Priority 5: any reset header present with at least 1.0s
+            elif reset_tokens_sec is not None and reset_tokens_sec >= 1.0:
                 lock_delay = reset_tokens_sec
                 is_daily = False
                 reason = f"rate limit (reset-tokens {reset_tokens_sec:g}s)"
@@ -334,16 +343,22 @@ class GroqKey:
                 is_daily = True
                 reason = f"rate limit (reset-requests {reset_requests_sec:g}s)"
 
-            # Priority 5: Fallback to error message body parser
+            # Priority 6: Fallback floor
             else:
-                is_daily_cls, fallback_delay, fallback_reason = classify_rate_limit_429(response, "groq")
                 is_daily = is_daily_cls
-                lock_delay = fallback_delay if (fallback_delay and fallback_delay > 0) else 1.0
-                reason = fallback_reason or "HTTP 429 Rate Limit"
+                lock_delay = fallback_delay if (fallback_delay and fallback_delay > 0) else 5.0
+            # When retry_after is explicitly provided by the provider header, respect it directly.
+            # Otherwise enforce a minimum floor of 3.0s (60s for daily) to avoid 0.001s retry storms.
+            if retry_after is not None and retry_after > 0:
+                effective_lock = retry_after
+            elif is_daily:
+                effective_lock = max(lock_delay or 0.0, 60.0)
+            else:
+                effective_lock = max(lock_delay or 0.0, 3.0)
 
             self.mark_rate_limited(
                 is_daily=is_daily,
-                retry_delay_sec=lock_delay,
+                retry_delay_sec=effective_lock,
                 reason=reason,
                 model=model,
             )
@@ -569,6 +584,29 @@ class GroqKeyPool:
 
     def get_keys(self) -> List[GroqKey]:
         return list(self._keys)
+
+    def broadcast_model_cooldown(
+        self,
+        model: str,
+        cooldown_sec: float,
+        reason: str,
+        is_daily: bool = False,
+    ) -> None:
+        """
+        Groq rate limits (RPM, TPM, RPD) apply at the Organization level across all API keys.
+        When a model hits a rate limit on one key in the organization, broadcast the model
+        cooldown to all sibling keys to prevent redundant 429 hammering.
+        """
+        if not model or not self._keys:
+            return
+        effective_delay = max(cooldown_sec, 60.0 if is_daily else 3.0)
+        for k in self._keys:
+            k.mark_rate_limited(
+                is_daily=is_daily,
+                retry_delay_sec=effective_delay,
+                reason=f"[org-wide] {reason}",
+                model=model,
+            )
 
     async def acquire_next_key(self, model: Optional[str] = None) -> Optional[GroqKey]:
         """

@@ -552,10 +552,13 @@ class EmbeddingService:
         }
 
         max_minute_retries = 3
+        est_tokens = max(1, sum(len(t) for t in texts) // 3)
         for attempt in range(max_minute_retries + 1):
             await self._acquire_embedding_pacing_slot(model, len(texts))
+            t0 = time.monotonic()
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(url, json=payload, headers=headers)
+                duration_ms = (time.monotonic() - t0) * 1000.0
                 if resp.status_code == 200:
                     data = resp.json()
                     raw_embs = data.get("embeddings", [])
@@ -564,10 +567,42 @@ class EmbeddingService:
                         raise ValueError(
                             f"Expected {len(texts)} embeddings, received {len(vectors)}"
                         )
+                    try:
+                        from backend.app.pipeline.usage_tracker import get_usage_tracker
+                        get_usage_tracker().record_call(
+                            provider="gemini",
+                            model=model,
+                            key=api_key,
+                            key_field="gemini_api_key",
+                            prompt_tokens=est_tokens,
+                            completion_tokens=0,
+                            total_tokens=est_tokens,
+                            duration_ms=duration_ms,
+                            success=True,
+                            status_code=200,
+                        )
+                    except Exception:
+                        pass
                     return vectors
                 elif resp.status_code == 429:
                     err_text = resp.text
                     is_daily, parsed_wait, reason = classify_rate_limit_429(resp, "gemini")
+                    try:
+                        from backend.app.pipeline.usage_tracker import get_usage_tracker
+                        get_usage_tracker().record_call(
+                            provider="gemini",
+                            model=model,
+                            key=api_key,
+                            key_field="gemini_api_key",
+                            success=False,
+                            status_code=429,
+                            error_message=reason or "Gemini Embeddings 429",
+                            is_rate_limit=True,
+                            is_daily_quota=is_daily,
+                            duration_ms=duration_ms,
+                        )
+                    except Exception:
+                        pass
                     if is_daily:
                         logger.warning(
                             f"Gemini Embeddings daily quota (RPD) reached for {model} ({reason}): {err_text[:200]}"
@@ -589,6 +624,20 @@ class EmbeddingService:
                     logger.warning(f"Gemini API rate limit 429 persisted for model {model}: {err_text[:200]}")
                     raise RuntimeError(f"QUOTA_EXCEEDED: {err_text}")
                 else:
+                    try:
+                        from backend.app.pipeline.usage_tracker import get_usage_tracker
+                        get_usage_tracker().record_call(
+                            provider="gemini",
+                            model=model,
+                            key=api_key,
+                            key_field="gemini_api_key",
+                            success=False,
+                            status_code=resp.status_code,
+                            error_message=resp.text[:200],
+                            duration_ms=duration_ms,
+                        )
+                    except Exception:
+                        pass
                     raise RuntimeError(
                         f"Gemini API error {resp.status_code}: {resp.text[:300]}"
                     )
@@ -639,6 +688,22 @@ class EmbeddingService:
                 resp = await client.post(url, json=payload, headers=headers)
 
             if resp.status_code == 200:
+                try:
+                    from backend.app.pipeline.usage_tracker import get_usage_tracker
+                    get_usage_tracker().record_call(
+                        provider="huggingface",
+                        model="sentence-transformers/all-MiniLM-L6-v2",
+                        key=api_key or "hf_tei_space",
+                        key_field="hf_api_key",
+                        prompt_tokens=max(1, sum(len(t) for t in texts) // 3),
+                        completion_tokens=0,
+                        total_tokens=max(1, sum(len(t) for t in texts) // 3),
+                        duration_ms=0.0,
+                        success=True,
+                        status_code=200,
+                    )
+                except Exception:
+                    pass
                 data = resp.json()
                 if isinstance(data, list):
                     # Native TEI returns [[float, ...], [float, ...]]

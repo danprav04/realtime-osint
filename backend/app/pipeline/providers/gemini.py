@@ -4,6 +4,7 @@ backend/app/pipeline/providers/gemini.py - Google Gemini HTTP REST Provider
 
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, Optional
 import httpx
@@ -142,37 +143,57 @@ class GeminiProvider(BaseAIProvider):
             return await client.post(url, json=payload, headers=headers)
 
         try:
-            response = await self._execute_with_retry(_call, estimated_tokens=total_est_tokens)
-        except httpx.HTTPStatusError as http_err:
-            # Gemma models on Google AI Studio may reject systemInstruction or responseMimeType="application/json"
-            # with HTTP 400 INVALID_ARGUMENT. Fold system_prompt into user prompt and retry on the same model.
-            if http_err.response is not None and http_err.response.status_code == 400 and (system_prompt or json_mode):
-                logger.info(
-                    f"[gemini:{model_name}] HTTP 400 with systemInstruction/responseMimeType; "
-                    f"retrying on same model with inline prompt instructions..."
+            try:
+                response = await self._execute_with_retry(_call, estimated_tokens=total_est_tokens)
+            except httpx.HTTPStatusError as http_err:
+                # Gemma models on Google AI Studio may reject systemInstruction or responseMimeType="application/json"
+                # with HTTP 400 INVALID_ARGUMENT. Fold system_prompt into user prompt and retry on the same model.
+                if http_err.response is not None and http_err.response.status_code == 400 and (system_prompt or json_mode):
+                    logger.info(
+                        f"[gemini:{model_name}] HTTP 400 with systemInstruction/responseMimeType; "
+                        f"retrying on same model with inline prompt instructions..."
+                    )
+                    combined_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+                    if json_mode and "json" not in combined_prompt.lower():
+                        combined_prompt += "\nRespond strictly with valid JSON."
+                    compat_payload: Dict[str, Any] = {
+                        "contents": [
+                            {
+                                "role": "user",
+                                "parts": [{"text": combined_prompt}],
+                            }
+                        ],
+                        "generationConfig": {
+                            "temperature": max(0.1, temperature),
+                            "maxOutputTokens": effective_max_tokens,
+                        },
+                    }
+
+                    async def _call_compat() -> httpx.Response:
+                        return await client.post(url, json=compat_payload, headers=headers)
+
+                    response = await self._execute_with_retry(_call_compat, estimated_tokens=total_est_tokens)
+                else:
+                    raise
+        except Exception as exc:
+            duration_ms = (time.monotonic() - t0) * 1000.0
+            status_code = getattr(getattr(exc, "response", None), "status_code", 500)
+            is_429 = status_code == 429
+            try:
+                get_usage_tracker().record_call(
+                    provider="gemini",
+                    model=model_name,
+                    key=self.api_key,
+                    key_field="gemini_api_key",
+                    success=False,
+                    status_code=status_code,
+                    error_message=str(exc),
+                    duration_ms=duration_ms,
+                    is_rate_limit=is_429,
                 )
-                combined_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-                if json_mode and "json" not in combined_prompt.lower():
-                    combined_prompt += "\nRespond strictly with valid JSON."
-                compat_payload: Dict[str, Any] = {
-                    "contents": [
-                        {
-                            "role": "user",
-                            "parts": [{"text": combined_prompt}],
-                        }
-                    ],
-                    "generationConfig": {
-                        "temperature": max(0.1, temperature),
-                        "maxOutputTokens": effective_max_tokens,
-                    },
-                }
-
-                async def _call_compat() -> httpx.Response:
-                    return await client.post(url, json=compat_payload, headers=headers)
-
-                response = await self._execute_with_retry(_call_compat, estimated_tokens=total_est_tokens)
-            else:
-                raise
+            except Exception:
+                pass
+            raise
 
         duration_ms = (time.monotonic() - t0) * 1000.0
         res_data = response.json()

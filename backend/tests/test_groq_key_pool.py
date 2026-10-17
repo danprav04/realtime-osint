@@ -502,3 +502,39 @@ async def test_groq_provider_fallback_model_succeeds_when_primary_model_exhausts
     assert fallback_res == {"summary": "Fallback Success"}
 
 
+@pytest.mark.asyncio
+async def test_groq_key_429_sub_millisecond_reset_tokens_enforces_minimum_cooldown():
+    """Verify that a 429 with sub-millisecond reset-tokens enforces the minimum cooldown floor (>= 3.0s)."""
+    key = GroqKey("gsk_test_key")
+    req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    # Simulate Groq 429 with 1ms reset tokens header
+    resp = httpx.Response(
+        429,
+        request=req,
+        headers={
+            "x-ratelimit-reset-tokens": "1ms",
+            "x-ratelimit-remaining-tokens": "0",
+            "x-ratelimit-limit-tokens": "8000",
+        },
+        json={"error": {"message": "Rate limit reached. Please try again in 4.5s."}},
+    )
+
+    key.update_from_response(resp, model="qwen/qwen3.8-27b")
+    cd = key.get_model_cooldown_remaining("qwen/qwen3.8-27b")
+    # Must be at least 3.0s (or 4.5s parsed from body), never 0.001s!
+    assert cd >= 3.0
+
+
+@pytest.mark.asyncio
+async def test_groq_key_pool_broadcast_model_cooldown():
+    """Verify that broadcast_model_cooldown puts all keys in the pool on cooldown for that model."""
+    pool = GroqKeyPool(keys=["gsk_key1", "gsk_key2", "gsk_key3"])
+    pool.broadcast_model_cooldown(model="qwen/qwen3.8-27b", cooldown_sec=10.0, reason="TPM limit reached")
+
+    for k in pool.get_keys():
+        assert k.get_model_cooldown_remaining("qwen/qwen3.8-27b") >= 9.0
+        # Keys remain active for other models
+        assert k.is_available(model="openai/gpt-oss-20b")
+
+
+

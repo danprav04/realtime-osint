@@ -110,18 +110,23 @@ class MistralProvider(BaseAIProvider):
             return await client.post(api_endpoint, json=payload, headers=headers)
 
         # Tier-aware pacing based on selected Mistral model
-        is_flagship_or_small = any(m in model_name.lower() for m in ("large", "small"))
-        if is_flagship_or_small:
-            # Mistral Large / Mistral Small have a 1.0 RPS cap on Experiment tier (1.05s spacing)
-            self.min_interval_sec = 1.05
-            self.max_rpm = 57
-        elif "8b" in model_name.lower():
+        low_m = model_name.lower()
+        if "14b" in low_m or "large" in low_m or "small" in low_m or "medium" in low_m:
+            # ministral-14b has a 30 RPM cap (2.05s spacing)
+            self.min_interval_sec = 2.05
+            self.max_rpm = 29
+        elif "code" in low_m:
+            # codestral-2508 allows 125 RPM
+            self.min_interval_sec = 0.50
+            self.max_rpm = 120
+        elif "8b" in low_m or "nemo" in low_m:
+            # ministral-8b allows 188 RPM
             self.min_interval_sec = 0.35
-            self.max_rpm = 150
+            self.max_rpm = 175
         else:
-            # ministral-3b allows up to 12.5 RPS
+            # ministral-3b allows up to 750 RPM
             self.min_interval_sec = 0.12
-            self.max_rpm = 300
+            self.max_rpm = 500
 
         t0 = time.monotonic()
         try:
@@ -136,9 +141,56 @@ class MistralProvider(BaseAIProvider):
                 async def _call_no_rf() -> httpx.Response:
                     return await client.post(api_endpoint, json=fallback_payload, headers=headers)
 
-                response = await self._execute_with_retry(_call_no_rf)
+                try:
+                    response = await self._execute_with_retry(_call_no_rf)
+                except Exception as retry_err:
+                    duration_ms = (time.monotonic() - t0) * 1000.0
+                    sc = getattr(getattr(retry_err, "response", None), "status_code", 400)
+                    try:
+                        get_usage_tracker().record_call(
+                            provider="mistral",
+                            model=model_name,
+                            key=self.api_key,
+                            key_field="mistral_api_key",
+                            duration_ms=duration_ms,
+                            success=False,
+                            status_code=sc,
+                        )
+                    except Exception:
+                        pass
+                    raise
             else:
+                duration_ms = (time.monotonic() - t0) * 1000.0
+                sc = getattr(getattr(http_err, "response", None), "status_code", 500)
+                try:
+                    get_usage_tracker().record_call(
+                        provider="mistral",
+                        model=model_name,
+                        key=self.api_key,
+                        key_field="mistral_api_key",
+                        duration_ms=duration_ms,
+                        success=False,
+                        status_code=sc,
+                    )
+                except Exception:
+                    pass
                 raise
+        except Exception as gen_err:
+            duration_ms = (time.monotonic() - t0) * 1000.0
+            sc = 429 if "429" in str(gen_err) else (403 if "403" in str(gen_err) else 500)
+            try:
+                get_usage_tracker().record_call(
+                    provider="mistral",
+                    model=model_name,
+                    key=self.api_key,
+                    key_field="mistral_api_key",
+                    duration_ms=duration_ms,
+                    success=False,
+                    status_code=sc,
+                )
+            except Exception:
+                pass
+            raise
 
         duration_ms = (time.monotonic() - t0) * 1000.0
         res_data = response.json()

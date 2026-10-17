@@ -129,7 +129,7 @@ class PipelineOrchestrator:
                 model_name="qwen/qwen3.8-27b",
                 temperature=0.2,
                 fallbacks=[
-                    AIFallbackConfig(provider="mistral", model_name="mistral-small-2603", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="ministral-14b-2512", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
@@ -140,10 +140,10 @@ class PipelineOrchestrator:
             "scoring": AIStageConfig(
                 stage_id="scoring",
                 provider="mistral",
-                model_name="mistral-small-2603",
+                model_name="ministral-14b-2512",
                 temperature=0.1,
                 fallbacks=[
-                    AIFallbackConfig(provider="mistral", model_name="mistral-large-2512", temperature=0.1),
+                    AIFallbackConfig(provider="mistral", model_name="codestral-2508", temperature=0.1),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.1),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.1),
@@ -157,8 +157,8 @@ class PipelineOrchestrator:
                 model_name="openai/gpt-oss-120b",
                 temperature=0.2,
                 fallbacks=[
-                    AIFallbackConfig(provider="mistral", model_name="mistral-small-2603", temperature=0.2),
-                    AIFallbackConfig(provider="mistral", model_name="mistral-large-2512", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="ministral-14b-2512", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="codestral-2508", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
                     AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-flash-free", temperature=0.2),
@@ -181,12 +181,12 @@ class PipelineOrchestrator:
             "situation_summary": AIStageConfig(
                 stage_id="situation_summary",
                 provider="mistral",
-                model_name="mistral-large-2512",
+                model_name="ministral-14b-2512",
                 temperature=0.2,
                 fallbacks=[
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
                     AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-free", temperature=0.2),
-                    AIFallbackConfig(provider="mistral", model_name="mistral-small-2603", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="codestral-2508", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
                 ],
             ),
@@ -759,8 +759,26 @@ class PipelineOrchestrator:
                 if return_provenance:
                     return result, {"provider": p_name, "model": m_name}
                 return result
-            except PermissionError:
-                raise
+            except PermissionError as perm_exc:
+                self.mark_model_cooldown(p_name, m_name, duration_sec=86400.0)
+                if idx < len(candidates) - 1:
+                    next_cand = candidates[idx + 1]
+                    logger.warning(
+                        f"[Pipeline Fallback] Stage '{stage_id}': Model '{p_name}:{m_name}' permission/auth error "
+                        f"({perm_exc}). Failing over to #{idx + 1} ('{next_cand['provider']}:{next_cand['model_name']}')..."
+                    )
+                    continue
+                else:
+                    logger.warning(
+                        f"[Pipeline Fallback] Stage '{stage_id}': All candidate models exhausted due to auth/permission errors. "
+                        f"Last error: {perm_exc}."
+                    )
+                    if fallback_heuristic_fn is not None:
+                        heuristic_res = fallback_heuristic_fn()
+                        if return_provenance:
+                            return heuristic_res, {"provider": "heuristic", "model": "rule-based"}
+                        return heuristic_res
+                    raise
             except Exception as exc:
                 err_str = str(exc).lower()
                 is_rate_limit = (

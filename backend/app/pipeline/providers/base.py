@@ -152,6 +152,16 @@ def classify_rate_limit_429(
         and not has_minute_indicator
     )
 
+    # Hard zero rate-limit cap on minute limits (model disabled or unavailable on current tier)
+    req_lim_min = headers.get("x-ratelimit-limit-req-minute")
+    tok_lim_min = headers.get("x-ratelimit-limit-tokens-minute")
+    if (req_lim_min is not None and str(req_lim_min).strip() == "0") or (tok_lim_min is not None and str(tok_lim_min).strip() == "0"):
+        return (
+            True,
+            86400.0,
+            f"model disabled or 0 RPM limit on tier (x-ratelimit-limit-req-minute={req_lim_min})",
+        )
+
     # Provider-specific header classification for Groq: lock strictly by returned headers
     if provider_name == "groq":
         if retry_after_hdr is not None and retry_after_hdr > 0:
@@ -520,10 +530,23 @@ class BaseAIProvider(abc.ABC):
                     await asyncio.sleep(delay)
                     continue
 
-                # Status 401 / 403: Invalid / Unauthorized Key (Non-retryable)
+                # Status 401 / 403: Invalid / Unauthorized Key or Model Tier Limitation (Non-retryable)
                 if response.status_code in (401, 403):
+                    err_msg = ""
+                    err_type = ""
+                    try:
+                        err_payload = response.json()
+                        err_msg = err_payload.get("message") or str(err_payload)
+                        err_type = str(err_payload.get("type") or "")
+                    except Exception:
+                        err_msg = response.text[:200]
+                    
+                    if "tier_not_allowed" in err_type or any(w in err_msg.lower() for w in ("subscription tier", "not available", "tier_not_allowed")):
+                        raise RuntimeError(
+                            f"{self.provider_name.capitalize()} model tier not allowed: {err_msg}"
+                        )
                     raise PermissionError(
-                        f"{self.provider_name.capitalize()} API key is invalid or unauthorized (HTTP {response.status_code})"
+                        f"{self.provider_name.capitalize()} API key is invalid or unauthorized (HTTP {response.status_code}): {err_msg}"
                     )
 
                 # Proactively pace if Groq reports minute token bucket is nearly empty
