@@ -107,6 +107,9 @@ class MockAIProvider(BaseAIProvider):
         elif "stage4result" in prompt_only_lower or "dashboardtrendsynthesis" in prompt_only_lower:
             res = self._mock_stage4(prompt)
             return json.dumps(res) if json_mode else str(res)
+        elif "situationbriefingllmoutput" in p_lower or "situational briefing" in p_lower or "sitrep" in p_lower or "situation_summary" in p_lower:
+            res = self._mock_situation_summary(prompt)
+            return json.dumps(res) if json_mode else str(res)
         elif "stage4" in p_lower or "visual" in p_lower or "trend" in p_lower or "cluster" in p_lower:
             res = self._mock_stage4(prompt)
             return json.dumps(res) if json_mode else str(res)
@@ -166,6 +169,8 @@ class MockAIProvider(BaseAIProvider):
             return self._mock_stage3(input_text)
         elif norm_stage in ("visuals", "visual_generation", "stage4"):
             return self._mock_stage4(input_text)
+        elif norm_stage in ("situation_summary", "situational_summary", "sitrep"):
+            return self._mock_situation_summary(input_text)
         else:
             return {"result": f"Processed stage {stage}"}
 
@@ -338,4 +343,54 @@ class MockAIProvider(BaseAIProvider):
             "trend_category": category,
             "cluster_tags": tags,
             "narrative_insight": f"Event aligns with ongoing developments in {category}."
+        }
+
+    def _mock_situation_summary(self, text: str) -> Dict[str, Any]:
+        text_lower = text.lower()
+        cluster_ids: List[int] = []
+        for m in re.finditer(r"cluster\s*(?:id)?\s*[:#]?\s*(\d+)", text_lower):
+            try:
+                c_id = int(m.group(1))
+                if c_id not in cluster_ids:
+                    cluster_ids.append(c_id)
+            except ValueError:
+                pass
+        if not cluster_ids:
+            cluster_ids = [0]
+
+        clusters = []
+        for cid in cluster_ids[:4]:
+            clusters.append({
+                "cluster_id": cid,
+                "title": f"Strategic Operational Storyline {cid + 1}",
+                "executive_summary": "Monitored feeds indicate active multi-source reporting and elevated posture across theater assets.",
+                "operational_implication": "High-priority development requiring continuous watch sensor tracking.",
+                "threat_level": "high",
+            })
+
+        return {
+            "threat_trajectory": "Elevated",
+            "threat_level_score": 8,
+            "executive_bluf": (
+                "BLUF: Multi-source intelligence fusion indicates heightened operational activity across monitored sectors. "
+                "Vector embedding analysis confirms significant cross-source corroboration on key regional developments."
+            ),
+            "strategic_assessment": (
+                "Cross-cluster semantic embedding analysis reflects an elevated reporting velocity across primary channels. "
+                "Corroborated reporting remains prioritized over isolated single-source noise."
+            ),
+            "cluster_assessments": clusters,
+            "key_developments": [
+                "Regional forces actively patrol strategic waterways.",
+                "Cross-source corroboration confirms tactical movements and alert threshold exceedances.",
+                "Secondary sensors verify communications posture in key operational sectors.",
+            ],
+            "unverified_outlier_assessment": (
+                "Embedding distance analysis flagged isolated outlier claims lacking independent secondary confirmation."
+            ),
+            "watchlist_indicators": [
+                "Track naval communications and AIS transponder signals.",
+                "Monitor regional flash alerts and escalation indicators.",
+                "Evaluate multi-source corroboration on developing flash events.",
+            ],
         }

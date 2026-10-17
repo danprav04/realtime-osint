@@ -360,3 +360,85 @@ async def test_dedicated_situation_summary_fallback_chain():
     assert "mistral:mistral-large-2512" in call_log
     assert res["synthesizer"] == "mistral:mistral-large-2512"
 
+
+@pytest.mark.asyncio
+async def test_situation_summary_ai_failure_shows_last_summary_with_warning(async_test_session, monkeypatch):
+    """
+    Verify that when all AI models fail to create a summary:
+    1. No offline / deterministic fusion engine is used.
+    2. The service returns the last successfully created summary.
+    3. The response contains an appropriate warning and is_stale=True.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "mock_test_key")
+    orchestrator = get_pipeline_orchestrator()
+    monkeypatch.setattr(orchestrator, "use_mock", True)
+
+    now = utc_now()
+    theme = Theme(
+        id=1,
+        slug="us-iran-conflict",
+        name="US-Iran conflict",
+        scoring_prompt="Score 1-10",
+        is_active=True,
+        alert_threshold=7,
+    )
+    async_test_session.add(theme)
+    ev = Event(
+        id="warn-ev-1",
+        theme_id=1,
+        source_type="telegram",
+        source_name="@WarMonitors",
+        external_id="ext-w-1",
+        title="Naval patrol operating in Strait of Hormuz",
+        headline="Naval Patrol Operating in Strait of Hormuz",
+        raw_text="Naval patrol operating in Strait of Hormuz with high readiness.",
+        summary="BLUF: Naval patrol operating in Strait of Hormuz.",
+        importance_score=8,
+        published_at=now,
+        ingested_at=now,
+    )
+    async_test_session.add(ev)
+    await async_test_session.commit()
+
+    service = SituationSummaryService()
+
+    # Step 1: Initial successful synthesis creates and caches an authentic summary
+    initial_summary = await service.generate_or_get_summary(
+        session=async_test_session,
+        theme_id="us-iran-conflict",
+        time_range="all",
+        force_refresh=True,
+    )
+    assert initial_summary["warning"] is None
+    assert initial_summary["is_stale"] is False
+    assert "deterministic" not in initial_summary["active_ai_model"].lower()
+    initial_id = initial_summary["id"]
+
+    # Step 2: Simulate complete AI failure across all models in the fallback chain
+    async def failing_execute(*args, **kwargs):
+        raise RuntimeError("All candidate models exhausted: Groq, AIHubMix, Mistral, Gemini 429 RateLimitError")
+
+    monkeypatch.setattr(orchestrator, "_execute_stage_with_fallbacks", failing_execute)
+
+    # Step 3: Trigger regeneration with force_refresh=True while AI is completely down
+    fallback_result = await service.generate_or_get_summary(
+        session=async_test_session,
+        theme_id="us-iran-conflict",
+        time_range="all",
+        force_refresh=True,
+    )
+
+    # Assert that no offline fusion engine synthesized a fake briefing
+    assert "deterministic-fusion-engine" not in fallback_result.get("active_ai_model", "").lower()
+
+    # Assert that it returned the last successfully created summary
+    assert fallback_result["id"] == initial_id
+    assert fallback_result["is_stale"] is True
+    assert fallback_result["cached"] is True
+
+    # Assert that an appropriate, prominent warning was provided
+    assert fallback_result["warning"] is not None
+    assert "AI summary creation unavailable" in fallback_result["warning"]
+    assert "Displaying the last verified situational summary" in fallback_result["warning"]
+
+

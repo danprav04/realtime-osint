@@ -684,6 +684,9 @@ class PipelineOrchestrator:
         Minute-only rate limits (RPM/TPM) wait for the minute window reset on the same model
         rather than locking out the primary model or prematurely switching to fallback models.
         """
+        if self.use_mock and not getattr(self._registry, "use_mock", False):
+            from backend.app.pipeline.providers.factory import ProviderRegistry
+            self._registry = ProviderRegistry(use_mock=True)
         stage_cfg = self.get_stage_config(stage_id)
         candidates = [
             {
@@ -871,10 +874,12 @@ class PipelineOrchestrator:
                         f"Last error: {exc}. Invoking deterministic offline heuristics."
                     )
 
-        heuristic_res = fallback_heuristic_fn()
-        if return_provenance:
-            return heuristic_res, {"provider": "heuristic", "model": "rule-based"}
-        return heuristic_res
+        if fallback_heuristic_fn is not None:
+            heuristic_res = fallback_heuristic_fn()
+            if return_provenance:
+                return heuristic_res, {"provider": "heuristic", "model": "rule-based"}
+            return heuristic_res
+        raise RuntimeError(f"All candidate models exhausted for stage '{stage_id}'")
 
     async def filter_events_batch(
         self,

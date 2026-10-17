@@ -561,6 +561,14 @@ class SituationBriefingLLMOutput(BaseModel):
     )
     watchlist_indicators: List[str] = Field(default_factory=list)
 
+    @field_validator("executive_bluf", mode="before")
+    @classmethod
+    def ensure_bluf_prefix(cls, v: Any) -> str:
+        s = str(v).strip() if v else ""
+        if s and not s.upper().startswith("BLUF:"):
+            return f"BLUF: {s}"
+        return s
+
     @field_validator("threat_trajectory", mode="before")
     @classmethod
     def normalize_trajectory(cls, v: Any) -> str:

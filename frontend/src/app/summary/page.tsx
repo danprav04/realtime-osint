@@ -306,12 +306,18 @@ export default function AISummaryPage() {
                 <span
                   className={cn(
                     'text-[10px] font-mono px-2 py-0.5 rounded-full border',
-                    summary.cached
+                    summary.warning || summary.is_stale
+                      ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                      : summary.cached
                       ? 'bg-zinc-800/80 text-zinc-400 border-white/10'
                       : 'bg-accent-cyan/10 text-accent-cyan border-accent-cyan/30'
                   )}
                 >
-                  {summary.cached ? 'CACHED BRIEFING' : 'FRESH SYNTHESIS'}
+                  {summary.warning || summary.is_stale
+                    ? 'LAST VERIFIED BRIEFING'
+                    : summary.cached
+                    ? 'CACHED BRIEFING'
+                    : 'FRESH SYNTHESIS'}
                 </span>
               )}
             </div>
@@ -447,6 +453,26 @@ export default function AISummaryPage() {
             className="px-2.5 py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-medium"
           >
             Retry
+          </button>
+        </div>
+      )}
+
+      {/* Warning State: AI Synthesis Unavailable / Displaying Last Summary */}
+      {summary?.warning && (
+        <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 flex items-start sm:items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center space-x-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <div className="space-y-0.5">
+              <span className="font-semibold text-amber-300">Live AI Synthesis Notice:</span>
+              <p className="text-amber-200/90 leading-relaxed">{summary.warning}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => loadSummary(true)}
+            disabled={isRegenerating}
+            className="shrink-0 px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-medium transition-colors disabled:opacity-50"
+          >
+            {isRegenerating ? 'Retrying...' : 'Retry AI Synthesis'}
           </button>
         </div>
       )}

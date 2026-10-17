@@ -8,6 +8,7 @@ an executive operational briefing (SitRep).
 """
 
 import asyncio
+import copy
 import logging
 import uuid
 from collections import Counter
@@ -81,219 +82,6 @@ def _derive_trust_label_from_score(avg_trust: float) -> str:
     return "Isolated Outlier"
 
 
-def _build_deterministic_summary(
-    theme_name: str,
-    alert_threshold: int,
-    clusters_meta: List[Dict[str, Any]],
-    outlier_events: List[Dict[str, Any]],
-    telemetry: Dict[str, Any],
-) -> SituationBriefingLLMOutput:
-    """
-    Deterministic, data-driven synthesis fallback when LLMs are in mock mode,
-    offline, or rate-limited. Uses the actual cluster data, report summaries,
-    embedding corroboration scores, entities, and telemetry.
-    """
-    total_events = telemetry.get("total_events", 0)
-    critical_count = telemetry.get("critical_alerts_count", 0)
-    corrob_rate = telemetry.get("corroboration_rate_pct", 0)
-    edges_count = telemetry.get("cross_source_edges_count", 0)
-    max_score = telemetry.get("max_importance_score", 5)
-    avg_score = telemetry.get("avg_importance_score", 5.0)
-    velocity_status = telemetry.get("velocity_status", "Normal")
-    top_entities = [e["name"] for e in telemetry.get("top_entities", [])[:6]]
-    top_locations = [l["name"] for l in telemetry.get("top_locations", [])[:4]]
-
-    if total_events == 0:
-        return SituationBriefingLLMOutput(
-            threat_trajectory="Stable",
-            threat_level_score=2,
-            executive_bluf=(
-                f"BLUF: No intelligence events are currently recorded within the selected time window for "
-                f"theme '{theme_name}'. Automated ingestion supervisors and multi-stage analysis pipelines "
-                f"remain active and monitoring configured OSINT feeds."
-            ),
-            strategic_assessment=(
-                "Baseline monitoring posture is in effect. As incoming reports are ingested from RSS, Telegram, "
-                "NewsAPI, Reddit, and Maritime AIS sensors, high-dimensional vector embeddings and semantic "
-                "clusters will automatically populate this situational briefing."
-            ),
-            cluster_assessments=[],
-            key_developments=[],
-            unverified_outlier_assessment="No uncorroborated or isolated outlier reports detected in the current window.",
-            watchlist_indicators=[
-                f"Monitor incoming ingestion streams for initial '{theme_name}' activity.",
-                "Verify source polling intervals and API credentials in Settings.",
-                "Track cross-source corroboration links as new events are embedded.",
-            ],
-        )
-
-    # Determine threat trajectory & score using recency-weighted scores if available
-    recency_avg = telemetry.get("recency_weighted_avg_score", avg_score)
-    if critical_count >= 4 or max_score >= 9 or (critical_count >= 2 and velocity_status == "Surge"):
-        trajectory = "Escalating"
-        threat_score = min(10, max(8, max_score))
-    elif critical_count >= 2 or max_score >= 8 or recency_avg >= 7.0:
-        trajectory = "Elevated"
-        threat_score = max(7, min(9, round(recency_avg + 1.2)))
-    elif velocity_status == "Surge" or len(outlier_events) > total_events * 0.5:
-        trajectory = "Volatile"
-        threat_score = max(6, min(8, max_score))
-    elif max_score >= 5 or recency_avg >= 5.0:
-        trajectory = "Elevated" if critical_count >= 1 else "Stable"
-        threat_score = max(4, min(7, round(recency_avg)))
-    else:
-        trajectory = "De-escalating" if velocity_status == "Quiet" else "Stable"
-        threat_score = max(2, min(5, round(recency_avg)))
-
-    # Build per-cluster assessments
-    cluster_items: List[ClusterSynthesisLLMItem] = []
-    for c in clusters_meta:
-        cid = c["cluster_id"]
-        c_events = c.get("events", [])
-        rep_count = c["report_count"]
-        ind_sources = c.get("independent_sources", [])
-        trust_label = c.get("trustworthiness_label", "Developing / Verified")
-        avg_trust = c.get("avg_trustworthiness_score", 60)
-        c_max_score = c.get("max_importance_score", 5)
-        c_avg_score = c.get("avg_importance_score", 5.0)
-        c_entities = c.get("top_entities", [])[:4]
-
-        # Synthesize top 2 report summaries in the cluster
-        top_summaries = []
-        for ev in c_events[:2]:
-            s_text = (ev.get("summary") or ev.get("headline") or ev.get("title") or "").replace("BLUF:", "").strip()
-            if s_text:
-                top_summaries.append(s_text)
-
-        combined_narrative = " ".join(top_summaries)
-        if len(combined_narrative) > 360:
-            combined_narrative = combined_narrative[:357] + "..."
-
-        src_desc = (
-            f"Corroborated across {len(ind_sources)} outlets ({', '.join(ind_sources[:3])})"
-            if len(ind_sources) > 1
-            else f"Reported via {ind_sources[0] if ind_sources else 'monitored feed'}"
-        )
-        exec_summary = (
-            f"{src_desc} with {avg_trust}% embedding trustworthiness ({trust_label}). "
-            f"{combined_narrative}"
-        ).strip()
-
-        ent_str = f" involving {', '.join(c_entities)}" if c_entities else ""
-        implication = (
-            f"High-priority operational storyline (peak score {c_max_score}/10){ent_str}; "
-            f"{'confirmed by multi-source semantic convergence.' if avg_trust >= 65 else 'requires independent secondary confirmation.'}"
-        )
-
-        cluster_items.append(
-            ClusterSynthesisLLMItem(
-                cluster_id=cid,
-                title=c["label"],
-                executive_summary=exec_summary,
-                operational_implication=implication,
-                threat_level=_derive_cluster_threat_level(c_max_score, c_avg_score),
-            )
-        )
-
-    # Build Executive BLUF
-    lead_cluster_names = [c["label"] for c in clusters_meta[:3]]
-    lead_clusters_str = (
-        f"Primary semantic storylines center on {'; '.join(lead_cluster_names)}."
-        if lead_cluster_names
-        else "Incoming intelligence is distributed across individual flash reports."
-    )
-    entities_str = (
-        f"Key actors and assets driving current reporting include {', '.join(top_entities)}."
-        if top_entities
-        else ""
-    )
-    locations_str = (
-        f"Geographic operational focus is concentrated around {', '.join(top_locations)}."
-        if top_locations
-        else ""
-    )
-
-    p1 = (
-        f"BLUF: Situational posture for '{theme_name}' is assessed as {trajectory.upper()} "
-        f"(Threat Level {threat_score}/10) across {total_events} analyzed intelligence reports "
-        f"and {len(clusters_meta)} semantic embedding clusters. {critical_count} critical flash events "
-        f"exceeded the alert threshold (≥{alert_threshold}/10), while vector similarity analysis "
-        f"established {edges_count} cross-source corroboration links ({corrob_rate}% multi-source verification rate)."
-    )
-    p2 = f"{lead_clusters_str} {entities_str} {locations_str}".strip()
-
-    # Build Strategic Assessment
-    strategic_assessment = (
-        f"Cross-cluster embedding analysis indicates a {velocity_status.lower()} reporting tempo "
-        f"({telemetry.get('events_last_6h', 0)} events in the last 6 hours vs. "
-        f"{telemetry.get('events_prev_18h', 0)} in the preceding 18 hours). "
-        f"High-dimensional vector clustering separated {sum(c['report_count'] for c in clusters_meta)} "
-        f"clustered reports from {len(outlier_events)} unverified/outlier claims, allowing watch officers "
-        f"to prioritize multi-source consensus over single-feed noise."
-    )
-
-    # Build Key Developments
-    all_sorted_events = []
-    for c in clusters_meta:
-        all_sorted_events.extend(c.get("events", []))
-    all_sorted_events.extend(outlier_events)
-    all_sorted_events.sort(
-        key=lambda x: (x.get("importance_score", 5), x.get("trustworthiness_score", 50)),
-        reverse=True,
-    )
-
-    key_devs: List[str] = []
-    seen_headlines = set()
-    for ev in all_sorted_events:
-        hl = (ev.get("headline") or ev.get("title") or "").strip()
-        if not hl or hl.lower() in seen_headlines:
-            continue
-        seen_headlines.add(hl.lower())
-        src = ev.get("source_name", "OSINT")
-        sc = ev.get("importance_score", 5)
-        tl = ev.get("trustworthiness_label", "Verified")
-        sum_snippet = (ev.get("summary") or "").replace("BLUF:", "").strip()
-        first_sent = sum_snippet.split(".")[0].strip() if sum_snippet else hl
-        key_devs.append(f"[{src} | Score {sc}/10 | {tl}] {hl} — {first_sent}.")
-        if len(key_devs) >= 5:
-            break
-
-    # Build Unverified Outlier Assessment
-    if outlier_events:
-        top_outlier = outlier_events[0]
-        outlier_assessment = (
-            f"Embedding distance analysis flagged {len(outlier_events)} report(s) as Single-Source Unverified "
-            f"or Isolated Outliers lacking independent cross-outlet confirmation. Most notable uncorroborated claim: "
-            f"\"{top_outlier.get('headline') or top_outlier.get('title')}\" via {top_outlier.get('source_name')} "
-            f"(Score {top_outlier.get('importance_score', 5)}/10, Trust {top_outlier.get('trustworthiness_score', 25)}%). "
-            f"Treat these items as tactical indicators pending secondary sensor corroboration."
-        )
-    else:
-        outlier_assessment = (
-            "All active intelligence reports within the window align with established semantic clusters "
-            "or multi-source corroboration thresholds; zero high-risk isolated outliers detected."
-        )
-
-    # Watchlist indicators
-    watchlist = [
-        f"Monitor cross-source corroboration for emerging reports around {', '.join(top_locations[:2]) if top_locations else theme_name}.",
-        f"Track operational posture and communications involving {', '.join(top_entities[:3]) if top_entities else 'primary regional actors'}.",
-        "Watch for secondary confirmation of single-source flash claims in embedding outlier space.",
-        "Evaluate 6-hour ingestion velocity spikes across Telegram and Maritime AIS feeds for early escalation signals.",
-    ]
-
-    return SituationBriefingLLMOutput(
-        threat_trajectory=trajectory,  # type: ignore
-        threat_level_score=threat_score,
-        executive_bluf=f"{p1}\n\n{p2}",
-        strategic_assessment=strategic_assessment,
-        cluster_assessments=cluster_items,
-        key_developments=key_devs,
-        unverified_outlier_assessment=outlier_assessment,
-        watchlist_indicators=watchlist,
-    )
-
-
 class SituationSummaryService:
     """
     Service responsible for gathering all OSINT events, report summaries,
@@ -305,6 +93,7 @@ class SituationSummaryService:
         self.last_generation_time: Optional[datetime] = None
         self.last_generation_event_count: int = 0
         self.last_generation_latest_ingested: Optional[str] = None
+        self._last_successful_summary: Optional[Dict[str, Any]] = None
 
     def record_generation(
         self, gen_time: datetime, count: int, latest_iso: Optional[str]
@@ -324,6 +113,130 @@ class SituationSummaryService:
             self.last_generation_latest_ingested,
         )
 
+    def _build_empty_summary_response(
+        self,
+        theme_key: str,
+        theme_name: str,
+        time_range: str,
+        warning: Optional[str] = None,
+        cached: bool = True,
+    ) -> Dict[str, Any]:
+        """Return a clean empty-state payload when no events or summaries exist yet."""
+        return {
+            "id": str(uuid.uuid4()),
+            "theme_id": theme_key,
+            "theme_name": theme_name,
+            "generated_at": utc_now().isoformat(),
+            "time_range": time_range,
+            "cached": cached,
+            "is_stale": True,
+            "warning": warning or f"No intelligence events recorded for theme '{theme_name}' in the selected time window, and no previous AI summary exists.",
+            "active_ai_model": "none",
+            "active_embedding_model": "none",
+            "threat_trajectory": "Stable",
+            "threat_level_score": 1,
+            "executive_bluf": f"BLUF: No intelligence events are currently recorded within the selected time window for theme '{theme_name}'.",
+            "strategic_assessment": "Baseline monitoring posture is in effect. Incoming reports will appear once ingested.",
+            "key_developments": [],
+            "clusters": [],
+            "source_credibility_leaderboard": [],
+            "historical_rollups": [],
+            "unverified_outliers": {
+                "assessment": "No uncorroborated or isolated outlier reports detected in the current window.",
+                "events": [],
+            },
+            "watchlist_indicators": [
+                f"Monitor incoming ingestion streams for initial '{theme_name}' activity.",
+                "Verify source polling intervals and API credentials in Settings.",
+            ],
+            "telemetry": {
+                "total_events": 0,
+                "embedded_events": 0,
+                "embedding_coverage_pct": 100.0,
+                "corroborated_reports_count": 0,
+                "corroboration_rate_pct": 0,
+                "cross_source_edges_count": 0,
+                "total_clusters": 0,
+                "isolated_outliers_count": 0,
+                "critical_alerts_count": 0,
+                "avg_importance_score": 0.0,
+                "recency_weighted_avg_score": 0.0,
+                "max_importance_score": 0,
+                "velocity_status": "Quiet",
+                "events_last_6h": 0,
+                "events_prev_18h": 0,
+                "source_breakdown": {},
+                "top_entities": [],
+                "top_locations": [],
+                "top_categories": [],
+            },
+        }
+
+    async def get_last_available_summary(
+        self,
+        session: AsyncSession,
+        theme_key: Optional[str] = None,
+        time_range: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Locate the most recent successfully generated AI situational summary.
+        Searches SystemSettings cache for matching theme/time_range, matching theme,
+        or any latest generated summary. Falls back to in-memory last generation.
+        """
+        try:
+            stmt = select(SystemSettings).where(
+                SystemSettings.key == SUMMARY_CACHE_SETTINGS_KEY
+            )
+            record = (await session.execute(stmt)).scalars().first()
+            if record and isinstance(record.value_json, dict):
+                cache_map = record.value_json
+                norm_time_range = (time_range or "all").lower().strip()
+                # 1. Exact match for theme_key:time_range
+                if theme_key:
+                    exact_key = f"{theme_key}:{norm_time_range}"
+                    if exact_key in cache_map and isinstance(cache_map[exact_key], dict):
+                        payload = cache_map[exact_key].get("payload")
+                        if payload and isinstance(payload, dict):
+                            return dict(payload)
+
+                    # 2. Match theme_key:all or any theme_key:*
+                    all_key = f"{theme_key}:all"
+                    if all_key in cache_map and isinstance(cache_map[all_key], dict):
+                        payload = cache_map[all_key].get("payload")
+                        if payload and isinstance(payload, dict):
+                            return dict(payload)
+
+                    matching_theme_entries = [
+                        e for k, e in cache_map.items()
+                        if k.startswith(f"{theme_key}:") and isinstance(e, dict) and e.get("payload")
+                    ]
+                    if matching_theme_entries:
+                        latest_entry = max(
+                            matching_theme_entries,
+                            key=lambda x: str(x.get("generated_at", "")),
+                        )
+                        return dict(latest_entry["payload"])
+
+                # 3. Any most recently generated summary across the cache map
+                valid_entries = [
+                    e for e in cache_map.values()
+                    if isinstance(e, dict) and e.get("payload") and isinstance(e.get("payload"), dict)
+                ]
+                if valid_entries:
+                    latest_entry = max(
+                        valid_entries,
+                        key=lambda x: str(x.get("generated_at", "")),
+                    )
+                    return dict(latest_entry["payload"])
+        except Exception as exc:
+            logger.warning(f"Error reading last available summary from SystemSettings: {exc}")
+
+        # In-memory fallback if session had no records
+        if self._last_successful_summary:
+            return dict(self._last_successful_summary)
+
+        return None
+
     async def get_latest_persisted_summary(
         self,
         session: AsyncSession,
@@ -333,88 +246,19 @@ class SituationSummaryService:
         """
         Retrieve the latest persisted situational summary from SystemSettings
         without triggering ANY LLM synthesis, pipeline stages, or heavy computation.
-        If no persisted summary exists in cache, returns a deterministic fallback.
+        If no persisted summary exists in cache, returns a clean empty-state payload.
         """
         theme_obj, theme_key, theme_name, alert_threshold = await self._resolve_theme(
             session, theme_id
         )
         norm_time_range = (time_range or "all").lower().strip()
-        cache_key = f"{theme_key}:{norm_time_range}"
+        last_summary = await self.get_last_available_summary(session, theme_key, norm_time_range)
+        if last_summary:
+            payload = copy.deepcopy(last_summary)
+            payload["cached"] = True
+            return payload
 
-        # 1. Attempt lookup in SystemSettings
-        try:
-            stmt = select(SystemSettings).where(
-                SystemSettings.key == SUMMARY_CACHE_SETTINGS_KEY
-            )
-            record = (await session.execute(stmt)).scalars().first()
-            if record and isinstance(record.value_json, dict):
-                cache_map = record.value_json
-                entry = cache_map.get(cache_key)
-                if not entry:
-                    entry = cache_map.get(f"{theme_key}:all")
-                if not entry and cache_map:
-                    entry = max(
-                        cache_map.values(),
-                        key=lambda e: e.get("generated_at", ""),
-                        default=None,
-                    )
-                if entry and isinstance(entry, dict) and "payload" in entry:
-                    payload = dict(entry["payload"])
-                    payload["cached"] = True
-                    return payload
-        except Exception as exc:
-            logger.warning(f"Error reading persisted summary: {exc}")
-
-        # 2. If nothing persisted, return safe deterministic fallback with zero LLM generation
-        telemetry = {
-            "total_events": 0,
-            "embedded_events": 0,
-            "embedding_coverage_pct": 100.0,
-            "corroborated_reports_count": 0,
-            "corroboration_rate_pct": 0,
-            "cross_source_edges_count": 0,
-            "total_clusters": 0,
-            "isolated_outliers_count": 0,
-            "critical_alerts_count": 0,
-            "avg_importance_score": 0.0,
-            "max_importance_score": 0,
-            "velocity_status": "Quiet",
-            "events_last_6h": 0,
-            "events_prev_18h": 0,
-            "source_breakdown": {},
-            "top_entities": [],
-            "top_locations": [],
-            "top_categories": [],
-        }
-        fallback_llm = _build_deterministic_summary(
-            theme_name=theme_name,
-            alert_threshold=alert_threshold,
-            clusters_meta=[],
-            outlier_events=[],
-            telemetry=telemetry,
-        )
-        return {
-            "theme_id": theme_key,
-            "theme_name": theme_name,
-            "generated_at": utc_now().isoformat(),
-            "time_range": norm_time_range,
-            "cached": True,
-            "active_ai_model": "deterministic-fusion-engine",
-            "active_embedding_model": "gemini-embedding-2",
-            "threat_trajectory": fallback_llm.threat_trajectory,
-            "threat_level_score": fallback_llm.threat_level_score,
-            "executive_bluf": fallback_llm.executive_bluf,
-            "strategic_assessment": fallback_llm.strategic_assessment,
-            "key_developments": [],
-            "clusters": [],
-            "unverified_outliers": {
-                "count": 0,
-                "assessment": fallback_llm.unverified_outlier_assessment,
-                "events": [],
-            },
-            "watchlist_indicators": fallback_llm.watchlist_indicators,
-            "telemetry": telemetry,
-        }
+        return self._build_empty_summary_response(theme_key, theme_name, norm_time_range)
 
     async def _resolve_theme(
         self, session: AsyncSession, theme_id: Optional[str]
@@ -622,6 +466,26 @@ class SituationSummaryService:
                     except Exception:
                         pass
                 return cached
+
+        # If zero events exist in current window, show last available summary with warning, or empty baseline
+        if len(events_in_window) == 0:
+            last_summary = await self.get_last_available_summary(session, theme_key, norm_time_range)
+            if last_summary:
+                last_payload = copy.deepcopy(last_summary)
+                last_payload["cached"] = not force_refresh
+                last_payload["is_stale"] = True
+                last_payload["warning"] = (
+                    f"No active intelligence reports recorded in the selected '{norm_time_range}' window. "
+                    f"Displaying the last verified situational summary from {last_payload.get('generated_at', 'earlier')}."
+                )
+                return last_payload
+            return self._build_empty_summary_response(
+                theme_key=theme_key,
+                theme_name=theme_name,
+                time_range=norm_time_range,
+                warning=f"No intelligence events recorded for theme '{theme_name}' in the selected time window, and no previous AI summary exists.",
+                cached=not force_refresh,
+            )
 
         # 1. Obtain full Embedding Relevance Map data (auto-embeds any un-embedded events,
         # computes KMeans semantic clusters, pairwise cosine similarity edges, and trustworthiness)
@@ -865,80 +729,77 @@ class SituationSummaryService:
         sum_stage_cfg = orchestrator.get_stage_config("situation_summary")
         active_ai_model = f"{sum_stage_cfg.provider}:{sum_stage_cfg.model_name}"
 
-        def fallback_fn() -> SituationBriefingLLMOutput:
-            return _build_deterministic_summary(
-                theme_name=theme_name,
-                alert_threshold=alert_threshold,
-                clusters_meta=clusters_meta,
-                outlier_events=outlier_events,
-                telemetry=telemetry,
-            )
-
-        if total_events == 0 or orchestrator.use_mock:
-            llm_output = fallback_fn()
-            if orchestrator.use_mock:
-                active_ai_model = "deterministic-fusion-engine"
-        else:
-            prompt_text = self._build_llm_prompt(
-                theme_name=theme_name,
-                theme_obj=theme_obj,
-                alert_threshold=alert_threshold,
-                time_range=norm_time_range,
-                clusters_meta=clusters_meta,
-                outlier_events=outlier_events,
-                telemetry=telemetry,
-            )
-
-            async def _runner(
-                provider: BaseAIProvider,
-                model: Optional[str] = None,
-                temperature: Optional[float] = None,
-                raise_on_error: bool = True,
-            ) -> SituationBriefingLLMOutput:
-                nonlocal active_ai_model
-                active_ai_model = f"{provider.provider_name}:{model or sum_stage_cfg.model_name}"
-                raw_resp = await provider.generate_text(
-                    prompt=prompt_text,
-                    system_prompt=SITUATION_SUMMARY_SYSTEM_PROMPT,
-                    model=model,
-                    temperature=temperature if temperature is not None else 0.2,
-                    max_tokens=3072,
-                    json_mode=True,
-                )
-                return extract_and_parse_json(
-                    raw_text=raw_resp,
-                    target_model=SituationBriefingLLMOutput,
-                    fallback_factory=fallback_fn,
-                )
-
-            try:
-                llm_output: SituationBriefingLLMOutput = await asyncio.wait_for(
-                    orchestrator._execute_stage_with_fallbacks(
-                        stage_id="situation_summary",
-                        runner_fn=_runner,
-                        fallback_heuristic_fn=fallback_fn,
-                    ),
-                    timeout=35.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Situation summary LLM synthesis exceeded 35s budget — cleanly failing over to deterministic engine."
-                )
-                llm_output = fallback_fn()
-                active_ai_model = "deterministic-fusion-engine (timeout fallback)"
-            except Exception as exc:
-                logger.warning(f"Situation summary LLM synthesis fell back to deterministic engine: {exc}")
-                llm_output = fallback_fn()
-
-        # 6. Merge LLM cluster narratives with rich cluster metadata
-        deterministic_ref = _build_deterministic_summary(
+        prompt_text = self._build_llm_prompt(
             theme_name=theme_name,
+            theme_obj=theme_obj,
             alert_threshold=alert_threshold,
+            time_range=norm_time_range,
             clusters_meta=clusters_meta,
             outlier_events=outlier_events,
             telemetry=telemetry,
         )
-        det_cluster_by_id = {c.cluster_id: c for c in deterministic_ref.cluster_assessments}
+
+        async def _runner(
+            provider: BaseAIProvider,
+            model: Optional[str] = None,
+            temperature: Optional[float] = None,
+            raise_on_error: bool = True,
+        ) -> SituationBriefingLLMOutput:
+            nonlocal active_ai_model
+            active_ai_model = f"{provider.provider_name}:{model or sum_stage_cfg.model_name}"
+            raw_resp = await provider.generate_text(
+                prompt=prompt_text,
+                system_prompt=SITUATION_SUMMARY_SYSTEM_PROMPT,
+                model=model,
+                temperature=temperature if temperature is not None else 0.2,
+                max_tokens=3072,
+                json_mode=True,
+            )
+            parsed = extract_and_parse_json(
+                raw_text=raw_resp,
+                target_model=SituationBriefingLLMOutput,
+                fallback_factory=None,
+            )
+            if not parsed or not isinstance(parsed, SituationBriefingLLMOutput):
+                raise ValueError(f"AI Model '{active_ai_model}' returned invalid or empty situation summary JSON")
+            return parsed
+
+        try:
+            llm_output: SituationBriefingLLMOutput = await asyncio.wait_for(
+                orchestrator._execute_stage_with_fallbacks(
+                    stage_id="situation_summary",
+                    runner_fn=_runner,
+                    fallback_heuristic_fn=None,
+                ),
+                timeout=35.0,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"AI situational summary creation failed across all models ({exc}). "
+                f"Attempting failover to last available summary..."
+            )
+            last_summary = await self.get_last_available_summary(session, theme_key, norm_time_range)
+            if last_summary:
+                last_payload = copy.deepcopy(last_summary)
+                last_payload["cached"] = True
+                last_payload["is_stale"] = True
+                warning_msg = (
+                    f"AI summary creation unavailable across all configured models ({exc}). "
+                    f"Displaying the last verified situational summary generated on {last_payload.get('generated_at', 'earlier')}."
+                )
+                last_payload["warning"] = warning_msg
+                logger.info(f"Returning last situational summary with warning: {warning_msg}")
+                return last_payload
+            else:
+                logger.error(f"No previous situational summary found in database or cache ({exc}).")
+                return self._build_empty_summary_response(
+                    theme_key=theme_key,
+                    theme_name=theme_name,
+                    time_range=norm_time_range,
+                    warning=f"AI summary creation unavailable across all configured models ({exc}) and no previous summary is available.",
+                )
+
+        # 6. Merge LLM cluster narratives with rich cluster metadata
         llm_cluster_by_id = {c.cluster_id: c for c in (llm_output.cluster_assessments or [])}
 
         final_clusters: List[Dict[str, Any]] = []
@@ -947,20 +808,23 @@ class SituationSummaryService:
             llm_c = llm_cluster_by_id.get(cid)
             if llm_c is None and idx < len(llm_output.cluster_assessments or []):
                 llm_c = llm_output.cluster_assessments[idx]
-            det_c = det_cluster_by_id.get(cid)
 
             title_val = (
                 (llm_c.title if llm_c and llm_c.title else None)
-                or (det_c.title if det_c else None)
                 or c_meta["label"]
+            )
+            top_ev_summary = (
+                (c_meta.get("events", [{}])[0].get("summary") or c_meta.get("events", [{}])[0].get("headline") or "")
+                .replace("BLUF:", "")
+                .strip()
             )
             exec_sum_val = (
                 (llm_c.executive_summary if llm_c and llm_c.executive_summary else None)
-                or (det_c.executive_summary if det_c else "")
+                or f"{c_meta['trustworthiness_label']} cluster across {len(c_meta.get('independent_sources', []))} sources. {top_ev_summary}".strip()
             )
             imp_val = (
                 (llm_c.operational_implication if llm_c and llm_c.operational_implication else None)
-                or (det_c.operational_implication if det_c else "")
+                or f"Operational storyline with peak score {c_meta['max_importance_score']}/10."
             )
             t_level = (
                 (llm_c.threat_level if llm_c and llm_c.threat_level else None)
@@ -998,7 +862,10 @@ class SituationSummaryService:
             key=lambda x: (x["importance_score"], x["trustworthiness_score"]),
             reverse=True,
         )
-        raw_dev_bullets = llm_output.key_developments or deterministic_ref.key_developments
+        raw_dev_bullets = llm_output.key_developments or [
+            f"[{ev['source_name']} | Score {ev['importance_score']}/10 | {ev['trustworthiness_label']}] {ev['headline']}"
+            for ev in all_top_events[:5]
+        ]
         structured_developments: List[Dict[str, Any]] = []
         for idx, bullet in enumerate(raw_dev_bullets[:6]):
             matched_ev = all_top_events[idx] if idx < len(all_top_events) else None
@@ -1013,7 +880,7 @@ class SituationSummaryService:
             })
 
         synth_parts = active_ai_model.split(":", 1) if ":" in active_ai_model else [
-            "system" if "deterministic" in active_ai_model.lower() else "gemini",
+            "groq" if "gpt" in active_ai_model.lower() else "gemini",
             active_ai_model,
         ]
         synth_prov = {"provider": synth_parts[0], "model": synth_parts[1]}
@@ -1036,10 +903,22 @@ class SituationSummaryService:
         except Exception as sc_err:
             logger.debug(f"Source credibility query omitted in summary: {sc_err}")
 
+        outlier_assessment = llm_output.unverified_outlier_assessment or (
+            f"Embedding distance analysis flagged {len(outlier_events)} report(s) as uncorroborated outliers."
+            if outlier_events
+            else "All active intelligence reports align with semantic clusters; zero high-risk isolated outliers."
+        )
+        watchlist_indicators = llm_output.watchlist_indicators or [
+            f"Monitor incoming reporting for '{theme_name}' updates.",
+            "Track cross-source corroboration links as new events are embedded.",
+        ]
+
         result_payload: Dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "generated_at": utc_now().isoformat(),
             "cached": False,
+            "warning": None,
+            "is_stale": False,
             "theme_id": theme_key,
             "theme_name": theme_name,
             "time_range": norm_time_range,
@@ -1049,24 +928,19 @@ class SituationSummaryService:
                 "synthesizer": synth_prov,
                 "embedding": emb_prov,
             },
-            "threat_trajectory": llm_output.threat_trajectory or deterministic_ref.threat_trajectory,
-            "threat_level_score": llm_output.threat_level_score or deterministic_ref.threat_level_score,
-            "executive_bluf": llm_output.executive_bluf or deterministic_ref.executive_bluf,
-            "strategic_assessment": llm_output.strategic_assessment or deterministic_ref.strategic_assessment,
+            "threat_trajectory": llm_output.threat_trajectory or "Elevated",
+            "threat_level_score": llm_output.threat_level_score or max(1, telemetry.get("max_importance_score", 5)),
+            "executive_bluf": llm_output.executive_bluf or f"BLUF: Situational posture for '{theme_name}'.",
+            "strategic_assessment": llm_output.strategic_assessment or "Cross-cluster semantic embedding analysis in progress.",
             "key_developments": structured_developments,
             "clusters": final_clusters,
             "source_credibility_leaderboard": source_credibility[:8],
             "historical_rollups": [r.to_dict() for r in historical_rollups[:5]],
             "unverified_outliers": {
-                "assessment": (
-                    llm_output.unverified_outlier_assessment
-                    or deterministic_ref.unverified_outlier_assessment
-                ),
+                "assessment": outlier_assessment,
                 "events": outlier_events[:10],
             },
-            "watchlist_indicators": (
-                llm_output.watchlist_indicators or deterministic_ref.watchlist_indicators
-            ),
+            "watchlist_indicators": watchlist_indicators,
             "telemetry": telemetry,
         }
 
@@ -1077,6 +951,7 @@ class SituationSummaryService:
             total_events_count=total_events,
             payload=result_payload,
         )
+        self._last_successful_summary = copy.deepcopy(result_payload)
         self.record_generation(utc_now(), total_events, latest_ingested_str)
 
         return result_payload

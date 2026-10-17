@@ -408,6 +408,8 @@ export interface SituationSummaryData {
   id: string;
   generated_at: string;
   cached: boolean;
+  warning?: string | null;
+  is_stale?: boolean;
   theme_id: string;
   theme_name: string;
   time_range: string;

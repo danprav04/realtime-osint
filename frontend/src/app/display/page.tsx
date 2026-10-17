@@ -983,6 +983,14 @@ export default function PublicDisplayPage() {
                 </div>
               </div>
 
+              {/* Fallback Warning Notice */}
+              {summary.warning && (
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 flex items-center space-x-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>{summary.warning}</span>
+                </div>
+              )}
+
               {/* BLUF Text */}
               <div className="space-y-3 text-sm text-zinc-200 leading-relaxed">
                 {summary.executive_bluf.split('\n\n').map((para, idx) => (
