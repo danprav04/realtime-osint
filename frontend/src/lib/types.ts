@@ -205,6 +205,7 @@ export interface AIPipelineSettings {
   scoring: AIStageConfig;
   summarization: AIStageConfig;
   visuals: AIStageConfig;
+  situation_summary?: AIStageConfig;
 }
 
 export interface SystemSettings {

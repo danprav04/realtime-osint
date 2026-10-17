@@ -341,6 +341,50 @@ async def test_stage3_summary_and_headline():
     assert "BLUF:" in result.summary or len(result.summary) > 20
 
 
+def test_stage3_flexible_alias_and_degenerate_handling():
+    """Validates Stage3Result rejects degenerate rating words and maps nested aliases."""
+    # Degenerate single-word headline "High" and rating summary are rejected/blanked
+    res_degen = Stage3Result.model_validate({
+        "headline": "High",
+        "summary": "Medium-High (disputed claims reduce certainty on perpetrator)",
+    })
+    assert res_degen.headline == ""
+    assert res_degen.summary == ""
+
+    # Aliases with nested executive_summary dict and primary headline
+    res_nested = Stage3Result.model_validate({
+        "headline": {"primary": "Two Missiles Strike Near Aircraft at Aden Airport"},
+        "executive_summary": {
+            "bluf": "BLUF: Two missiles struck grounds of Aden Airport near an aircraft preparing for Cairo.",
+            "key_details": "No casualties."
+        }
+    })
+    assert res_nested.headline == "Two Missiles Strike Near Aircraft at Aden Airport"
+    assert "Two missiles struck grounds of Aden Airport" in res_nested.summary
+
+    # Flat aliases (title, brief)
+    res_flat = Stage3Result.model_validate({
+        "title": "Air Defense Intercepts Drone Over Erbil",
+        "brief": "BLUF: Erbil air defense battery engaged and intercepted a low-altitude UAV.",
+    })
+    assert res_flat.headline == "Air Defense Intercepts Drone Over Erbil"
+    assert "Erbil air defense battery" in res_flat.summary
+
+
+def test_stage4_flexible_alias_remapping():
+    """Validates Stage4Result flexible aliases for category, tags, and insight."""
+    res = Stage4Result.model_validate({
+        "category": "Kinetic Engagement",
+        "tags": ["Missile Strike", "Aden Airport", "Aviation"],
+        "insight": "Escalation risk heightened around southern Yemeni air corridors.",
+    })
+    assert res.trend_category == "Kinetic Engagement"
+    assert "Missile Strike" in res.cluster_tags
+    assert "Aden Airport" in res.cluster_tags
+    assert "Escalation risk" in res.narrative_insight
+
+
+
 @pytest.mark.asyncio
 async def test_stage3_periodic_digest():
     """Test 10: Validates multi-event collection digest generation."""
@@ -494,7 +538,46 @@ async def test_orchestrator_db_enrichment_and_persistence(test_db_session, mock_
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_degenerate_headline_recovery(test_db_session, mock_redis_bus, monkeypatch):
+    """Test that when Stage 3 produces a degenerate headline 'High' or rating summary, orchestrator recovers."""
+    orchestrator = PipelineOrchestrator(
+        session_factory=test_db_session,
+        redis_bus=mock_redis_bus,
+        use_mock=True,
+    )
+    await orchestrator.start()
+
+    # Mock Stage 3 runner to simulate returning degenerate output
+    async def mock_degenerate_stage3(*args, **kwargs):
+        return Stage3Result(
+            headline="High",
+            summary="Medium-High (disputed claims reduce certainty on perpetrator)"
+        )
+
+    monkeypatch.setattr("backend.app.pipeline.orchestrator.run_stage3_summary", mock_degenerate_stage3)
+
+    event = NormalizedEvent(
+        id="degen-recovery-001",
+        theme_id="1",
+        source_type="telegram",
+        source_name="BBC Persian Live",
+        external_id="ext-degen-001",
+        title="دو موشک به محوطه فرودگاه بین‌المللی عدن در جنوب یمن اصابت کرد",
+        raw_text="دو موشک به محوطه فرودگاه بین‌المللی عدن در جنوب یمن اصابت کرد. مسافران پرواز قاهره تخلیه شدند.",
+    )
+    analyzed = await orchestrator.process_event(event)
+
+    # Headline must NOT be 'High' or empty; must be descriptive in English
+    assert analyzed.headline.lower() != "high"
+    assert len(analyzed.headline) > 10
+    # Summary must NOT be the degenerate string
+    assert "Medium-High (disputed claims" not in analyzed.summary
+    assert len(analyzed.summary) > 20
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_zero_code_hot_reload(test_db_session, mock_redis_bus):
+
     """Test 15: Publishes osint:config:reload to Redis bus and verifies immediate configuration update."""
     orchestrator = PipelineOrchestrator(
         session_factory=test_db_session,
@@ -1217,7 +1300,7 @@ def test_gemma4_present_in_all_default_fallback_chains():
 
     # 3. Pipeline orchestrator defaults
     orchestrator = PipelineOrchestrator(use_mock=True)
-    for stage_name in ("gatekeeper", "extraction", "scoring", "summarization", "visuals"):
+    for stage_name in ("gatekeeper", "extraction", "scoring", "summarization", "visuals", "situation_summary"):
         cfg = orchestrator.get_stage_config(stage_name)
         has_gemma = any("gemma" in fb.model_name.lower() for fb in cfg.fallbacks)
         assert has_gemma, f"Stage '{stage_name}' in orchestrator default configs is missing Gemma 4 in its fallback chain!"

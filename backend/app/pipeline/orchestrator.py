@@ -49,6 +49,11 @@ from backend.app.services.redis_bus import (
 
 logger = logging.getLogger("osint.pipeline.orchestrator")
 
+DEGENERATE_HEADLINES = {
+    "high", "low", "medium", "critical", "urgent", "alert", "warning",
+    "disputed", "breaking", "update", "notice", "news", "report", "first report",
+}
+
 
 class PipelineOrchestrator:
     """
@@ -177,6 +182,19 @@ class PipelineOrchestrator:
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                 ],
             ),
+            "situation_summary": AIStageConfig(
+                stage_id="situation_summary",
+                provider="groq",
+                model_name="openai/gpt-oss-120b",
+                temperature=0.2,
+                fallbacks=[
+                    AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-free", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="mistral-large-2512", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="mistral-small-2603", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
+                ],
+            ),
         }
 
     def is_model_in_cooldown(self, provider: str, model_name: str) -> bool:
@@ -224,6 +242,8 @@ class PipelineOrchestrator:
         s = str(stage_id).lower().strip()
         if s in ("gatekeeper", "stage0", "pre_filter", "triage", "pre_pipeline"):
             return "gatekeeper"
+        if s in ("situation_summary", "situational_summary", "sitrep", "summary_synthesis") or "situation" in s or "sitrep" in s:
+            return "situation_summary"
         if "extract" in s:
             return "extraction"
         if "score" in s:
@@ -541,7 +561,7 @@ class PipelineOrchestrator:
                     settings_list = res.scalars().all()
                     for setting in settings_list:
                         if setting.key == "ai_pipeline_stages" and setting.value_json:
-                            canonical_keys = {"gatekeeper", "extraction", "scoring", "summarization", "visuals"}
+                            canonical_keys = {"gatekeeper", "extraction", "scoring", "summarization", "visuals", "situation_summary"}
                             sorted_items = sorted(
                                 setting.value_json.items(),
                                 key=lambda item: 1 if str(item[0]).lower().strip() in canonical_keys else 0,
@@ -1215,12 +1235,24 @@ class PipelineOrchestrator:
             except Exception:
                 ing_at = datetime.now(timezone.utc)
 
-        # Determine English headline
-        raw_hl = getattr(res_s3, "headline", "") or ""
+        # Determine English headline with rigorous quality gates
+        raw_hl = (getattr(res_s3, "headline", "") or "").strip()
         has_non_latin = bool(re.search(r"[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]", raw_hl)) if raw_hl else True
-        if has_non_latin or not raw_hl:
-            if getattr(res_s1, "translated_title", None):
-                final_headline = res_s1.translated_title
+        words_hl = raw_hl.lower().split()
+        is_degenerate_hl = (
+            not raw_hl
+            or raw_hl.lower() in DEGENERATE_HEADLINES
+            or (len(words_hl) <= 2 and any(w in DEGENERATE_HEADLINES for w in words_hl))
+            or len(raw_hl) < 8
+        )
+
+        if has_non_latin or is_degenerate_hl:
+            tr_title = (getattr(res_s1, "translated_title", None) or "").strip()
+            tr_has_non_latin = bool(re.search(r"[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]", tr_title)) if tr_title else True
+            tr_words = tr_title.lower().split()
+            tr_is_degen = not tr_title or tr_title.lower() in DEGENERATE_HEADLINES or (len(tr_words) <= 2 and any(w in DEGENERATE_HEADLINES for w in tr_words)) or len(tr_title) < 8
+            if tr_title and not tr_has_non_latin and not tr_is_degen:
+                final_headline = tr_title[:78]
             elif res_s1.translated_text:
                 clean_t = res_s1.translated_text.replace("English translation:", "").strip()
                 final_headline = clean_t.split(".")[0].strip()[:75]
@@ -1228,6 +1260,23 @@ class PipelineOrchestrator:
                 final_headline = title[:75]
         else:
             final_headline = raw_hl
+
+        if scoring_ctx.get("is_contradiction") and not final_headline.lower().startswith("disputed"):
+            final_headline = f"Disputed: {final_headline}"[:78]
+
+        # Determine English summary with quality gates
+        raw_summary = (getattr(res_s3, "summary", "") or "").strip()
+        sum_has_non_latin = bool(re.search(r"[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]", raw_summary)) if raw_summary else True
+        is_degenerate_sum = (
+            not raw_summary
+            or len(raw_summary) < 20
+            or sum_has_non_latin
+            or (re.match(r"^(low|medium|high|critical)\b", raw_summary.lower()) and len(raw_summary) < 70 and not raw_summary.lower().startswith("bluf:"))
+        )
+        if is_degenerate_sum:
+            final_summary = _heuristic_stage3_fallback(intelligence_text, final_headline).summary
+        else:
+            final_summary = raw_summary
 
         # Construct AnalyzedEvent
         analyzed = AnalyzedEvent(
@@ -1249,7 +1298,7 @@ class PipelineOrchestrator:
             translated_text=res_s1.translated_text,
             importance_score=res_s2.importance_score,
             score_rationale=res_s2.score_rationale,
-            summary=res_s3.summary,
+            summary=final_summary,
             headline=final_headline,
             entities=res_s1.extracted_entities,
             entities_json=res_s1.extracted_entities,

@@ -2,6 +2,7 @@
 backend/app/pipeline/models.py - Pydantic Data Models for Multi-Stage AI Pipeline
 """
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -48,7 +49,7 @@ class AIStageConfig(BaseModel):
     Supports per-stage model provider (Gemini / Groq / AIHubMix / Mistral / Cloudflare / Z.ai / SiliconFlow),
     model selection, temperature, API key override, and an ordered chain of fallbacks.
     """
-    stage_id: Literal["gatekeeper", "extraction", "scoring", "summarization", "visuals"]
+    stage_id: Literal["gatekeeper", "extraction", "scoring", "summarization", "visuals", "situation_summary"]
     provider: Literal["gemini", "groq", "aihubmix", "mistral", "cloudflare", "zai", "siliconflow"] = "gemini"
     model_name: str = "gemini-3.5-flash-lite"
     api_key_override: Optional[str] = None
@@ -62,6 +63,8 @@ class AIStageConfig(BaseModel):
         s = str(v).lower().strip()
         if s in ("gatekeeper", "stage0", "pre_filter", "triage", "pre_pipeline"):
             return "gatekeeper"
+        if s in ("situation_summary", "situational_summary", "sitrep", "summary_synthesis") or "situation" in s or "sitrep" in s:
+            return "situation_summary"
         if s in ("extraction_translation", "extraction"):
             return "extraction"
         if s in ("importance_scoring", "scoring"):
@@ -410,6 +413,12 @@ class Stage2Result(BaseModel):
 
 
 
+DEGENERATE_HEADLINE_WORDS = {
+    "high", "low", "medium", "critical", "urgent", "alert", "warning",
+    "disputed", "breaking", "update", "notice", "news", "report", "first report",
+}
+
+
 class Stage3Result(BaseModel):
     """Output contract for Stage 3: Single Event Summarization."""
     summary: str = Field(
@@ -418,6 +427,68 @@ class Stage3Result(BaseModel):
     headline: str = Field(
         description="Punchy, informative headline under 80 characters.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def remap_flexible_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # 1. Flexible Headline Resolution
+            raw_hl = data.get("headline")
+            if not raw_hl:
+                for candidate in ("translated_title", "title", "heading", "primary_headline", "headline_text"):
+                    if data.get(candidate):
+                        raw_hl = data[candidate]
+                        break
+
+            # If headline is a dict (e.g. {"primary": "...", "secondary": "..."}), extract text
+            if isinstance(raw_hl, dict):
+                raw_hl = raw_hl.get("primary") or raw_hl.get("title") or next(iter(raw_hl.values()), "")
+            elif isinstance(raw_hl, list):
+                raw_hl = " - ".join(str(x) for x in raw_hl if x)
+
+            # 2. Flexible Summary Resolution
+            raw_sum = data.get("summary")
+            if not raw_sum:
+                for candidate in ("executive_summary", "bluf", "content", "body", "brief", "overview", "description", "bullet_summary"):
+                    if data.get(candidate):
+                        raw_sum = data[candidate]
+                        break
+
+            # If summary is a dict (e.g. {"bluf": "...", "key_details": ...}), extract text
+            if isinstance(raw_sum, dict):
+                raw_sum = raw_sum.get("bluf") or raw_sum.get("summary") or raw_sum.get("overview") or next(iter(raw_sum.values()), "")
+                if isinstance(raw_sum, dict):
+                    raw_sum = str(raw_sum)
+            elif isinstance(raw_sum, list):
+                raw_sum = " ".join(str(x) for x in raw_sum if x)
+
+            data["headline"] = str(raw_hl or "").strip()
+            data["summary"] = str(raw_sum or "").strip()
+        return data
+
+    @field_validator("headline", mode="after")
+    @classmethod
+    def validate_headline_not_degenerate(cls, v: str) -> str:
+        s = v.strip()
+        s_lower = s.lower()
+        words = s_lower.split()
+        if len(words) <= 2 and (s_lower in DEGENERATE_HEADLINE_WORDS or any(w in DEGENERATE_HEADLINE_WORDS for w in words)):
+            return ""
+        if len(s) > 85:
+            s = s[:82] + "..."
+        return s
+
+    @field_validator("summary", mode="after")
+    @classmethod
+    def validate_summary_not_degenerate(cls, v: str) -> str:
+        s = v.strip()
+        s_lower = s.lower()
+        if len(s) < 15:
+            return ""
+        if re.match(r"^(low|medium|high|critical)\b", s_lower) and len(s) < 70 and not s_lower.startswith("bluf:"):
+            return ""
+        return s
+
 
 
 class DigestEventItem(BaseModel):
@@ -531,6 +602,32 @@ class Stage4Result(BaseModel):
         default="",
         description="Analytical sentence contextualizing this event within wider trends.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def remap_flexible_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if not data.get("trend_category"):
+                for candidate in ("category", "operational_category", "trend", "type"):
+                    if data.get(candidate):
+                        data["trend_category"] = str(data[candidate])
+                        break
+            if not data.get("cluster_tags"):
+                for candidate in ("tags", "clustering_tags", "thematic_tags", "keywords"):
+                    if data.get(candidate):
+                        tags_val = data[candidate]
+                        if isinstance(tags_val, list):
+                            data["cluster_tags"] = [str(t) for t in tags_val]
+                        elif isinstance(tags_val, str):
+                            data["cluster_tags"] = [t.strip() for t in tags_val.split(",") if t.strip()]
+                        break
+            if not data.get("narrative_insight"):
+                for candidate in ("insight", "narrative", "takeaway", "analysis"):
+                    if data.get(candidate):
+                        data["narrative_insight"] = str(data[candidate])
+                        break
+        return data
+
 
 
 class EntityTrendMetric(BaseModel):

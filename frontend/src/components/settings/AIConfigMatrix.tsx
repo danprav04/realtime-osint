@@ -53,10 +53,24 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     ],
   });
 
+  const defaultSituationSummaryStage = (): AIStageConfig => ({
+    provider: 'groq',
+    model_name: 'openai/gpt-oss-120b',
+    temperature: 0.2,
+    fallbacks: [
+      { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
+      { provider: 'mistral', model_name: 'mistral-large-2512', temperature: 0.2 },
+      { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+      { provider: 'mistral', model_name: 'mistral-small-2603', temperature: 0.2 },
+      { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.2 },
+    ],
+  });
+
   const [settings, setSettings] = useState<AIPipelineSettings>(
     initialSettings
       ? {
           gatekeeper: initialSettings.gatekeeper || defaultGatekeeperStage(),
+          situation_summary: initialSettings.situation_summary || defaultSituationSummaryStage(),
           ...initialSettings,
         }
       : {
@@ -95,6 +109,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
           ]),
+          situation_summary: defaultSituationSummaryStage(),
         }
   );
 
@@ -102,6 +117,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     if (initialSettings) {
       setSettings({
         gatekeeper: initialSettings.gatekeeper || defaultGatekeeperStage(),
+        situation_summary: initialSettings.situation_summary || defaultSituationSummaryStage(),
         ...initialSettings,
       });
     }
@@ -131,9 +147,9 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     },
     {
       key: 'summarization' as const,
-      name: 'Stage 3: Intelligence Summarization',
-      desc: 'Generates concise tactical summaries and periodic situational digests',
-      badge: 'Executive Briefings',
+      name: 'Stage 3: Event Intelligence Summarization',
+      desc: 'Generates concise tactical summaries and periodic situational digests for incoming reports',
+      badge: 'Feed Summaries',
     },
     {
       key: 'visuals' as const,
@@ -141,22 +157,28 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
       desc: 'Detects velocity clusters, source hotspots, and tactical trend narratives',
       badge: 'Visual Analytics',
     },
+    {
+      key: 'situation_summary' as const,
+      name: 'Stage 5: AI Situational Summary & Intelligence Fusion',
+      desc: 'Full-spectrum executive SitRep synthesis across semantic storyline clusters, vector corroboration, and live OSINT telemetry',
+      badge: 'Executive SitRep | Flagship Models',
+    },
   ];
 
   const handleProviderChange = (stageKey: keyof AIPipelineSettings, provider: AIProvider) => {
     let defaultModel = 'gemini-3.5-flash-lite';
     if (provider === 'groq') {
-      defaultModel = 'qwen/qwen3.8-27b';
+      defaultModel = stageKey === 'situation_summary' ? 'openai/gpt-oss-120b' : 'qwen/qwen3.8-27b';
     } else if (provider === 'aihubmix') {
       defaultModel = 'coding-glm-5.3-free';
     } else if (provider === 'mistral') {
-      defaultModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512';
+      defaultModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : stageKey === 'situation_summary' ? 'mistral-large-2512' : 'ministral-8b-2512';
     } else if (provider === 'cloudflare') {
       defaultModel = stageKey === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
     } else if (provider === 'zai') {
       defaultModel = 'glm-4.7-flash';
     } else if (provider === 'siliconflow') {
-      defaultModel = 'Qwen/Qwen2.5-7B-Instruct';
+      defaultModel = stageKey === 'situation_summary' ? 'Qwen/Qwen2.5-14B-Instruct' : 'Qwen/Qwen2.5-7B-Instruct';
     }
     setSettings((prev) => {
       const stage = prev[stageKey];
@@ -220,12 +242,12 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
       const nextProvider = suggestedProvider || providerCycle.find((p) => p !== currentProvider && !existing.some((f) => f.provider === p)) || 'mistral';
       let nextModel = suggestedModel;
       if (!nextModel) {
-        if (nextProvider === 'gemini') nextModel = 'gemini-3.1-flash-lite';
-        else if (nextProvider === 'groq') nextModel = 'qwen/qwen3.8-27b';
-        else if (nextProvider === 'mistral') nextModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512';
+        if (nextProvider === 'gemini') nextModel = stageKey === 'situation_summary' ? 'gemini-3.5-flash-lite' : 'gemini-3.1-flash-lite';
+        else if (nextProvider === 'groq') nextModel = stageKey === 'situation_summary' ? 'openai/gpt-oss-120b' : 'qwen/qwen3.8-27b';
+        else if (nextProvider === 'mistral') nextModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : stageKey === 'situation_summary' ? 'mistral-large-2512' : 'ministral-8b-2512';
         else if (nextProvider === 'cloudflare') nextModel = stageKey === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
         else if (nextProvider === 'zai') nextModel = 'glm-4.7-flash';
-        else if (nextProvider === 'siliconflow') nextModel = 'Qwen/Qwen2.5-7B-Instruct';
+        else if (nextProvider === 'siliconflow') nextModel = stageKey === 'situation_summary' ? 'Qwen/Qwen2.5-14B-Instruct' : 'Qwen/Qwen2.5-7B-Instruct';
         else nextModel = 'coding-glm-5.3-free';
       }
 
@@ -279,17 +301,17 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
         };
         if (field === 'provider') {
           if (value === 'gemini') {
-            updated.model_name = 'gemini-3.1-flash-lite';
+            updated.model_name = stageKey === 'situation_summary' ? 'gemini-3.5-flash-lite' : 'gemini-3.1-flash-lite';
           } else if (value === 'groq') {
-            updated.model_name = 'qwen/qwen3.8-27b';
+            updated.model_name = stageKey === 'situation_summary' ? 'openai/gpt-oss-120b' : 'qwen/qwen3.8-27b';
           } else if (value === 'mistral') {
-            updated.model_name = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512';
+            updated.model_name = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : stageKey === 'situation_summary' ? 'mistral-large-2512' : 'ministral-8b-2512';
           } else if (value === 'cloudflare') {
             updated.model_name = stageKey === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
           } else if (value === 'zai') {
             updated.model_name = 'glm-4.7-flash';
           } else if (value === 'siliconflow') {
-            updated.model_name = 'Qwen/Qwen2.5-7B-Instruct';
+            updated.model_name = stageKey === 'situation_summary' ? 'Qwen/Qwen2.5-14B-Instruct' : 'Qwen/Qwen2.5-7B-Instruct';
           } else if (value === 'aihubmix') {
             updated.model_name = 'coding-glm-5.3-free';
           }
@@ -679,7 +701,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                         <option value="cloudflare">Cloudflare Workers AI (10K Neurons)</option>
                         <option value="zai">Z.ai / Zhipu ($0 Flash)</option>
                         <option value="siliconflow">SiliconFlow (Free Catalog)</option>
-                        {stage.key === 'summarization' && (
+                        {(stage.key === 'summarization' || stage.key === 'situation_summary') && (
                           <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
                         )}
                       </select>
@@ -861,6 +883,20 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 transition-colors"
                             >
                               🧠 ministral-8b (3.13 RPS)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'mistral-large-2512')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 transition-colors"
+                            >
+                              👑 mistral-large
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleModelChange(stage.key, 'mistral-small-2603')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 transition-colors"
+                            >
+                              mistral-small
                             </button>
                           </>
                         ) : isCloudflare ? (

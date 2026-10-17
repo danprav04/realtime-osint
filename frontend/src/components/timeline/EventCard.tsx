@@ -34,11 +34,33 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
   const hasNonLatin = (str?: string | null) =>
     str ? /[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str) : false;
 
+  const isDegenerateHeadline = (str?: string | null) => {
+    if (!str) return true;
+    const clean = str.trim().toLowerCase();
+    if (clean.length < 8) return true;
+    const words = clean.split(/\s+/).filter(Boolean);
+    const DEGENERATE = ['high', 'low', 'medium', 'critical', 'urgent', 'alert', 'warning', 'disputed', 'breaking', 'update', 'notice', 'news', 'report'];
+    if (DEGENERATE.includes(clean) || (words.length <= 2 && words.some((w) => DEGENERATE.includes(w)))) {
+      return true;
+    }
+    return false;
+  };
+
+  const isDegenerateSummary = (str?: string | null) => {
+    if (!str) return true;
+    const clean = str.trim().toLowerCase();
+    if (clean.length < 20) return true;
+    if (/^(low|medium|high|critical)\b/.test(clean) && clean.length < 70 && !clean.startsWith('bluf:')) {
+      return true;
+    }
+    return false;
+  };
+
   const displayTitle = (() => {
-    if (event.headline && !hasNonLatin(event.headline)) {
+    if (event.headline && !hasNonLatin(event.headline) && !isDegenerateHeadline(event.headline)) {
       return event.headline;
     }
-    if (event.translated_text && (hasNonLatin(event.title) || (event.language && event.language !== 'en'))) {
+    if (event.translated_text && (hasNonLatin(event.title) || (event.language && event.language !== 'en') || isDegenerateHeadline(event.headline))) {
       const clean = event.translated_text.replace(/^English translation:\s*/i, '').trim();
       const first = clean.split('.')[0]?.trim();
       if (first && first.length > 5) {
@@ -48,11 +70,11 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
     if (isPending && hasNonLatin(event.title)) {
       return `[Translating...] ${event.title}`;
     }
-    return event.headline || event.title;
+    return (!isDegenerateHeadline(event.headline) && event.headline) || event.title;
   })();
 
   const displaySummary = (() => {
-    if (event.summary && !hasNonLatin(event.summary)) {
+    if (event.summary && !hasNonLatin(event.summary) && !isDegenerateSummary(event.summary)) {
       return event.summary;
     }
     if (event.translated_text) {
@@ -61,7 +83,7 @@ export function EventCard({ event, onOpenDetails }: EventCardProps) {
     if (isPending && hasNonLatin(event.raw_text || event.title)) {
       return "Translating and analyzing intelligence content from source...";
     }
-    return event.summary || event.raw_text;
+    return (!isDegenerateSummary(event.summary) && event.summary) || event.raw_text;
   })();
 
   const summarizationProv = getEventAIProvenance(event, 'summarization');

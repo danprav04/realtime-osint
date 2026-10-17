@@ -32,7 +32,13 @@ Standard Operational Categories:
 - Maritime & Commercial Shipping Disruptions
 - Geopolitical Development
 
-You MUST respond strictly with a valid JSON object matching the requested schema. No markdown formatting."""
+You MUST respond strictly with a valid JSON object matching this exact schema:
+{
+  "trend_category": "One of the standard categories listed above",
+  "cluster_tags": ["Tag1", "Tag2"],
+  "narrative_insight": "One concise analytical sentence."
+}
+No markdown formatting, no preamble."""
 
 AGGREGATE_TRENDS_PROMPT = """You are a lead visual intelligence analyst constructing the strategic situation briefing for the interactive dashboard.
 Analyze the provided event metrics, category distributions, and entity counts over the specified timeframe for theme: "{theme_name}".
@@ -158,7 +164,14 @@ async def run_stage4_visuals(
             prompt_parts.append(
                 "NOTE: Confirmed by multiple independent cross-sources."
             )
-    prompt_parts.append("Provide valid JSON matching the Stage4Result schema.")
+    prompt_parts.append(
+        "Respond strictly with valid JSON matching this schema:\n"
+        "{\n"
+        '  "trend_category": "Standard category name",\n'
+        '  "cluster_tags": ["Tag1", "Tag2"],\n'
+        '  "narrative_insight": "1-sentence tactical significance"\n'
+        "}"
+    )
     prompt = "\n\n".join(prompt_parts)
 
     def fallback():
@@ -182,7 +195,16 @@ async def run_stage4_visuals(
             target_model=Stage4Result,
             fallback_factory=fallback,
         )
+        if not result.trend_category or not result.cluster_tags:
+            fb = fallback()
+            if not result.trend_category:
+                result.trend_category = fb.trend_category
+            if not result.cluster_tags:
+                result.cluster_tags = fb.cluster_tags
+            if not result.narrative_insight:
+                result.narrative_insight = fb.narrative_insight
         return result
+
     except PermissionError:
         raise
     except RuntimeError as r_err:

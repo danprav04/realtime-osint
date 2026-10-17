@@ -535,6 +535,7 @@ DEFAULT_SETTINGS_DATA: Dict[str, Any] = {
         "extraction_translation": DEFAULT_AI_STAGES["extraction"],
         "importance_scoring": DEFAULT_AI_STAGES["scoring"],
         "visual_generation": DEFAULT_AI_STAGES["visuals"],
+        "situational_summary": DEFAULT_AI_STAGES["situation_summary"],
     },
     "notification_settings": {
         "default_alert_threshold": 7,
@@ -668,6 +669,11 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
                 for s_key, s_def in val.items():
                     matched_cur = None
                     for cur_k in cur_stages:
+                        if ("situation" in s_key or "sitrep" in s_key) and ("situation" in cur_k or "sitrep" in cur_k):
+                            matched_cur = cur_k
+                            break
+                        if ("situation" in s_key or "sitrep" in s_key) != ("situation" in cur_k or "sitrep" in cur_k):
+                            continue
                         if (
                             s_key in cur_k
                             or cur_k in s_key

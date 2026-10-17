@@ -41,6 +41,57 @@ export function EventInspector({
   const scoringProv = getEventAIProvenance(node as any, 'scoring');
   const embeddingProv = getEventAIProvenance(node as any, 'embedding');
 
+  const hasNonLatin = (str?: string | null) =>
+    str ? /[\u0600-\u06FF\u0590-\u05FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(str) : false;
+
+  const isDegenerateHeadline = (str?: string | null) => {
+    if (!str) return true;
+    const clean = str.trim().toLowerCase();
+    if (clean.length < 8) return true;
+    const words = clean.split(/\s+/).filter(Boolean);
+    const DEGENERATE = ['high', 'low', 'medium', 'critical', 'urgent', 'alert', 'warning', 'disputed', 'breaking', 'update', 'notice', 'news', 'report'];
+    if (DEGENERATE.includes(clean) || (words.length <= 2 && words.some((w) => DEGENERATE.includes(w)))) {
+      return true;
+    }
+    return false;
+  };
+
+  const isDegenerateSummary = (str?: string | null) => {
+    if (!str) return true;
+    const clean = str.trim().toLowerCase();
+    if (clean.length < 20) return true;
+    if (/^(low|medium|high|critical)\b/.test(clean) && clean.length < 70 && !clean.startsWith('bluf:')) {
+      return true;
+    }
+    return false;
+  };
+
+  const displayTitle = (() => {
+    if (node.headline && !hasNonLatin(node.headline) && !isDegenerateHeadline(node.headline)) {
+      return node.headline;
+    }
+    const trText = (node as any).translated_text;
+    if (trText && (hasNonLatin(node.title) || isDegenerateHeadline(node.headline))) {
+      const clean = trText.replace(/^English translation:\s*/i, '').trim();
+      const first = clean.split('.')[0]?.trim();
+      if (first && first.length > 5) {
+        return first.length > 85 ? first.slice(0, 82) + '...' : first;
+      }
+    }
+    return (!isDegenerateHeadline(node.headline) && node.headline) || node.title;
+  })();
+
+  const displaySummary = (() => {
+    if (node.summary && !hasNonLatin(node.summary) && !isDegenerateSummary(node.summary)) {
+      return node.summary;
+    }
+    const trText = (node as any).translated_text;
+    if (trText) {
+      return trText.replace(/^English translation:\s*/i, '').trim();
+    }
+    return (!isDegenerateSummary(node.summary) && node.summary) || (node as any).raw_text || '';
+  })();
+
   const badgeColor = isHighTrust
     ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
     : isMedTrust
@@ -149,7 +200,7 @@ export function EventInspector({
         <div className="space-y-3">
           <div className="flex items-start justify-between gap-2">
             <h3 className="text-base font-semibold text-zinc-100 leading-snug">
-              {node.headline || node.title}
+              {displayTitle}
             </h3>
             <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
           </div>
@@ -184,7 +235,7 @@ export function EventInspector({
               </div>
               <AIModelBadge provenance={summarizationProv} size="xs" linkToSettings />
             </div>
-            <p>{node.summary}</p>
+            <p>{displaySummary}</p>
           </div>
 
           {node.source_url && (

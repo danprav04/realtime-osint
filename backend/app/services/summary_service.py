@@ -860,9 +860,9 @@ class SituationSummaryService:
             "top_categories": [{"name": k, "count": v} for k, v in category_counter.most_common(6)],
         }
 
-        # 5. Execute AI Synthesis via PipelineOrchestrator fallback chain
+        # 5. Execute AI Synthesis via dedicated situation_summary fallback chain
         orchestrator = get_pipeline_orchestrator()
-        sum_stage_cfg = orchestrator.get_stage_config("summarization")
+        sum_stage_cfg = orchestrator.get_stage_config("situation_summary")
         active_ai_model = f"{sum_stage_cfg.provider}:{sum_stage_cfg.model_name}"
 
         def fallback_fn() -> SituationBriefingLLMOutput:
@@ -914,15 +914,15 @@ class SituationSummaryService:
             try:
                 llm_output: SituationBriefingLLMOutput = await asyncio.wait_for(
                     orchestrator._execute_stage_with_fallbacks(
-                        stage_id="summarization",
+                        stage_id="situation_summary",
                         runner_fn=_runner,
                         fallback_heuristic_fn=fallback_fn,
                     ),
-                    timeout=18.0,
+                    timeout=35.0,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "Situation summary LLM synthesis exceeded 18s budget — cleanly failing over to deterministic engine."
+                    "Situation summary LLM synthesis exceeded 35s budget — cleanly failing over to deterministic engine."
                 )
                 llm_output = fallback_fn()
                 active_ai_model = "deterministic-fusion-engine (timeout fallback)"

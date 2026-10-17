@@ -89,6 +89,18 @@ DEFAULT_AI_STAGES = {
             {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
         ],
     },
+    "situation_summary": {
+        "provider": "groq",
+        "model_name": "openai/gpt-oss-120b",
+        "temperature": 0.2,
+        "fallbacks": [
+            {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
+            {"provider": "mistral", "model_name": "mistral-large-2512", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+            {"provider": "mistral", "model_name": "mistral-small-2603", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-31b-it", "temperature": 0.2},
+        ],
+    },
 }
 
 
@@ -106,6 +118,8 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
         norm_k = k.lower().strip()
         if "gate" in norm_k or "stage0" in norm_k:
             norm_k = "gatekeeper"
+        elif "situation" in norm_k or "sitrep" in norm_k:
+            norm_k = "situation_summary"
         elif "extract" in norm_k:
             norm_k = "extraction"
         elif "score" in norm_k:
@@ -120,7 +134,7 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
             cfg["model_name"] = cfg["model"]
 
         # 1. Non-token-heavy stages: AI Hub Mix must NOT be used (100 RPD global limit)
-        if norm_k != "summarization":
+        if norm_k not in ("summarization", "situation_summary"):
             if cfg.get("provider") == "aihubmix":
                 cfg["provider"] = "gemini" if norm_k == "scoring" else "groq"
                 cfg["model_name"] = "gemini-3.5-flash-lite" if norm_k == "scoring" else "qwen/qwen3.8-27b"
@@ -133,8 +147,10 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
             elif "fallbacks" not in cfg and norm_k in DEFAULT_AI_STAGES:
                 cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[norm_k].get("fallbacks", []))
         else:
-            # 2. Token-heavy Stage 3 (Summarization): Use single strongest model (coding-glm-5.3-flash-free or coding-glm-5.3-free).
+            # 2. Token-heavy Stage 3 (Summarization) and Situational Summary:
+            # Use single strongest model (coding-glm-5.3-flash-free or coding-glm-5.3-free).
             # No duplicate intra-provider AI Hub Mix fallbacks since rate limits are shared globally.
+            default_stage_key = norm_k if norm_k in DEFAULT_AI_STAGES else "situation_summary"
             if cfg.get("provider") == "aihubmix":
                 cfg["model_name"] = "coding-glm-5.3-flash-free" if "flash" in str(cfg.get("model_name") or cfg.get("model", "")) else "coding-glm-5.3-free"
                 # Strip any aihubmix fallbacks if primary is already aihubmix
@@ -145,9 +161,9 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
                         if not (isinstance(fb, dict) and fb.get("provider") == "aihubmix")
                     ]
                 elif "fallbacks" not in cfg:
-                    cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES["summarization"]["fallbacks"])
+                    cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[default_stage_key]["fallbacks"])
             else:
-                # Primary is not aihubmix: allow at most ONE aihubmix fallback using coding-glm-5.3-flash-free
+                # Primary is not aihubmix: allow at most ONE aihubmix fallback using coding-glm-5.3-flash-free or coding-glm-5.3-free
                 if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
                     filtered_fb = []
                     has_aihubmix = False
@@ -159,7 +175,7 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
                             if fb_copy.get("provider") == "aihubmix":
                                 if not has_aihubmix:
                                     if not fb_copy.get("model_name"):
-                                        fb_copy["model_name"] = "coding-glm-5.3-flash-free"
+                                        fb_copy["model_name"] = "coding-glm-5.3-free" if norm_k == "situation_summary" else "coding-glm-5.3-flash-free"
                                     filtered_fb.append(fb_copy)
                                     has_aihubmix = True
                                 # Drop subsequent aihubmix models: shared quota makes them redundant
@@ -169,7 +185,7 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
                             filtered_fb.append(fb)
                     cfg["fallbacks"] = filtered_fb
                 elif "fallbacks" not in cfg:
-                    cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES["summarization"]["fallbacks"])
+                    cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[default_stage_key]["fallbacks"])
 
         out[norm_k] = cfg
     return out
@@ -285,7 +301,7 @@ async def get_provider_usage(
     orch = get_pipeline_orchestrator()
     ai_settings = {
         s: orch.get_stage_config(s).model_dump()
-        for s in ("gatekeeper", "extraction", "scoring", "summarization", "visuals")
+        for s in ("gatekeeper", "extraction", "scoring", "summarization", "visuals", "situation_summary")
     }
 
     res = await session.execute(
@@ -447,6 +463,8 @@ async def update_ai_pipeline_stages(
         norm_id = stage_id.lower().strip()
         if "gate" in norm_id or "stage0" in norm_id:
             norm_id = "gatekeeper"
+        elif "situation" in norm_id or "sitrep" in norm_id:
+            norm_id = "situation_summary"
         elif "extract" in norm_id:
             norm_id = "extraction"
         elif "score" in norm_id:

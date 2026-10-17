@@ -15,13 +15,20 @@ logger = logging.getLogger("osint.pipeline.stage3")
 
 STAGE3_SYSTEM_PROMPT = """You are an executive intelligence briefer for strategic and tactical commanders.
 Synthesize the provided intelligence event into:
-1. A punchy, informative headline (maximum 80 characters) translated into English and optimized for instant live feed timeline cards and mobile notifications.
+1. A punchy, informative English headline (4 to 12 words, maximum 80 characters) describing the concrete event action and location, optimized for instant live feed timeline cards and mobile notifications.
 2. A concise 2-3 sentence executive intelligence summary following the Bottom Line Up Front (BLUF) standard in English: state what happened, who is involved, and immediate operational implications. Eliminate editorial filler.
 
-CRITICAL TRANSLATION MANDATE:
-The headline and summary MUST ALWAYS BE WRITTEN IN 100% FLUENT ENGLISH. If the incoming event title or content is in Arabic, Persian, Hebrew, or any other non-English language, you MUST translate and synthesize it into English. NEVER output Arabic or non-Latin script in the headline or summary.
+CRITICAL RULES & NEGATIVE CONSTRAINTS:
+- The headline and summary MUST ALWAYS BE WRITTEN IN 100% FLUENT ENGLISH.
+- NEVER output single-word ratings, confidence labels, or priority classifications (such as "High", "Critical", "Medium", "Low", "Urgent", "Disputed", "Alert") as the headline. The headline MUST describe the specific event action (e.g. who did what where).
+- NEVER output priority or confidence assessments as the summary. The summary MUST be 2-3 complete sentences detailing incident facts and operational implications.
 
-You MUST respond strictly with a valid JSON object matching the requested schema. No markdown backticks."""
+You MUST respond strictly with a valid JSON object matching this exact schema:
+{
+  "headline": "Informative event headline in English describing specific action (4-12 words, max 80 chars, NEVER a rating word)",
+  "summary": "BLUF: 2-3 sentence executive intelligence summary in English stating facts, actors, and operational implications"
+}
+No markdown backticks, no preamble."""
 
 DIGEST_SYSTEM_PROMPT = """You are a chief intelligence watch officer authoring a periodic situational intelligence digest.
 Analyze the provided collection of recent events ingested under the theme: "{theme_name}".
@@ -150,7 +157,13 @@ async def run_stage3_summary(
             prompt_parts.append(
                 "VERIFICATION CONTEXT: Verified by multiple independent sources."
             )
-    prompt_parts.append("Provide valid JSON matching the Stage3Result schema.")
+    prompt_parts.append(
+        "Respond strictly with valid JSON matching this schema:\n"
+        "{\n"
+        '  "headline": "Informative event headline in English (4-12 words, max 80 chars, NEVER a rating word)",\n'
+        '  "summary": "BLUF: 2-3 sentence executive intelligence summary in English stating facts, actors, and implications"\n'
+        "}"
+    )
     prompt = "\n\n".join(prompt_parts)
 
     def fallback():
@@ -173,7 +186,14 @@ async def run_stage3_summary(
             target_model=Stage3Result,
             fallback_factory=fallback,
         )
+        if not result.headline or not result.summary:
+            fb = fallback()
+            if not result.headline:
+                result.headline = fb.headline
+            if not result.summary:
+                result.summary = fb.summary
         return result
+
     except PermissionError:
         raise
     except RuntimeError as r_err:
