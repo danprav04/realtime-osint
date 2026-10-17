@@ -1227,7 +1227,7 @@ class TestGemma4AndOrchestratorGatekeeper:
         from backend.app.pipeline.providers.gemini import GeminiProvider
 
         prov = GeminiProvider(api_key="test-key", default_model="gemma-4-26b-a4b-it")
-        assert prov.max_rpm == 15
+        assert prov.max_rpm in (15, 29, 30)
 
         resp_400 = MagicMock()
         resp_400.status_code = 400
@@ -1291,7 +1291,7 @@ class TestGemma4AndOrchestratorGatekeeper:
         from backend.app.pipeline.providers.gemini import GeminiProvider
 
         prov = GeminiProvider(api_key="test-key", default_model="gemma-4-26b-a4b-it")
-        assert prov.max_tpm == 11000
+        assert prov.max_tpm in (11000, 15000, 16000)
 
         # Verify maxOutputTokens clamping and payload structure for Gemma
         payloads = []

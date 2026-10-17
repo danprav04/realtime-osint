@@ -306,23 +306,23 @@ class GroqKey:
             if retry_after is not None and retry_after > 0:
                 lock_delay = retry_after
                 if rem_requests == 0 and (rem_tokens is None or rem_tokens > 0):
-                    is_daily = lock_delay > 3600.0
+                    is_daily = True
                     reason = f"daily requests exhausted (retry-after {retry_after:g}s)"
                 else:
                     is_daily = False
                     reason = f"rate limit (retry-after {retry_after:g}s)"
 
             # Priority 2: tokens exhausted (TPM reset)
-            elif rem_tokens == 0 and reset_tokens_sec is not None and reset_tokens_sec > 0:
+            elif (rem_tokens == 0 or (rem_tokens is not None and rem_tokens < 1000)) and reset_tokens_sec is not None and reset_tokens_sec > 0:
                 lock_delay = reset_tokens_sec
                 is_daily = False
                 reason = f"tokens exhausted (reset in {reset_tokens_sec:g}s)"
 
-            # Priority 3: requests exhausted (RPD reset)
+            # Priority 3: requests exhausted (RPD reset - Groq requests are always RPD)
             elif rem_requests == 0 and reset_requests_sec is not None and reset_requests_sec > 0:
                 lock_delay = reset_requests_sec
-                is_daily = reset_requests_sec > 3600.0
-                reason = f"requests exhausted (reset in {reset_requests_sec:g}s)"
+                is_daily = True
+                reason = f"daily requests exhausted (reset in {reset_requests_sec:g}s)"
 
             # Priority 4: any reset header present
             elif reset_tokens_sec is not None and reset_tokens_sec > 0:
@@ -331,7 +331,7 @@ class GroqKey:
                 reason = f"rate limit (reset-tokens {reset_tokens_sec:g}s)"
             elif reset_requests_sec is not None and reset_requests_sec > 0:
                 lock_delay = reset_requests_sec
-                is_daily = reset_requests_sec > 3600.0
+                is_daily = True
                 reason = f"rate limit (reset-requests {reset_requests_sec:g}s)"
 
             # Priority 5: Fallback to error message body parser
@@ -352,22 +352,27 @@ class GroqKey:
         # 3. HTTP 200 (Success):
         if response.status_code == 200:
             self.mark_success(model=model)
-            # If Groq indicated that remaining tokens reached 0 on this request:
-            if rem_tokens == 0 and reset_tokens_sec is not None and reset_tokens_sec > 0:
+            # If Groq indicated that remaining tokens reached 0 or are critically depleted (< 1000 of 8000 TPM):
+            if (rem_tokens == 0 or (rem_tokens is not None and rem_tokens < 1000)) and reset_tokens_sec is not None and reset_tokens_sec > 0:
+                dep_reason = (
+                    f"tokens depleted (reset in {reset_tokens_sec:g}s)"
+                    if rem_tokens == 0
+                    else f"tokens near depletion ({rem_tokens} remaining; reset in {reset_tokens_sec:g}s)"
+                )
                 if model:
                     norm_m = model.strip().lower()
                     self._model_cooldowns[norm_m] = now + reset_tokens_sec
-                    self._model_cooldown_reasons[norm_m] = f"tokens depleted (reset in {reset_tokens_sec:g}s)"
+                    self._model_cooldown_reasons[norm_m] = dep_reason
                     logger.info(
-                        f"[GroqKey:{self.masked_key}] 200 OK with tokens=0 for model '{model}'. "
+                        f"[GroqKey:{self.masked_key}] 200 OK with remaining tokens={rem_tokens} for model '{model}'. "
                         f"Model cooldown until reset in {reset_tokens_sec:g}s. Key remains ACTIVE."
                     )
                 else:
                     self.status = KeyStatus.MINUTE_COOLDOWN
                     self.cooldown_until = now + reset_tokens_sec
-                    self.cooldown_reason = f"tokens depleted (reset in {reset_tokens_sec:g}s)"
+                    self.cooldown_reason = dep_reason
                     logger.info(
-                        f"[GroqKey:{self.masked_key}] 200 OK with tokens=0. "
+                        f"[GroqKey:{self.masked_key}] 200 OK with remaining tokens={rem_tokens}. "
                         f"Cooldown until reset in {reset_tokens_sec:g}s."
                     )
             # If Groq indicated that remaining daily requests reached 0 on this request:
@@ -381,12 +386,12 @@ class GroqKey:
                         f"Model cooldown until reset in {reset_requests_sec:g}s. Key remains ACTIVE."
                     )
                 else:
-                    self.status = KeyStatus.DAILY_EXHAUSTED if reset_requests_sec > 3600.0 else KeyStatus.MINUTE_COOLDOWN
+                    self.status = KeyStatus.DAILY_EXHAUSTED
                     self.cooldown_until = now + reset_requests_sec
                     self.cooldown_reason = f"requests depleted (reset in {reset_requests_sec:g}s)"
                     logger.info(
                         f"[GroqKey:{self.masked_key}] 200 OK with requests=0. "
-                        f"Cooldown until reset in {reset_requests_sec:g}s."
+                        f"Daily exhausted cooldown until reset in {reset_requests_sec:g}s."
                     )
             else:
                 # Key is active and has available capacity

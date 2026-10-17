@@ -11,6 +11,7 @@ High-speed inference provider supporting:
 import json
 import logging
 import random
+import time
 from typing import Any, Dict, List, Optional, Union
 import httpx
 
@@ -246,11 +247,12 @@ class GroqProvider(BaseAIProvider):
 
         messages.append({"role": "user", "content": user_content})
 
-        # Reasoning models (e.g. openai/gpt-oss-120b, openai/gpt-oss-20b, qwen3) consume max_tokens
-        # for internal reasoning before emitting JSON; 1024 can truncate mid-JSON and cause HTTP 400 json_validate_failed.
+        # Reasoning models (e.g. openai/gpt-oss-120b, openai/gpt-oss-20b, qwen3.8-27b) consume tokens
+        # for reasoning before emitting JSON. Clamping between 768 and 1536 ensures JSON validity
+        # without blowing through Groq's 8,000 TPM limit in 2 calls.
         effective_max_tokens = max_tokens
         if json_mode and any(tag in model_name.lower() for tag in ("gpt-oss", "qwen", "deepseek")):
-            effective_max_tokens = max(max_tokens, 3072)
+            effective_max_tokens = max(min(max_tokens, 1536), 768)
 
         def _build_payload() -> Dict[str, Any]:
             pl: Dict[str, Any] = {
@@ -263,11 +265,13 @@ class GroqProvider(BaseAIProvider):
                 pl["response_format"] = {"type": "json_object"}
             return pl
 
+        t0 = time.monotonic()
         response = await self._execute_with_key_rotation(
             model_name=model_name,
             payload_builder=_build_payload,
             json_mode=json_mode,
         )
+        duration_ms = (time.monotonic() - t0) * 1000.0
 
         res_data = response.json()
 
@@ -286,6 +290,7 @@ class GroqProvider(BaseAIProvider):
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                duration_ms=duration_ms,
                 success=True,
                 status_code=response.status_code,
             )

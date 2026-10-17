@@ -68,7 +68,7 @@ The intelligence pipeline executes an asynchronous flow from raw event capture t
         ▼ (Surviving Relevant Events)
 [ Stage 1: Extraction & Translation ] (stage1_extract.py:52-247)
         │  - Translates Arabic, Hebrew, Persian, Russian, Ukrainian to English
-        │  - Extracts ExtractedEvent (entities, locations, actors, equipment, casualties)
+        │  - Extracts Stage1Result (entities, locations, actors, equipment, casualties)
         │  - Fallback: _heuristic_extraction()
         ▼
 [ Pre-Stage 2 Context & Embedding Resolution ] (orchestrator.py:1020-1068)
@@ -78,11 +78,11 @@ The intelligence pipeline executes an asynchronous flow from raw event capture t
 [ Concurrent Execution of Stages 2, 3, 4 ] (orchestrator.py:1110-1165)
    ├── [ Stage 2: Scoring ] (stage2_score.py:64-320)
    │        - Evaluates 4 guardrail calibration rules (credibility ceiling, impact vs severity)
-   │        - Computes EventScore (military_importance, urgency, credibility, civil_impact, composite)
+   │        - Computes Stage2Result (military_importance, urgency, credibility, civil_impact, composite)
    ├── [ Stage 3: Summarization ] (stage3_summary.py:42-180)
    │        - Generates intelligence headline (<12 words) and BLUF (<50 words)
    └── [ Stage 4: Visuals & Cartography ] (stage4_visuals.py:38-165)
-            - Classifies VisualMetadata (threat_level, marker_type, color_code, cluster_tag)
+            - Classifies Stage4Result (threat_level, marker_type, color_code, cluster_tag)
         ▼
 [ Persistence & Fan-Out ] (orchestrator.py:980-1120)
         │  - Persists AnalyzedEvent to PostgreSQL events table
@@ -94,11 +94,11 @@ The intelligence pipeline executes an asynchronous flow from raw event capture t
 ### 2.2 Background AI Services Audit
 
 #### 2.2.1 Embedding Service (`backend/app/services/embedding_service.py`)
-- **Primary Route**: Google Gemini `batchEmbedContents` (`text-embedding-004`). Micro-batches up to 100 texts per call.
-- **Secondary Route**: Hugging Face Text Embeddings Inference (`BAAI/bge-small-en-v1.5` running on a private Hugging Face Space). Calls `/embed` or `/v1/embeddings`.
-- **Tertiary Route**: Local ONNX `sentence-transformers/all-MiniLM-L6-v2` embedding generation fallback.
+- **Primary Route**: Self-hosted Hugging Face Text Embeddings Inference (`BAAI/bge-small-en-v1.5` running on a private Hugging Face Space via `/embed` or `/v1/embeddings`).
+- **Secondary Route**: Google Gemini `batchEmbedContents` (`models/gemini-embedding-001` — 100 RPM, 30K TPM, 1K RPD; plus `models/gemini-embedding-2` — 100 RPM, 30K TPM, 1K RPD). Micro-batches up to 100 texts per call (`outputDimensionality: 384`).
+- **Tertiary Route**: Local hash-based deterministic vector fallback.
 - **Audit Findings**:
-  - The Hugging Face TEI integration in `call_hf_tei_api` (lines 597–658) fails to handle HTTP 503 cold starts properly. If the Hugging Face Space is idling, HF returns HTTP 503 with an `estimated_time` payload. The service immediately throws an exception and falls back to mock vectors instead of waiting or retrying with the `x-wait-for-model: true` header.
+  - The Hugging Face TEI integration in `call_hf_tei_api` (lines 597–658) fails to handle HTTP 503 cold starts properly. If the Hugging Face Space is idling, HF returns HTTP 503 with an `estimated_time` payload. When HF TEI cold-starts, traffic spills heavily onto `gemini-embedding-001` (pushing it to **`100/100` RPM** and **`962/1K` RPD** in Google AI Studio) while `gemini-embedding-2` (`37/100` RPM, `721/1K` RPD) is not dynamically load-balanced in `embedding_service.py`.
 
 #### 2.2.2 Memory Rollup Service (`backend/app/services/memory_rollup_service.py`)
 - **Schedule**: Background cron triggered every 24 hours at 02:00 UTC.
@@ -168,19 +168,21 @@ def record_request(self, estimated_tokens: int = 500) -> bool:
 ```
 If the downstream HTTP request fails due to network drop, DNS timeout, or HTTP 503, the burned request count is never refunded. Under intermittent network instability, the 100 RPD daily quota is exhausted without completing a single successful call.
 
-#### 2.3.6 Groq Reasoning Model Truncation (`groq.py:195-255`)
-Reasoning models (`openai/gpt-oss-120b`, `qwen-2.5-32b`, `deepseek-r1-distill-llama-70b`) emit hidden chain-of-thought tokens prior to generating their JSON response.
-When `max_tokens=1024` is requested, reasoning tokens consume the budget, truncating the JSON payload mid-stream. Groq returns HTTP 400 with `"json_validate_failed"`. While `groq.py:253` contains a retry that bumps `max_tokens` to 3072, this doubles latency (initial failed call + retry) and wastes free-tier TPM quota.
+#### 2.3.6 Groq Reasoning Model Token Reservation & 8K TPM Collision (`groq.py:195-255`)
+Reasoning models on Groq (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`) emit hidden chain-of-thought tokens prior to generating their JSON response.
+When `max_tokens=1024` is requested, reasoning tokens can consume the budget, truncating the JSON payload mid-stream and causing Groq to return HTTP 400 with `"json_validate_failed"`. However, `groq.py:253` unconditionally bumps `effective_max_tokens = max(max_tokens, 3072)` for all `gpt-oss` and `qwen` JSON requests. Because Groq's Free Plan enforces an **8,000 TPM (Tokens Per Minute)** cap (and separate OTPM limits on some orgs) on `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, and `qwen/qwen3.8-27b`, just **2 to 3 concurrent requests** with `max_tokens=3072` immediately saturate the 8K TPM bucket!
 
 #### 2.3.7 Multilingual Handling & Heuristic Fallback Information Loss
-- **Token Inflation**: Llama and Mistral subword tokenizers fragment Arabic, Persian, and Hebrew script into byte fallbacks, causing **2.2x to 2.8x token inflation** compared to English text of equivalent semantic length. This accelerates TPM rate-limit depletion.
-- **Catastrophic Heuristic Fallback**: In `stage1_extract.py:215-245`, when extraction fails across all LLM models, `_heuristic_extraction()` returns:
+- **Token Inflation**: Subword tokenizers fragment Arabic, Persian, and Hebrew script if vocabulary coverage is narrow, whereas **Gemini 3.5/3.1 Flash Lite & Gemma 4** (~1.22x), **Qwen 3.8 (`qwen/qwen3.8-27b`)** (~1.3x), and **Mistral (`mistral-large-2512`, `mistral-small-2603`)** handle multilingual scripts cleanly.
+- **Catastrophic Heuristic Fallback**: In `stage1_extract.py:80-185`, when extraction fails across all LLM models, `_heuristic_stage1_fallback()` returns a degraded `Stage1Result` with empty military units and munitions:
   ```python
-  return ExtractedEvent(
-      title=f"OSINT Incident Report: {raw_event.source}",
-      summary="Field intelligence report regarding defense developments in monitored operational sector.",
-      entities=[], locations=[], detected_language=raw_event.language or "unknown",
-      actors=[], equipment=[]
+  return Stage1Result(
+      extracted_entities=all_entities,
+      detected_language=lang,
+      translated_text=translated,
+      translated_title=translated_title,
+      key_facts=extra_facts,
+      entity_breakdown={"military_units": [], "munitions": [], "locations": [...]},
   )
   ```
   All vital tactical data (munitions, casualties, military units, GPS coordinates) is completely erased from the intelligence database.
@@ -189,98 +191,72 @@ When `max_tokens=1024` is requested, reasoning tokens consume the budget, trunca
 
 ## 3. Active Provider Documentation & Rate-Limit Research (Requirement R2)
 
-A rigorous examination was conducted of all six AI providers actively configured with credentials in the production `.env` file.
+A rigorous examination was conducted of all six AI providers actively configured with credentials in `.env`, cross-referenced against the live Google AI Studio and Groq Console rate-limit dashboards.
 
-### 3.1 Google Gemini (Google AI Studio REST API)
+### 3.1 Google Gemini & Gemma 4 (Google AI Studio REST API)
 
-#### 3.1.1 Official Rate Limits
+#### 3.1.1 Official 2026 Rate Limits & Observed Live Console Telemetry
 Rate limits are enforced **per Google Cloud / AI Studio project** (shared across all API keys under that project):
 
-| Model Name | Tier | RPM | TPM | RPD | Max Concurrent |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`gemini-2.0-flash`** | Free | 15 | 1,000,000 | 1,500 | 5 |
-| **`gemini-2.0-flash-lite`** | Free | 30 | 1,000,000 | 1,500 | 10 |
-| **`gemini-1.5-flash`** | Free | 15 | 1,000,000 | 1,500 | 5 |
-| **`gemini-1.5-pro`** | Free | 2 | 32,000 | 50 | 2 |
-| **`text-embedding-004`** | Free | 100 | 30,000 | 1,000 | 5 |
-| **`gemma-2-27b-it`** | Free (AI Studio) | 15 | 16,000 | 1,500 | 2 |
+| Console Model Name | API Model ID | Category | Free RPM | Free TPM | Free RPD | Live Observed Peak / Usage | Operational Status & Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Gemini 3.5 Flash Lite** | **`gemini-3.5-flash-lite`** | Text-out models | **15 RPM** | **250K TPM** | **500 RPD** | `20 / 15` RPM \| `23.17K / 250K` TPM \| **`504 / 500` RPD** | **Daily RPD Exhausted (100.8%)** — Fastest (~0.4s), native `systemInstruction` & `responseMimeType`, but strict **500 RPD** cap. |
+| **Gemini 3.1 Flash Lite** | **`gemini-3.1-flash-lite`** | Text-out models | **15 RPM** | **250K TPM** | **500 RPD** | `16 / 15` RPM \| `16.67K / 250K` TPM \| **`505 / 500` RPD** | **Daily RPD Exhausted (101.0%)** — Secondary 500 RPD bucket (1,000 RPD combined across 3.5 + 3.1 Flash Lite). |
+| **Gemma 4 26B** | **`gemma-4-26b-a4b-it`** | Other models | **30 RPM** | **16K TPM** | **14.4K RPD** | `22 / 30` RPM \| **`26.12K / 16K` TPM** \| `6.21K / 14.4K` RPD | **TPM Burst Exceeded (163%)** — Massive **14,400 RPD** & **30 RPM** capacity, but constrained by **16,000 TPM** window. |
+| **Gemma 4 31B** | **`gemma-4-31b-it`** | Other models | **30 RPM** | **16K TPM** | **14.4K RPD** | `22 / 30` RPM \| **`16.66K / 16K` TPM** \| `3.51K / 14.4K` RPD | **TPM Burst Exceeded (104%)** — Second **14,400 RPD** & **30 RPM** bucket (**28,800 RPD combined** across Gemma 4 26B + 31B). |
+| **Gemini Embedding 1** | **`gemini-embedding-001`** | Other models | **100 RPM** | **30K TPM** | **1K RPD** | **`100 / 100` RPM** \| `16.78K / 30K` TPM \| **`962 / 1K` RPD** | **96.2% Daily RPD Used & 100% RPM Hit** — Each item in `batchEmbedContents` counts toward 100 RPM / 1,000 RPD. |
+| **Gemini Embedding 2** | **`gemini-embedding-2`** | Other models | **100 RPM** | **30K TPM** | **1K RPD** | `37 / 100` RPM \| `3.31K / 30K` TPM \| **`721 / 1K` RPD** | **72.1% Daily RPD Used** — Primary 3072d embedding model (`1,683 / 2,000` combined RPD used across Embedding 1 & 2). |
 
-*Daily Reset Timing*: Google Gemini daily request quotas reset at midnight Pacific Time (08:00 UTC).
+*Daily Reset Timing*: Google AI Studio daily request quotas (RPD) reset at midnight Pacific Time (08:00 UTC).
 
-#### 3.1.2 HTTP Headers Returned
-- **HTTP 200 OK**: Gemini REST does **not** return rate-limit headers (`x-ratelimit-*`).
-- **HTTP 429 Too Many Requests**: Returns `Retry-After` header (integer seconds) and response body containing `error.details[].retryDelay` (e.g., `"15s"`, `"24.5s"`).
+#### 3.1.2 Root-Cause Diagnosis of Observed Gemini & Gemma Overages
+1. **Why `gemini-3.5-flash-lite` (`504/500`) and `gemini-3.1-flash-lite` (`505/500`) Exhausted RPD**:
+   - Each Flash-Lite model only has **500 RPD** (not 1,500 RPD). In `orchestrator.py:143-184`, `gemini-3.5-flash-lite` was assigned as Primary for Stage 2 (`scoring`) and Fallback 1 across `extraction`, `summarization`, and `visuals`, burning through all 500 RPD (`504/500`) and immediately cascading into `gemini-3.1-flash-lite` (`505/500`).
+2. **Why `gemma-4-26b-a4b-it` (`26.12K / 16K` TPM) and `gemma-4-31b-it` (`16.66K / 16K` TPM) Exceeded 16K TPM**:
+   - In `gemini.py:131-133`, `est_input_tokens = int(prompt_chars / 3.5) + 15` underestimates Arabic/Hebrew/Farsi token counts (where 1 token $\approx 1.6$ chars) and `_acquire_pacing_slot()` releases `self._pacing_lock` *before* the HTTP response returns `usageMetadata.totalTokenCount` (which includes Gemma's 400–1,450 internal `thought=True` reasoning tokens). Concurrent workers therefore dispatch overlapping requests whose combined server-side token count spikes to `26.12K / 16K TPM`.
+   - Meanwhile, `gemini.py:53` artificially throttled Gemma to `self.max_rpm = 15` (`min_interval_sec = 4.0`) even though Google AI Studio grants **30 RPM** and **14,400 RPD** to both `gemma-4-26b-a4b-it` and `gemma-4-31b-it`.
 
-#### 3.1.3 Status Codes & Error Payloads
-```json
-{
-  "error": {
-    "code": 429,
-    "message": "Resource has been exhausted (e.g. check quota).",
-    "status": "RESOURCE_EXHAUSTED",
-    "details": [
-      {
-        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-        "reason": "RATE_LIMIT_EXCEEDED",
-        "metadata": {
-          "quota_metric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
-          "quota_limit_value": "1500",
-          "consumer": "projects/123456789"
-        }
-      },
-      {
-        "@type": "type.googleapis.com/google.rpc.RetryInfo",
-        "retryDelay": "15s"
-      }
-    ]
-  }
-}
-```
-- **HTTP 400 `INVALID_ARGUMENT`**: Generated when incompatible parameters are sent (e.g., requesting `responseMimeType="application/json"` on Gemma models).
-
-#### 3.1.4 Multilingual Efficiency & Token Overhead
-Gemini uses a large-vocabulary SentencePiece tokenizer. For Arabic and Hebrew OSINT text, Gemini exhibits an exceptionally low token expansion factor of only **~1.22x** relative to English, making it the most token-efficient provider for Middle Eastern conflict monitoring.
+#### 3.1.3 HTTP Headers & Error Payloads
+- **HTTP 200 OK**: Gemini REST does **not** return `x-ratelimit-*` headers; token consumption is reported in JSON body `usageMetadata` (`promptTokenCount`, `candidatesTokenCount`, `thoughtsTokenCount`, `totalTokenCount`).
+- **HTTP 429 Too Many Requests**: Returns `Retry-After` header and JSON body containing `error.details[].retryDelay` (e.g., `"15s"`, `"24.5s"`) and `quotaId` (`GenerateRequestsPerDayPerProjectPerModel-FreeTier` vs `InputTokensPerModelPerMinute-FreeTier`).
+- **Gemma 4 Payload Constraints**: Gemma 4 models (`gemma-4-26b-a4b-it`, `gemma-4-31b-it`) reject `systemInstruction` and `responseMimeType="application/json"` (HTTP 400/500) and crash if `temperature == 0.0`. `gemini.py:90-108` properly folds `system_prompt` into the user prompt, clamps `temperature >= 0.1`, and strips `thought=True` parts.
 
 ---
 
 ### 3.2 Groq Cloud (Multi-Key Pool)
 
-#### 3.2.1 Official Rate Limits
-Rate limits are enforced **per organization** (shared across all keys within the same organization):
+#### 3.2.1 Official 2026 Free Plan Rate Limits
+Rate limits apply at the **organization level** (not individual users). In addition to combined TPM, organizations may also have separate per-minute caps on input tokens (**ITPM**) and output tokens (**OTPM**). **Cached tokens do not count towards rate limits.**
 
-| Model Name | Free Tier RPM | Free Tier RPD | Free Tier TPM | Free Tier TPD | Max Concurrent |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`llama-3.1-8b-instant`** | 30 | 14,400 | 6,000 (burst 20K) | 500,000 | 3 |
-| **`llama-3.3-70b-versatile`** | 30 | 1,000 | 12,000 (throttle 6K) | **100,000** | 2 |
-| **`qwen-2.5-32b`** | 30 | 1,000 | 6,000 | 100,000 | 2 |
-| **`deepseek-r1-distill-llama-70b`** | 30 | 1,000 | 6,000 | 100,000 | 1 |
+| Model ID | Free RPM | Free RPD | Free TPM | Free TPD | Audio (ASH / ASD) | Primary Role in OSINT Pipeline |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **`openai/gpt-oss-120b`** | **30 RPM** | **1K (1,000)** | **8K (8,000)** | **200K (200,000)** | — | Deep reasoning, Stage 3 Summarization & Stage 5 SitRep |
+| **`openai/gpt-oss-20b`** | **30 RPM** | **1K (1,000)** | **8K (8,000)** | **200K (200,000)** | — | Fast structured classification, Stage 4 Visuals & Fallback |
+| **`openai/gpt-oss-safeguard-20b`** | **3 RPM** | **1K (1,000)** | **2K (2,000)** | **200K (200,000)** | — | Low-RPM moderation/safeguard (avoid in high-rate stages) |
+| **`qwen/qwen3.8-27b`** | **30 RPM** | **1K (1,000)** | **8K (8,000)** | **200K (200,000)** | — | High-speed Multilingual NLP, Stage 1 Extraction & Translation |
+| **`meta-llama/llama-prompt-guard-2-22m`** | **30 RPM** | **14.4K (14,400)** | **15K (15,000)** | **500K (500,000)** | — | Lightweight prompt-guard / safety classifier |
+| **`meta-llama/llama-prompt-guard-2-86m`** | **30 RPM** | **14.4K (14,400)** | **15K (15,000)** | **500K (500,000)** | — | Lightweight prompt-guard / safety classifier |
+| **`whisper-large-v3` / `v3-turbo`** | **20 RPM** | **2K (2,000)** | — | — | **7.2K / 28.8K** | Speech-to-Text audio transcription |
+| **`canopylabs/orpheus-arabic-saudi` / `v1-english`** | **10 RPM** | **100** | **1.2K (1,200)** | **3.6K (3,600)** | — | Text-to-Speech synthesis |
 
-*CRITICAL PRODUCTION TRAP*: `llama-3.3-70b-versatile` has a strict daily free cap of **100,000 TPD**. With ~1,000 tokens per pipeline extraction or scoring call, a single Groq key is completely exhausted for the day after only **~100 calls**! It must never be used for primary high-volume pipeline stages.
+*Multi-Key Pool Multiplier*: Across 4 independent Groq keys/projects in `GroqKeyPool`, each of the three primary text models (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`) provides an aggregate capacity of **120 RPM, 4,000 RPD, 32,000 TPM, and 800,000 TPD** (or **12,000 RPD and 2,400,000 TPD combined** across all three models).
 
-#### 3.2.2 HTTP Headers Returned
-Returned on both HTTP 200 and HTTP 429:
-- `x-ratelimit-limit-requests`: Total daily requests allowed (e.g., `14400` or `1000`).
-- `x-ratelimit-remaining-requests`: Remaining daily requests.
-- `x-ratelimit-reset-requests`: Time until daily reset (`2s`, `24.5s`, `14h22m`).
-- `x-ratelimit-limit-tokens`: Minute token ceiling (`6000` or `12000`).
-- `x-ratelimit-remaining-tokens`: Remaining tokens in current 60s sliding window.
-- `x-ratelimit-reset-tokens`: Time until token window reset (`24.5s`, `500ms`).
-- `retry-after`: Cooldown duration in seconds on 429.
+#### 3.2.2 Official Groq Rate Limit Headers Semantics
+Groq includes rate-limit headers on every HTTP response (`retry-after` is **only** set on HTTP 429):
 
-#### 3.2.3 Status Codes & Error Payloads
-```json
-{
-  "error": {
-    "message": "Rate limit reached for model `llama-3.3-70b-versatile` in organization `org_xxx` on tokens per minute (TPM): Limit 12000, Used 11450, Requested 850. Please try again in 24.5s.",
-    "type": "tokens",
-    "code": "rate_limit_exceeded"
-  }
-}
-```
+| Header | Example Value | Official Groq Documentation Definition |
+| :--- | :--- | :--- |
+| **`retry-after`** | `2` | In seconds (**only set if you hit the rate limit and status code 429 is returned**) |
+| **`x-ratelimit-limit-requests`** | `1000` / `14400` | **Always refers to Requests Per Day (RPD)** |
+| **`x-ratelimit-remaining-requests`** | `985` / `14370` | **Always refers to Requests Per Day (RPD)** |
+| **`x-ratelimit-reset-requests`** | `2m59.56s` | **Always refers to Requests Per Day (RPD)** |
+| **`x-ratelimit-limit-tokens`** | `8000` / `18000` | **Always refers to Tokens Per Minute (TPM)** |
+| **`x-ratelimit-remaining-tokens`** | `7420` / `17997` | **Always refers to Tokens Per Minute (TPM)** |
+| **`x-ratelimit-reset-tokens`** | `7.66s` | **Always refers to Tokens Per Minute (TPM)** |
 
-#### 3.2.4 Multilingual Efficiency & Token Overhead
-- **Llama 3/3.1/3.3**: Tokenizer vocabulary of 128,256 tokens. Arabic and Hebrew text suffers from severe subword splitting, consuming **2.2x to 2.8x more tokens** than English.
-- **Qwen 2.5**: Tokenizer vocabulary of 151,936 tokens. Native multilingual subword allocations achieve an expansion multiplier of only **1.3x to 1.5x**, making Qwen 2.5 far superior to Llama 3 for Arabic/Hebrew OSINT processing on Groq.
+#### 3.2.3 Prompt Caching & Token Efficiency on Groq
+- **Zero Rate-Limit Cost for Cached Tokens**: Per Groq official documentation, **cached tokens do not count towards your rate limits (ITPM / TPM / TPD)**. Keeping static system instructions and JSON schema definitions in an unchanging prefix (`messages[0] = {"role": "system", ...}`) with variable event data solely in the user message allows Groq's automatic prefix cache to eliminate 50–70% of input token burn.
+- **Right-Sizing `max_tokens` for 8K TPM**: Because `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, and `qwen/qwen3.8-27b` have an **8,000 TPM** ceiling per key, forcing `max_tokens = 3072` (`groq.py:253`) risks OTPM/TPM throttling when multiple requests hit the same key within 60 seconds. Right-sizing `max_tokens` to `1280–1536` for standard JSON stages (and `2560` only for Stage 5 SitReps) prevents mid-JSON truncation while doubling per-minute concurrency headroom.
 
 ---
 
@@ -289,50 +265,26 @@ Returned on both HTTP 200 and HTTP 429:
 #### 3.3.1 Official Rate Limits
 Enforced per account across all free-tier models:
 - **Rate Limit**: **10 RPM** (Enforces strict client-side pacing of **6.0 seconds between requests**).
-- **Daily Quotas**: **100 RPD** and **1,000,000 TPD**.
-- **Daily Reset**: 00:00 UTC.
-- **Free Model Catalog**: Models ending in `-free` (e.g., `coding-glm-5.3-flash-free`, `coding-glm-5.3-free`, `coding-minimax-m3-free`, `nemotron-3-super-120b-a12b-free`).
-
-#### 3.3.2 HTTP Headers Returned
-- Standard OpenAI-compatible gateway headers.
-- Does not expose granular `x-ratelimit-*` headers on free endpoints.
-- On HTTP 429: Returns standard `Retry-After: 60`.
-
-#### 3.3.3 Status Codes & Error Payloads
-```json
-{
-  "error": {
-    "message": "The coding-glm-5.3-flash-free model Too many requests; please try again later (or daily quota of 100 requests reached).",
-    "type": "rate_limit_error",
-    "code": 429
-  }
-}
-```
+- **Daily Quotas**: **100 RPD** and **1,000,000 TPD** (resets at 00:00 UTC).
+- **Free Model Catalog**: `coding-glm-5.3-free` (1.05M context flagship reasoning), `coding-glm-5.3-flash-free`, `coding-minimax-m3-free`, `nemotron-3-super-120b-a12b-free`.
 
 ---
 
-### 3.4 Mistral AI (La Plateforme)
+### 3.4 Mistral AI (La Plateforme) — Smart Decision & High-Throughput Tiering
 
-#### 3.4.1 Official Rate Limits
-Enforced per organization under the Free Experiment Plan:
-- **Rate Limit**: **1 RPS (60 RPM)**.
-- **Monthly Cap**: $10 one-time credit (approx. 500,000 TPM limit).
-- **Target Models**: `ministral-3b-2512` (ultra-fast edge), `ministral-8b-2512` (dense reasoning), `open-mistral-nemo` (12B), `mistral-small-latest`.
+#### 3.4.1 Official Rate Limits & Model Hierarchy
+Mistral's La Plateforme provides four distinct model tiers configured in the codebase (`mistral.py`, `AIConfigMatrix.tsx`):
 
-#### 3.4.2 HTTP Headers Returned
-- `X-RateLimit-Remaining`: Remaining request capacity.
-- `X-RateLimit-Limit`: Maximum rate ceiling.
-- `Retry-After`: Integer seconds on HTTP 429.
+| Model Name | Intelligence Tier | Throughput / Rate Limit | Token Limit (TPM) | Strategic OSINT Pipeline Role |
+| :--- | :--- | :--- | :--- | :--- |
+| **`mistral-large-2512`** | **Flagship Reasoning (Tier 1)** | **1.0 RPS (60 RPM)** | **500,000 TPM** | **High-Stakes Executive Decisions**: Stage 5 Situational Summary (`situation_summary`), Memory Rollups, and Stage 2 Critical Threat Scoring (`scoring`) fallback. |
+| **`mistral-small-2603`** | **Smart Reasoning & Structured Output (Tier 2)** | **1.0 RPS (60 RPM)** | **500,000 TPM** | **Core Per-Event Decisions**: Stage 2 Importance & Threat Scoring (`scoring`), Stage 1 Multilingual Extraction (`extraction`), and Stage 3 Summarization (`summarization`). |
+| **`ministral-8b-2512`** | **Dense 8B Mid-Tier (Tier 3)** | **3.13 RPS (187 RPM)** | **625,000 TPM** | **Low-Stakes Classification**: Stage 4 Visuals & Cartography tag classification (`visuals`). |
+| **`ministral-3b-2512`** | **Ultra-Fast Edge 3B (Tier 4)** | **12.50 RPS (750 RPM)** | **1,300,000 TPM** | **High-Volume Pre-Filter**: Stage 0 Chatter & Noise Gatekeeper (`gatekeeper` — 261ms median latency in prod). |
 
-#### 3.4.3 Status Codes & Error Payloads
-```json
-{
-  "message": "Rate limit exceeded. Please wait 1.0s before retrying.",
-  "type": "rate_limited",
-  "param": null,
-  "code": 1300
-}
-```
+#### 3.4.2 HTTP Headers & Error Payloads
+- Headers: `X-RateLimit-Remaining`, `X-RateLimit-Limit`, `Retry-After` (integer seconds on HTTP 429, error code `1300`).
+- **Model-Aware Pacing Requirement**: `mistral.py:58` currently hardcodes `min_interval_sec = 0.2` (`300 RPM`) for all Mistral models. When calling **`mistral-large-2512`** or **`mistral-small-2603`** (which enforce **1.0 RPS / 60 RPM**), bursts faster than 1.0s trigger HTTP 429 (`code: 1300`). `MistralProvider` must enforce model-aware pacing (`min_interval_sec = 1.05`, `max_rpm = 55` for `mistral-large-2512` and `mistral-small-2603`; `0.35s` for `ministral-8b-2512`; `0.15s` for `ministral-3b-2512`).
 
 ---
 
@@ -340,69 +292,54 @@ Enforced per organization under the Free Experiment Plan:
 
 #### 3.5.1 Official Rate Limits & Neuron Budget
 - **Daily Budget**: **10,000 Neurons per day** (Free tier, resets at 00:00 UTC).
-- **Rate Limit**: **300 RPM** for text generation; 1,500 RPM for embeddings.
-- **Max Concurrency**: 5 concurrent requests.
+- **Rate Limit**: **300 RPM** for text generation (`@cf/meta/llama-3.2-1b-instruct` ~4.1K RPD, `@cf/meta/llama-3.2-3b-instruct` ~2.4K RPD, `@cf/meta/llama-3.1-8b-instruct-fp8-fast` ~2.2K RPD).
 
 #### 3.5.2 Exact Neuron Calculation Formula
-Cloudflare computes consumption based on model weight parameters and token volumes:
 $$\text{Total Neurons} = \left(\frac{\text{Input Tokens}}{1,000,000} \times \text{Input Rate}\right) + \left(\frac{\text{Output Tokens}}{1,000,000} \times \text{Output Rate}\right)$$
-
-For Meta Llama models on Workers AI:
-1. **`@cf/meta/llama-3.2-1b-instruct`**:
-   - Input Rate: 2,457 Neurons / 1M tokens ($0.027/1M)
-   - Output Rate: 18,252 Neurons / 1M tokens ($0.201/1M)
-   - Typical Stage 0 evaluation (400 in, 50 out): **0.0019 Neurons per call**.
-   - A 10,000 Neuron budget allows **over 5,000,000 tokens / ~5,000 calls per day**!
-2. **`@cf/meta/llama-3.1-8b-instruct-fp8-fast`**:
-   - Input Rate: ~25,000 Neurons / 1M tokens
-   - Output Rate: ~80,000 Neurons / 1M tokens
-   - Typical call (500 in, 150 out): **0.0245 Neurons per call**.
-   - A 10,000 Neuron budget supports **~400,000 tokens / ~400 calls per day**.
+- `@cf/meta/llama-3.2-1b-instruct`: Input 2,457 Neurons/1M, Output 18,252 Neurons/1M ($\approx 0.0019$ Neurons/call $\rightarrow \sim 4,100\text{–}5,000$ RPD).
+- `@cf/meta/llama-3.2-3b-instruct`: $\approx 0.0044$ Neurons/call ($\sim 2,400$ RPD).
+- `@cf/meta/llama-3.1-8b-instruct-fp8-fast`: $\approx 0.0245$ Neurons/call ($\sim 400\text{–}2,200$ RPD depending on prompt length).
 
 ---
 
-### 3.6 Hugging Face Inference API / Space TEI Embeddings
+### 3.6 Embeddings Infrastructure (Gemini Embedding 2/1 + Hugging Face Space TEI)
 
-#### 3.6.1 Hosting Architectures & Specifications
-1. **Self-Hosted Hugging Face Space (TEI)**:
-   - Endpoint: `https://danprav-osint-embeddings-tei.hf.space/embed`
-   - Model: `BAAI/bge-small-en-v1.5` (384 dimensions)
-   - Capacity: **~3,000 RPM (50 RPS)** running on persistent CPU Basic (2 vCPU / 16GB RAM).
-   - Rate Limits: None. Zero external API costs.
-2. **Serverless Inference API** (`api-inference.huggingface.co`):
-   - Capacity: 10–20 RPM.
-   - Cold Start Protocol: Returns HTTP 503 with JSON payload `{"error": "Model loading", "estimated_time": 24.5}`. Can be mitigated using request header `x-wait-for-model: true`.
+1. **Google Gemini Embeddings (`embedding_service.py`)**:
+   - **Primary (`gemini-embedding-2`)**: **100 RPM | 30K TPM | 1,000 RPD** (Observed: `37/100` RPM, `3.31K/30K` TPM, `721/1K` RPD).
+   - **Secondary (`gemini-embedding-001`)**: **100 RPM | 30K TPM | 1,000 RPD** (Observed: `100/100` RPM, `16.78K/30K` TPM, `962/1K` RPD).
+2. **Self-Hosted Hugging Face Space TEI (`HF_EMBEDDING_URL`)**:
+   - Endpoint: `https://danprav-osint-embeddings-tei.hf.space/embed` (`BAAI/bge-small-en-v1.5` / `all-MiniLM-L6-v2`).
+   - Capacity: **~3,000 RPM (50 RPS)** persistent Space with unlimited RPD and zero cost.
 
 ---
 
 ### 3.7 Comprehensive Multi-Provider Comparative Matrix
 
-| Metric / Capability | Google Gemini (Flash) | Groq Cloud (Multi-Key) | AIHubMix (Free) | Mistral AI (Exp) | Cloudflare Workers AI | Hugging Face (TEI Space) |
+| Metric / Capability | Google Gemini Flash-Lite (`3.5` / `3.1`) | Google Gemma 4 (`26B` / `31B`) | Groq Cloud (4-Key Pool: `qwen3.8-27b`, `gpt-oss-120b/20b`) | Mistral AI (`large-2512`, `small-2603`, `ministral-3b/8b`) | AIHubMix (`coding-glm-5.3-free`) | Cloudflare Workers AI (`llama-3.2-1b/3b`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Free RPM** | 15 RPM | 30 RPM / key | 10 RPM | 60 RPM (1 RPS) | 300 RPM | ~3,000 RPM |
-| **Free RPD** | 1,500 RPD | 14,400 (8B) / 1,000 (70B) | 100 RPD | Credit-capped ($10)| ~2,500–5,000 RPD | Unlimited |
-| **Free TPM** | 1,000,000 TPM | 6,000–12,000 TPM | Unmetered (TPD-capped)| 500,000 TPM | Unmetered (RPM-capped)| N/A (Vectors) |
-| **Free TPD** | Unmetered | 500K (8B) / **100K (70B)**| 1,000,000 TPD | Credit-capped ($10)| 10,000 Neurons | Unlimited |
-| **Rate-Limit Headers**| `Retry-After`, `retryDelay` | `x-ratelimit-*`, `retry-after` | None (OpenAI standard) | `X-RateLimit-*`, `Retry-After`| `Ratelimit`, `Retry-After` | None / `estimated_time` |
-| **429 Retry Format** | Seconds in `retryDelay` | String (`24.5s`, `1042s`)| Generic 429 message | Integer seconds | Float seconds | Seconds in `estimated_time`|
-| **Structured JSON** | Native `responseSchema` | `response_format` ("json" req)| `response_format` | Native `response_format`| `response_format` | N/A |
-| **Arabic/Hebrew Qual**| **Superior (1.22x)** | **High (Qwen)** / Low (Llama) | **High (GLM-5.3)** | **Moderate** | **Low (1B/3B)** | N/A (Use BGE-M3/MiniLM)|
+| **Free RPM** | **15 RPM** each | **30 RPM** each | **30 RPM / key** (120 RPM pool) | **60 RPM** (`large`/`small`) / **750 RPM** (`3b`) | **10 RPM** (6.0s gap) | **300 RPM** |
+| **Free RPD** | **500 RPD** each (1,000 total) | **14,400 RPD** each (28,800 total) | **1,000 RPD / key / model** (4,000 RPD/model pool) | Credit-backed ($10/mo) | **100 RPD** (shared) | **~2,400–4,100 RPD** |
+| **Free TPM** | **250,000 TPM** | **16,000 TPM** | **8,000 TPM / key / model** (32K TPM pool) | **500K–1.3M TPM** | Unmetered (TPD-capped) | Unmetered (Neuron-capped) |
+| **Free TPD** | Unmetered (RPD-capped) | Unmetered (TPM/RPD-capped) | **200,000 TPD / key / model** (800K TPD/model pool) | Credit-backed | **1,000,000 TPD** | **10,000 Neurons/day** |
+| **Rate-Limit Headers**| `Retry-After`, `retryDelay` | `Retry-After`, `retryDelay` | `x-ratelimit-*-requests` (RPD), `*-tokens` (TPM), `retry-after` (on 429) | `X-RateLimit-*`, `Retry-After` | `Retry-After` | `Ratelimit`, `Retry-After` |
+| **Best Use Cases** | Fast precision scoring & extraction fallback | High-RPD Stage 0/1/2/3/4 workhorse (with 16K TPM pacing) | Primary Extraction (`qwen3.8-27b`), Summarization (`gpt-oss-120b`), Visuals (`gpt-oss-20b`) | **Important Decisions** (`mistral-large-2512`, `mistral-small-2603`) & Stage 0 (`ministral-3b-2512`) | Stage 5 Executive SitRep & Daily Memory Rollups | High-RPM Stage 0 & Stage 4 overflow fallback |
 
 ---
 
-### 3.8 Detailed Table of 9 Codebase Discrepancies
+### 3.8 Detailed Table of 10 Codebase Discrepancies
 
-| # | Component & Location | Current Codebase Behavior | Official Provider Specification | Impact & Failure Mode |
+| # | Component & Location | Current Codebase Behavior | Official Provider Specification & Console Reality | Impact & Failure Mode |
 |---|---|---|---|---|
-| 1 | `backend/app/pipeline/providers/gemini.py:28` | Default model: `gemini-3.5-flash-lite` | Model does not exist. Official models: `gemini-2.0-flash`, `gemini-2.0-flash-lite`, `gemini-1.5-flash`. | Triggers HTTP 404 or causes unexpected immediate fallback if not overridden in `.env`. |
-| 2 | `backend/app/pipeline/providers/gemini.py:58` | `self.max_tpm = 0` (unmetered TPM pacing for Flash models) | Gemini Free Tier has 1,000,000 TPM limit (16,000 TPM on Gemma). | Client sliding window fails to pace token bursts, causing sudden provider 429s. |
-| 3 | `backend/app/pipeline/providers/groq.py:33` | Default model: `qwen/qwen3.8-27b` | Model identifier does not exist. Official models: `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `qwen-2.5-32b`. | Model identifier mismatch if `.env` does not supply valid string. |
-| 4 | `backend/app/pipeline/providers/groq.py:76-78` | `min_interval_sec = 0.0`, `max_rpm = 0` (unconstrained client pacing) | Groq Free Tier enforces 30 RPM and 6,000–12,000 TPM per organization. | Concurrent tasks flood the same key until reactive 429 occurs rather than smoothly pacing. |
-| 5 | `backend/app/pipeline/providers/groq.py:253` | Bumps `max_tokens = 3072` for JSON on reasoning/qwen models | `llama-3.3-70b` has only 12,000 TPM and 100,000 TPD on free tier. | 4 concurrent calls with 3,072 max tokens exhaust the entire minute TPM bucket (12,000 TPM) in seconds! |
-| 6 | `backend/app/pipeline/providers/aihubmix.py:198,261` | `quota_tracker.record_request()` decrements quota before call; `usage_tracker.record_call()` only called on HTTP 200. | Quota should be reserved and refunded on failure. | Blocked calls leave zero telemetry in `usage_tracker`; dashboard misleadingly shows 100% success rate while quota leaks permanently. |
-| 7 | `backend/app/pipeline/providers/mistral.py:58` | `min_interval_sec = 0.2`, `max_rpm = 300` | Mistral Free Experiment Tier enforces **1 RPS (60 RPM)**. | Request bursts faster than 1 RPS hit HTTP 429 error code 1300 on free accounts. |
-| 8 | `backend/app/pipeline/providers/cloudflare.py:38,238`| `CloudflareNeuronTracker` defined but `record_neurons()` is **never called**; reads `usage.get("neurons", 0)` which is always 0. | Cloudflare 10,000 Neuron daily budget must be tracked from input/output tokens. | Neuron budget tracker is completely dormant; system cannot predict or prevent hitting Cloudflare's daily neuron cap. |
-| 9 | `backend/app/services/embedding_service.py:625` | `call_hf_tei_api` fails on HTTP 503 and immediately falls back to mock embeddings. | Hugging Face returns HTTP 503 with `estimated_time` during cold starts. | Transient cold starts trigger permanent mock embeddings instead of waiting for the model to finish loading. |
+| 1 | `backend/app/pipeline/providers/gemini.py:51-58` | Sets `max_rpm = 15` for Gemma (`is_gemma`), and `max_tpm = 0` for `gemini-3.5-flash-lite` / `3.1-flash-lite`. | Gemma 4 (`26B`/`31B`) allows **30 RPM / 16K TPM / 14.4K RPD**; Flash-Lite (`3.5`/`3.1`) allows **15 RPM / 250K TPM / 500 RPD**. | Under-utilizes Gemma's 30 RPM while failing to track Flash-Lite's 250K TPM and 500 RPD ceiling (`504/500` and `505/500` hit in prod). |
+| 2 | `backend/app/pipeline/providers/gemini.py:131-139` & `base.py:309` | Estimates `est_input_tokens = int(prompt_chars / 3.5) + 15` and releases `_pacing_lock` before actual `totalTokenCount` (including Gemma `thought` tokens) returns. | Gemma 4 has a strict **16,000 TPM** cap and emits 400–1,450 thinking tokens; Arabic/Hebrew is ~1.6 chars/token. | Concurrent workers burst past 16K TPM before token reconciliation completes (caused **`26.12K / 16K` TPM** on Gemma 4 26B and **`16.66K / 16K` TPM** on Gemma 4 31B). |
+| 3 | `backend/app/pipeline/providers/groq.py:252-253` | Forces `effective_max_tokens = max(max_tokens, 3072)` for all `gpt-oss` and `qwen` JSON calls. | `openai/gpt-oss-120b`, `openai/gpt-oss-20b`, and `qwen/qwen3.8-27b` have an **8,000 TPM** (and OTPM) limit per org/key and **200,000 TPD**. | 2–3 concurrent calls reserve >9,000 tokens, immediately breaching the **8K TPM / OTPM** limit and accelerating 200K TPD exhaustion. |
+| 4 | `backend/app/pipeline/providers/key_pool.py:289-295, 356` | Stores `remaining_requests` (RPD) and `remaining_tokens` (TPM) per-key (overwriting across models) and only rotates on HTTP 200 when `rem_tokens == 0`. | `x-ratelimit-remaining-requests` is per-model **RPD (1,000)** and `x-ratelimit-remaining-tokens` is per-model **TPM (8,000)**. | Keys overwrite telemetry across models and fail to rotate proactively when `rem_tokens < 1,200`, guaranteeing a 429 on the next call. |
+| 5 | `backend/app/pipeline/providers/key_pool.py:309` | Marks `is_daily = lock_delay > 3600.0` on HTTP 429. | Groq's **200K TPD** and **1K RPD** rolling windows return `retry-after` values of `199s–1,042s` (3–17 minutes) as tokens roll off the 24h window. | Rolling TPD/RPD exhaustions (`retry-after: 1042s` in prod) are misclassified as minute rate limits instead of daily quota exhaustions. |
+| 6 | `backend/app/pipeline/orchestrator.py:134,149,163` & `settings.py:44,58,71` | Routes Stage 1 (`extraction`), Stage 2 (`scoring`), and Stage 3 (`summarization`) Mistral fallbacks to **`ministral-8b-2512`**. | Mistral provides **`mistral-large-2512`** (Flagship) and **`mistral-small-2603`** (Smart Reasoning) at 1.0 RPS (60 RPM) / 500K TPM. | Crucial intelligence decisions (scoring 1–10 alert thresholds, entity extraction, BLUF summaries) degrade to an 8B edge model that also wraps JSON in `{"Stage2Result": ...}`. |
+| 7 | `backend/app/pipeline/providers/mistral.py:58` | Hardcodes `min_interval_sec = 0.2`, `max_rpm = 300` across all Mistral models. | `mistral-large-2512` and `mistral-small-2603` enforce **1.0 RPS (60 RPM)**; `ministral-8b-2512` is 3.13 RPS; `ministral-3b-2512` is 12.5 RPS. | Calling `mistral-large-2512` or `mistral-small-2603` without 1.0s model-aware spacing triggers HTTP 429 error code `1300`. |
+| 8 | `backend/app/pipeline/providers/aihubmix.py:198,261` | `quota_tracker.record_request()` decrements 100 RPD quota before HTTP dispatch without refund on failure; `usage_tracker.record_call()` only called on HTTP 200. | Quota should be refunded if network/5xx fails before completion, and failed calls must be logged in telemetry. | Transient network errors permanently burn the 100 RPD budget while hiding failures from `/api/settings/provider-usage`. |
+| 9 | `backend/app/pipeline/providers/cloudflare.py:38,238`| `CloudflareNeuronTracker` defined but `record_neurons()` is **never called**; reads `usage.get("neurons", 0)` which is always 0. | Cloudflare 10,000 Neuron daily budget must be computed from `prompt_tokens` and `completion_tokens`. | Neuron budget tracker is dormant; system cannot track or prevent hitting the 10,000 Neuron daily cap. |
+| 10 | `backend/app/services/embedding_service.py:556,625` | Single-event neighborhood calls burn `gemini-embedding-001` (`962/1K` RPD & `100/100` RPM) and `gemini-embedding-2` (`721/1K` RPD); `call_hf_tei_api` drops to mock on HTTP 503. | Each item in `batchEmbedContents` counts toward 100 RPM / 1,000 RPD; HF Spaces return HTTP 503 with `estimated_time` on cold starts. | Gemini Embedding 1 & 2 approach daily exhaustion (`1,683 / 2,000` combined RPD), and HF Space cold starts drop to mock vectors instead of waiting. |
 
 ---
 
@@ -493,138 +430,87 @@ Production telemetry endpoint `GET /api/settings/provider-usage` reports `"avg_l
 
 ## 5. Task-to-Model Routing Matrix & Capacity Budget Math (Requirement R4)
 
-### 5.1 Comprehensive Task-to-Model Routing Matrix
-To achieve operational stability across 24/7 autonomous monitoring while staying strictly within free-tier quotas and eliminating cross-stage cascading failures, each AI task is mapped to a dedicated primary provider and resilient fallback chain based on:
-1. Reasoning complexity and prompt constraint adherence.
-2. Structured JSON schema reliability.
-3. Multilingual efficiency (Arabic/Hebrew token expansion).
-4. Provider rate limits (RPM, TPM, RPD, TPD).
+### 5.1 Comprehensive Task-to-Model Routing Matrix (Smart Mistral Decision Tiering + 2026 Quotas)
+To achieve 24/7 operational stability within the exact 2026 quotas while prioritizing **smarter Mistral models (`mistral-large-2512` and `mistral-small-2603`) for high-stakes intelligence decisions**, each task is mapped by:
+1. **Decision Criticality**: High-impact decisions—**Stage 2 Importance & Alert Scoring (`scoring`)**, **Stage 5 Executive Situational Summary (`situation_summary`)**, **Stage 1 Entity/Coordinate Extraction (`extraction`)**, and **Stage 3 BLUF Summarization (`summarization`)**—are routed to flagship/reasoning models (**`mistral:mistral-large-2512`**, **`mistral:mistral-small-2603`**, **`groq:openai/gpt-oss-120b`**, **`groq:qwen/qwen3.8-27b`**, and **`gemini:gemini-3.5-flash-lite`**) rather than `ministral-8b-2512`.
+2. **Quota Partitioning across Groq Models & Keys**: Each Groq model (`qwen/qwen3.8-27b`, `openai/gpt-oss-120b`, `openai/gpt-oss-20b`) has an independent **1,000 RPD / 8,000 TPM / 200,000 TPD** bucket per key (**4,000 RPD / 32,000 TPM / 800,000 TPD per model across the 4-key pool**). Assigning each Groq model to a distinct primary stage prevents intra-model quota contention.
+3. **Preserving 500 RPD Gemini Flash-Lite & Unlocking 28,800 RPD Gemma 4**: Because `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` each have only **500 RPD**, they are paired with **`mistral:mistral-small-2603` / `mistral:mistral-large-2512`** and backed by **`gemma-4-31b-it` (14,400 RPD)** and **`gemma-4-26b-a4b-it` (14,400 RPD)**.
 
-| Pipeline Stage / Task | Primary Model | Fallback 1 | Fallback 2 | Hardcoded Heuristic | Rationale & Trade-offs |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Stage 0: Gatekeeper** *(Micro-batched binary relevance filtering)* | **`mistral:ministral-3b-2512`** | `cloudflare:@cf/meta/llama-3.2-1b-instruct` | `groq:llama-3.1-8b-instant` | Regex Fast-Pass & Drop Rules | Ultra-fast (261ms median), 60 RPM limit easily accommodates micro-batches (1–6 RPM actual); Cloudflare 1B provides 5,000 calls/day on free neurons. |
-| **Stage 1: Extraction & Translation** *(Tactical entities, Arabic/Hebrew translation)* | **`gemini:gemini-2.0-flash`** | `mistral:ministral-8b-2512` | `cloudflare:@cf/meta/llama-3.2-3b-instruct` | `_heuristic_extraction()` | Superior multilingual compression (1.22x fertility factor vs 2.5x on Llama); 1,500 RPD budget comfortably handles surviving filtered events (~600–1,080/day); Fallback 1 `mistral:ministral-8b-2512` (500k TPM) completely eliminates Groq's 6,000 TPM bottleneck. |
-| **Stage 2: Scoring** *(Multi-dimensional tactical calibration, guardrails)* | **`groq:llama-3.1-8b-instant`** *(4-key pool)* | `mistral:ministral-8b-2512` | `cloudflare:@cf/meta/llama-3.2-3b-instruct` | Keyword Severity Weighing Engine | 4-key pool delivers 120 effective RPM and 57,600 RPD; eliminates 70B's 100k TPD cap; **decoupled from Gemini** as fallback to eliminate dual-stage cascading onto Gemini's 15 RPM cap during Groq outages. |
-| **Stage 3: Summarization** *(Intelligence Headline & BLUF generation)* | **`groq:llama-3.1-8b-instant`** *(4-key pool)* | `mistral:ministral-8b-2512` | `cloudflare:@cf/meta/llama-3.2-3b-instruct` | Headline + Event Text Template | High speed, high throughput across 4-key pool (2M TPD cap); `llama-3.3-70b-versatile` is **completely removed from standard per-event alerts** to eliminate 100k TPD exhaustion; reserved strictly for human/on-demand summaries (`summary_service`). |
-| **Stage 4: Visuals** *(Threat classification & cartography symbology)* | **`cloudflare:@cf/meta/llama-3.2-3b-instruct`** | `groq:llama-3.1-8b-instant` | `mistral:ministral-3b-2512` | Deterministic Symbology Map | 300 RPM ceiling, lightweight classification; consumes ~0.0043 Neurons/call, completely offloading Groq/Gemini quotas. |
-| **Embedding Service** *(384d semantic vectors & scoring neighborhood)* | **`huggingface:bge-small-en-v1.5`** *(Self-hosted TEI Space)* | `gemini:text-embedding-004` | Local ONNX `all-MiniLM-L6-v2` | Zero Vector Fallback | 24/7 persistent, zero-cost, ~3,000 RPM throughput; preserves Gemini 1,000 RPD embedding quota. |
-| **Memory Rollup Service** *(Daily thematic rollup at 02:00 UTC)* | **`aihubmix:coding-minimax-m3-free`** | `gemini:gemini-2.0-flash` | `mistral:open-mistral-nemo` | Concatenated Digest | Executes 1 call/day; takes advantage of AIHubMix's 1M TPD allowance for large context synthesis. |
-| **Summary Service** *(Rolling 6-hour digest / On-demand human summaries)* | **`aihubmix:coding-glm-5.3-free`** *(On-Demand: `groq:llama-3.3-70b-versatile`)* | `mistral:mistral-small-latest` | `gemini:gemini-2.0-flash` | Chronological Cluster Bulletins | Background digest executes 48 calls/day (48% of AIHubMix's 100 RPD budget); `llama-3.3-70b-versatile` is reserved strictly for human on-demand executive summaries where low frequency (<10 calls/day) stays well within 100k TPD. |
+| Pipeline Stage / Task | Decision Criticality | Primary Model | Fallback 1 | Fallback 2 | Fallback 3 / 4 | Rationale & Quota Math |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Stage 0: Gatekeeper** *(Micro-batched chatter & noise filter)* | **Pre-Filter** *(High Volume, Low Complexity)* | **`mistral:ministral-3b-2512`** *(12.5 RPS / 1.3M TPM)* | **`gemini:gemma-4-26b-a4b-it`** *(30 RPM / **14.4K RPD** / 16K TPM)* | **`groq:openai/gpt-oss-20b`** *(4-key pool: 4K RPD / 800K TPD)* | `cloudflare:@cf/meta/llama-3.2-1b-instruct` $\rightarrow$ `gemini:gemma-4-31b-it` *(14.4K RPD)* | Offloads Stage 0 from `openai/gpt-oss-20b` (which previously locked all 4 Groq keys in prod). `ministral-3b-2512` achieved 100% (7/7) success at **261ms median latency** in prod; `gemma-4-26b-a4b-it` provides a 14,400 RPD safety net. |
+| **Stage 1: Extraction & Translation** *(Entities, coordinates, Arabic/Hebrew/Farsi translation)* | **HIGH** *(Factual Grounding & Geolocation)* | **`groq:qwen/qwen3.8-27b`** *(4-key pool: 120 RPM / **4K RPD** / **800K TPD**)* | **`mistral:mistral-small-2603`** *(Smart Reasoning \| 1.0 RPS / 500K TPM)* | **`gemini:gemini-3.5-flash-lite`** *(15 RPM / 250K TPM / 500 RPD)* | `gemini:gemma-4-31b-it` *(14.4K RPD)* $\rightarrow$ `gemini:gemini-3.1-flash-lite` *(500 RPD)* $\rightarrow$ `cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8-fast` | Dedicates `qwen/qwen3.8-27b` (4,000 RPD across 4 keys, best multilingual Qwen tokenizer) to Stage 1. Upgrades Fallback 1 from `ministral-8b-2512` to **`mistral-small-2603`** for superior entity/coordinate extraction and translation accuracy. |
+| **Stage 2: Scoring** *(1–10 Threat Score, 4 Calibration Guardrails, Alert Trigger)* | **CRITICAL** *(Triggers Telegram & Live Alerts)* | **`mistral:mistral-small-2603`** *(Smart Reasoning \| 1.0 RPS / 500K TPM)* | **`mistral:mistral-large-2512`** *(Flagship Reasoning \| 1.0 RPS / 500K TPM)* | **`gemini:gemini-3.5-flash-lite`** *(15 RPM / 250K TPM / 500 RPD)* | `gemini:gemini-3.1-flash-lite` *(500 RPD)* $\rightarrow$ `groq:openai/gpt-oss-120b` *(4K RPD)* $\rightarrow$ `gemini:gemma-4-31b-it` *(14.4K RPD)* | **Upgrades the core alert decision from `gemini-3.5-flash-lite` (which exhausted at 504/500 RPD) and `ministral-8b-2512` to `mistral-small-2603` + `mistral-large-2512`**, backed by both Gemini Flash-Lite buckets (1,000 RPD combined) and `gpt-oss-120b`. |
+| **Stage 3: Summarization** *(Intelligence Headline <12w & Tactical BLUF)* | **HIGH** *(Operator-Facing Alert & Feed Copy)* | **`groq:openai/gpt-oss-120b`** *(4-key pool: 120 RPM / **4K RPD** / **800K TPD**)* | **`mistral:mistral-small-2603`** *(Smart Reasoning \| 1.0 RPS / 500K TPM)* | **`mistral:mistral-large-2512`** *(Flagship \| 1.0 RPS / 500K TPM)* | `gemini:gemini-3.5-flash-lite` *(500 RPD)* $\rightarrow$ `gemini:gemma-4-31b-it` *(14.4K RPD)* $\rightarrow$ `aihubmix:coding-glm-5.3-flash-free` | Dedicates `openai/gpt-oss-120b` (4,000 RPD / 800K TPD across 4 keys) to synthesis; replaces `ministral-8b-2512` with **`mistral-small-2603`** and **`mistral-large-2512`** to prevent degenerate headlines. |
+| **Stage 4: Visuals** *(Threat category & cluster tags)* | **MODERATE** *(UI Symbology & Tagging)* | **`groq:openai/gpt-oss-20b`** *(4-key pool: 120 RPM / **4K RPD** / **800K TPD**)* | **`gemini:gemma-4-26b-a4b-it`** *(30 RPM / **14.4K RPD** / 16K TPM)* | **`mistral:ministral-8b-2512`** *(3.13 RPS / 625K TPM)* | `cloudflare:@cf/meta/llama-3.2-3b-instruct` $\rightarrow$ `gemini:gemini-3.1-flash-lite` *(500 RPD)* | Moves Stage 4 off `qwen/qwen3.8-27b` onto `openai/gpt-oss-20b` (now freed from Stage 0) and `gemma-4-26b-a4b-it` (14.4K RPD), keeping `ministral-8b-2512` only for lightweight tag classification. |
+| **Stage 5: Situational Summary (`situation_summary`)** *(6h Rolling SitRep & On-Demand Executive Briefs)* | **CRITICAL** *(Executive SitRep & Strategic Forecast)* | **`mistral:mistral-large-2512`** *(Flagship Reasoning \| 1.0 RPS / 500K TPM)* | **`groq:openai/gpt-oss-120b`** *(4-key pool: 4K RPD / 800K TPD)* | **`aihubmix:coding-glm-5.3-free`** *(10 RPM / 100 RPD / 1M TPD)* | `mistral:mistral-small-2603` $\rightarrow$ `gemini:gemma-4-31b-it` *(14.4K RPD)* $\rightarrow$ `gemini:gemini-3.5-flash-lite` | Uses flagship **`mistral-large-2512`** for the 48 scheduled daily SitReps + human on-demand briefings, backed by `openai/gpt-oss-120b` (120B reasoning) and `coding-glm-5.3-free` (1M TPD). |
+| **Memory Rollup Service** *(Daily 02:00 UTC thematic cluster rollup)* | **HIGH** *(Long-Context Historical Synthesis)* | **`aihubmix:coding-glm-5.3-free`** *(or `coding-minimax-m3-free`)* | **`mistral:mistral-large-2512`** *(Flagship \| 500K TPM)* | **`groq:openai/gpt-oss-120b`** *(4-key pool)* | `gemini:gemma-4-31b-it` *(14.4K RPD)* | Executes 1x/day; leverages AIHubMix's 1M TPD and **`mistral-large-2512`** for deep historical cluster synthesis. |
+| **Embedding Service** *(Semantic vectors & live scoring neighborhood)* | **INFRASTRUCTURE** *(Corroboration & Deduplication)* | **`gemini:gemini-embedding-2`** *(100 RPM / 30K TPM / **1K RPD**)* | **`gemini:gemini-embedding-001`** *(100 RPM / 30K TPM / **1K RPD**)* | **`huggingface:hf-space-tei`** *(Persistent Space \| ~3,000 RPM / **Unlimited RPD**)* | Local/Deterministic Fallback | Combines both Gemini Embedding tiers (**2,000 RPD total** at 3072d) with automatic overflow to the persistent Hugging Face TEI Space (`HF_EMBEDDING_URL`) so daily volume >2,000 events never fails. |
 
 ---
 
 ### 5.2 Operational Load Profiles & Pipeline Reduction Dynamics
 
 #### 5.2.1 Operational Load Profiles
-- **Baseline Load**: Continuous monitoring ingestion of **5 to 10 incoming events per minute** (~10,000 raw events/day).
-- **Crisis Surge Load**: Elevated regional conflict escalation of **30 to 60 incoming events per minute** (~60,000 raw events/day).
-- **Extreme Peak Burst**: Instantaneous kinetic event or breaking conflict barrage of **100 incoming events per minute** (~144,000 raw events/day equivalent).
+- **Baseline Load**: Continuous monitoring ingestion of **5 to 10 incoming raw events per minute** (~10,000 raw events/day).
+- **Crisis Surge Load**: Elevated regional conflict escalation of **30 to 60 incoming raw events per minute** (~60,000 raw events/day).
+- **Extreme Peak Burst**: Instantaneous kinetic barrage of **100 incoming raw events per minute**.
 
 #### 5.2.2 Event Reduction Pipeline Dynamics
-1. **Stage 0 Filtering**:
-   - Ingestion Layer 1 (Deterministic regex pass/drop): Filters out ~30% of incoming noise without LLM invocation.
-   - Ingestion Layer 2 (LLM Micro-Batching in Stage 0): The remaining 70% of events are evaluated in micro-batches of 5 to 10 events per LLM request.
-   - At Baseline (10 events/min): 7 events batch into **1 to 2 LLM requests/min** (approx. 45 batches/hour during diurnal cycles).
-   - At Crisis Surge (60 events/min): 42 events batch into **6 to 8 LLM requests/min** (approx. 276 batches/hour).
-   - Empirical Gatekeeper Drop Rate: **90%** of evaluated events are rejected as non-relevant.
-2. **Surviving Events Flowing to Stages 1–4**:
-   - At Baseline (10 raw events/min): **1.0 surviving event per minute** (~600–1,000 events/day accounting for diurnal variations).
-   - At Crisis Surge (60 raw events/min): **6.0 surviving events per minute** (~1,080 events/day if sustained for multi-hour crisis periods).
-   - At Extreme Peak Burst (100 raw events/min): **10.0 surviving events per minute** (peak burst).
+1. **Stage 0 Gatekeeper Filtering (`stage0_gatekeeper.py`)**:
+   - **Layer 1 (Deterministic Regex Fast-Pass / Fast-Drop)**: Filters ~30% of incoming raw items with zero LLM calls.
+   - **Layer 2 (LLM Micro-Batching, `batch_size=6–10`)**: Evaluates remaining 70% in micro-batches.
+     - Baseline (10 raw epm): **1 to 2 micro-batch calls/min** (~45–1,200 batch calls/day).
+     - Crisis Surge (60 raw epm): **6 to 7 micro-batch calls/min**.
+   - **Empirical Drop Rate**: **90%–94.3%** of evaluated raw items are rejected as noise before Stages 1–4.
+2. **Surviving Relevant Events Entering Stages 1–4**:
+   - **Baseline**: **~0.8 to 1.0 surviving event/min** (~600–1,000 events/day).
+   - **Crisis Surge**: **~5.0 to 6.0 surviving events/min** (~1,080–2,500 events/day across multi-hour escalations).
+   - **Extreme Peak Burst**: **~10.0 surviving events/min**.
 
 ---
 
-### 5.3 Multi-Tier Load Profile Capacity & Budget Math Proofs
+### 5.3 Multi-Tier Load Profile Capacity & Budget Math Proofs (2026 Quotas)
 
-The mathematical calculations derived from empirical codebase benchmarks and adversarial evaluation (`challenger_m3_1`) prove complete rate-limit and quota compliance across all load profiles:
+#### 5.3.1 Partitioned Groq 4-Key Pool Math (`1K RPD / 8K TPM / 200K TPD` per key per model)
+With 4 keys in `GroqKeyPool`, each model has **4,000 RPD, 32,000 TPM (4 × 8,000 TPM), and 800,000 TPD (4 × 200,000 TPD)** when keys are in separate projects/orgs (or **1,000 RPD / 8,000 TPM / 200,000 TPD** per org):
+- **Stage 1 (`groq:qwen/qwen3.8-27b`)**:
+  - Dedicated 100% to Stage 1 (removed from Stage 4 Visuals).
+  - Baseline demand (~600 events/day, ~900 tokens/call with prefix caching reducing uncached input tokens by ~50%):
+    - RPD Utilization: $\frac{600}{4,000} = \mathbf{15.0\% \text{ of 4-key pool RPD}}$ (or 60% of a single org's 1,000 RPD).
+    - Effective uncached tokens/call $\approx 550\text{ tokens} \implies 600 \times 550 = \mathbf{330,000 \text{ TPD}}$ ($\mathbf{41.2\%}$ of 800K 4-key TPD; if a single-org 200K TPD cap is reached, seamlessly fails over to **`mistral:mistral-small-2603`** and **`gemini:gemma-4-31b-it`**).
+    - Surge TPM (6 events/min $\times 550$ uncached tokens): **3,300 TPM** ($\mathbf{41.2\%}$ of a single key's 8,000 TPM limit, **10.3%** of 4-key 32,000 TPM pool).
+- **Stage 3 (`groq:openai/gpt-oss-120b`)**:
+  - Dedicated to Stage 3 Summarization + Stage 5 Fallback.
+  - Baseline demand (~600 events/day, ~500 uncached tokens/call):
+    - RPD Utilization: $\frac{600}{4,000} = \mathbf{15.0\% \text{ of 4-key pool RPD}}$.
+    - TPD Utilization: $600 \times 500 = \mathbf{300,000 \text{ TPD}}$ ($\mathbf{37.5\%}$ of 800K 4-key TPD).
+    - Surge TPM (6 events/min $\times 500$ tokens): **3,000 TPM** ($\mathbf{37.5\%}$ of a single key's 8,000 TPM limit).
+- **Stage 4 (`groq:openai/gpt-oss-20b`)**:
+  - Dedicated to Stage 4 Visuals (removed from Stage 0 Gatekeeper!).
+  - Baseline demand (~600 events/day, ~400 uncached tokens/call):
+    - RPD Utilization: $\frac{600}{4,000} = \mathbf{15.0\% \text{ of 4-key pool RPD}}$.
+    - TPD Utilization: $600 \times 400 = \mathbf{240,000 \text{ TPD}}$ ($\mathbf{30.0\%}$ of 800K 4-key TPD).
 
-#### 5.3.1 Baseline Load Profile (10 incoming events/min)
-- **Groq 8B Pool (`llama-3.1-8b-instant` across 4 keys)**:
-  - Daily Capacity: $4 \times 14,400 = \mathbf{57,600 \text{ RPD}}$ and $4 \times 500,000 = \mathbf{2,000,000 \text{ TPD}}$.
-  - Actual Demand: Stage 2 Scoring + Stage 3 Summarization = **45 requests / day** (accounting for diurnal baseline patterns).
-  - Quota Utilization: $\frac{45}{57,600} = \mathbf{0.08\% \text{ of daily cap}}$ (Massive 99.92% safety headroom).
-- **Google Gemini 2.0 Flash (`gemini:gemini-2.0-flash`)**:
-  - Daily Capacity: **1,500 RPD**, 15 RPM, 1,000,000 TPM.
-  - Actual Demand: Stage 1 Extraction = **600 requests / day** (at 1.0 RPM baseline with diurnal dips).
-  - Quota Utilization: $\frac{600}{1,500} = \mathbf{40.0\% \text{ of daily cap}}$ (Well below the 1,500 RPD cap, leaving 900 calls/day headroom).
-- **Mistral AI (`mistral:ministral-3b-2512`)**:
-  - Daily Capacity: 60 RPM (1 RPS), $60 \times 60 \times 24 \approx \mathbf{86,400 \text{ calls theoretical}}$, budgeted conservative daily limit: **9,000 RPD**.
-  - Actual Demand: Stage 0 Gatekeeper micro-batches = **45 requests / day**.
-  - Quota Utilization: $\frac{45}{9,000} = \mathbf{0.50\% \text{ of daily cap}}$ (At 1.5 RPM << 60 RPM ceiling).
-- **Cloudflare Workers AI (`@cf/meta/llama-3.2-3b-instruct`)**:
-  - Daily Capacity: 300 RPM, **10,000 Neurons / day**.
-  - Metric Pricing Formula for 3B: $\approx (300 \text{ in} \times 0.0000049) + (80 \text{ out} \times 0.0000365) \approx \mathbf{0.00439 \text{ Neurons/call}}$.
-  - Actual Demand: Stage 4 Visuals = ~850 calls/day $\times 0.00439 = \mathbf{3.73 \text{ Neurons / day}}$.
-  - Quota Utilization: $\frac{3.73}{10,000} = \mathbf{0.04\% \text{ of daily Neurons}}$ (>99.9% headroom).
-- **AIHubMix Free Tier (`coding-glm-5.3-free`)**:
-  - Daily Capacity: 10 RPM (6.0s spacing), 100 RPD, 1,000,000 TPD.
-  - Actual Demand: Rolling summary every 30 minutes = **48 requests / day**.
-  - Quota Utilization: $\frac{48}{100} = \mathbf{48.0\% \text{ of daily cap}}$, spacing = 1,800s >> 6.0s.
+#### 5.3.2 Smart Mistral Tiering Math (`mistral-large-2512`, `mistral-small-2603`, `ministral-3b-2512`)
+- **Stage 0 Gatekeeper (`mistral:ministral-3b-2512`)**:
+  - Capacity: **12.5 RPS (750 RPM)**, **1,300,000 TPM**.
+  - Demand: 1.5 RPM (baseline) to 6.0 RPM (surge) = **0.2% to 0.8% of 750 RPM limit**; ~4,500 TPM = **0.35% of 1.3M TPM**.
+- **Stage 2 Scoring (`mistral:mistral-small-2603` Primary $\rightarrow$ `mistral:mistral-large-2512` Fallback 1)**:
+  - Capacity: **1.0 RPS (60 RPM)**, **500,000 TPM**.
+  - Demand: 1.0 RPM (baseline, ~600 RPD) to 6.0 RPM (surge, ~1,080 RPD) = **1.7% to 10.0% of 60 RPM limit**; ~4,800 TPM = **0.96% of 500K TPM**.
+  - Monthly Credit Sustainability: `mistral-small-2603` ($0.10/1M in, $0.30/1M out) consumes only **~$0.06/day (~$1.80/month)** for 100% of Stage 2 Scoring decisions, preserving the $10 monthly Experiment credit while delivering 24B-class reasoning on every alert threshold decision!
+- **Stage 5 Situational Summary (`mistral:mistral-large-2512` Primary)**:
+  - Demand: 48 scheduled SitReps/day (1 every 30 min) + ~5 on-demand human SitReps/day = **53 RPD** (~0.04 RPM << 60 RPM).
+  - Token volume: $53 \times 3,500\text{ tokens} \approx 185\text{K tokens/day}$, giving flagship **`mistral-large-2512`** intelligence on all executive SitReps with automatic failover to `groq:openai/gpt-oss-120b` and `aihubmix:coding-glm-5.3-free`.
 
-#### 5.3.2 Crisis Surge Load Profile (60 incoming events/min)
-- **Groq 8B Pool (`llama-3.1-8b-instant`)**:
-  - Actual Demand: $6.0 \text{ events/min} \times 60 \text{ min} = 360 \text{ calls/hour}$. Sustained surge across peak hours = **276 requests**.
-  - Quota Utilization: $\frac{276}{57,600} = \mathbf{0.48\% \text{ of daily cap}}$ (At 6.0 RPM across 4 keys = 1.5 RPM/key << 30 RPM limit).
-- **Google Gemini 2.0 Flash (`gemini:gemini-2.0-flash`)**:
-  - Actual Demand: 6.0 surviving events/min = **6.0 RPM**.
-  - Daily Surge Total: **1,080 requests / day**.
-  - Quota Utilization: $\frac{1,080}{1,500} = \mathbf{72.0\% \text{ of daily cap}}$ at $6.0 \text{ RPM} < \mathbf{15.0 \text{ RPM ceiling}}$ (**Zero 429 rate limit risk**).
-- **Mistral AI (`mistral:ministral-3b-2512`)**:
-  - Actual Demand: Micro-batching 42 events/min into 6 to 8 batches/min = **6.0 RPM** (spaced at 10.0s intervals, well within 1.0s / 1 RPS limit).
-  - Rate Limit Utilization: $\frac{6.0}{60} = \mathbf{10.0\% \text{ of 60 RPM cap}}$.
-- **Cloudflare Workers AI (`@cf/meta/llama-3.2-3b-instruct`)**:
-  - Actual Demand: $6.0 \text{ calls/min} \times 60 \text{ min} \times 24 \text{ hr} \times 0.00439 \text{ Neurons} = \mathbf{41.3 \text{ Neurons / day}}$ (under sustained surge).
-  - Quota Utilization: $\frac{41.3}{10,000} = \mathbf{0.41\% \text{ of daily Neurons}}$.
-
-#### 5.3.3 Extreme Peak Burst Profile (100 incoming events/min)
-- **Google Gemini 2.0 Flash**:
-  - 10.0 surviving events/min = **10.0 RPM**.
-  - Rate Limit Utilization: $\frac{10.0}{15.0} = \mathbf{66.7\% \text{ of 15 RPM cap}}$ (33.3% safety margin preserved even during 100 epm barrages).
-- **Groq 8B Pool**:
-  - 10.0 events/min = **10.0 RPM** (8.3% of 120 RPM 4-key pool ceiling).
-- **Mistral AI**:
-  - Micro-batching 70 events/min into 10 batches/min = **10.0 RPM** (16.7% of 60 RPM cap; 6.0s spacing >> 1.0s limit).
-- **Cloudflare Workers AI**:
-  - 10.0 calls/min = **10.0 RPM** (3.3% of 300 RPM cap).
-
----
-
-### 5.4 Outage & Fallback Resilience Proofs (Zero-Collapse Guarantees)
-
-Adversarial stress-testing of 1-hour primary provider outages proved that the updated routing matrix completely eliminates cascading failures:
-
-#### 5.4.1 Scenario A: Stage 1 Primary (Gemini) Outage for 1 Hour
-- **Failure Condition**: Google Gemini experiences a 1-hour service disruption or daily quota exhaustion.
-- **Failover Route**: Stage 1 Extraction automatically fails over to **Fallback 1: `mistral:ministral-8b-2512`** (60 RPM, 500,000 TPM limit).
-- **Elimination of Groq 6,000 TPM Choke Point**:
-  - In the previous design, Stage 1 Fallback 1 was `groq:qwen-2.5-32b` (6,000 TPM, 100,000 TPD). Under surge (6 surviving/min $\times$ 1,100 tokens/call = 6,600 TPM), Qwen exceeded Groq's 6,000 TPM limit on **minute 1** (110% overload) and depleted the entire 100k TPD cap in **15.15 minutes**.
-  - With `mistral:ministral-8b-2512`, 6,600 TPM consumes only $\frac{6,600}{500,000} = \mathbf{1.32\% \text{ of Mistral's 500k TPM allowance}}$!
-  - Over a full 1-hour sustained outage at 6 surviving/min (360 calls), Mistral consumes 396,000 tokens (well within Mistral's credit limits) and 360 calls (4.0% of conservative daily cap).
-- **Result**: **Zero TPM breaches, zero rate-limit errors, seamless 1-hour survival.**
-
-#### 5.4.2 Scenario B: Stage 2 Primary (Groq 8B Pool) Outage for 1 Hour
-- **Failure Condition**: All 4 Groq API keys encounter a simultaneous 429 cooldown or network interruption (as observed in live production telemetry).
-- **Failover Route**: Stage 2 Scoring automatically fails over to **Fallback 1: `mistral:ministral-8b-2512`** and **Fallback 2: `cloudflare:@cf/meta/llama-3.2-3b-instruct`**.
-- **Decoupling from Gemini Prevents Dual-Stage Collapse**:
-  - In the previous design, Stage 2 Fallback 1 was `gemini:gemini-2.0-flash`. Because Gemini was already primary for Stage 1, combined failover load under peak (100 epm) reached $10.0 \text{ (Stage 1)} + 10.0 \text{ (Stage 2)} = \mathbf{20.0 \text{ RPM}}$, exceeding Gemini's 15.0 RPM limit (133.3% overload) and causing instantaneous HTTP 429 cascading collapse across both stages!
-  - By decoupling Stage 2 from Gemini and routing Fallback 1 to Mistral and Fallback 2 to Cloudflare, Gemini's load remains strictly at 6.0 RPM (surge) or 10.0 RPM (peak).
-  - Mistral absorbs Stage 2 at 6.0 RPM (10% of 60 RPM cap) without stressing Stage 1.
-- **Result**: **Zero cross-stage collision, zero RPM overage on Gemini, zero pipeline collapse.**
-
-#### 5.4.3 Scenario C: Elimination of Groq 70B 100,000 TPD Depletion
-- **Failure Condition**: The previous design routed high-importance alerts (score >= 7) to `groq:llama-3.3-70b-versatile`.
-- **Proof of Vulnerability**:
-  - Live production metrics demonstrated a 10.27% critical alert rate.
-  - At 700 tokens per call (260 prompt + 340 input + 100 output JSON), baseline alerts generated:
-    $$144 \text{ alerts/day} \times 700 \text{ tokens} = \mathbf{100,800 \text{ TPD}} \quad (100.8\% \text{ of 100k cap})$$
-  - Under surge, 70B exhausted its daily cap in **3.97 hours** (604.8% daily overload). Multi-key rotation offered zero relief due to Groq's organization-wide quota enforcement.
-- **Remediation**:
-  - `llama-3.3-70b-versatile` is **completely removed from per-event alerts**.
-  - 100% of standard Stage 3 summaries are routed to `groq:llama-3.1-8b-instant` across the 4-key pool, which possesses a **2,000,000 TPD allowance** (consuming <2% of capacity).
-  - `llama-3.3-70b-versatile` is reserved exclusively for human/on-demand summaries (`summary_service`), where call volume is <10 requests/day (<7,000 TPD = <7% of cap).
-- **Result**: **Zero 70B quota exhaustion, 24/7 sustainable operational stability.**
-
----
+#### 5.3.3 Google Gemini Flash-Lite (`500 RPD` each) & Gemma 4 (`14.4K RPD / 16K TPM` each) Math
+- **`gemini-3.5-flash-lite` (500 RPD / 15 RPM / 250K TPM) & `gemini-3.1-flash-lite` (500 RPD / 15 RPM / 250K TPM)**:
+  - Previously exhausted (`504/500` and `505/500`) because `gemini-3.5-flash-lite` was Primary on Stage 2 Scoring and Fallback 1 on Stages 1, 3, and 4.
+  - By moving Stage 2 Primary to **`mistral:mistral-small-2603`** and placing `gemini-3.5-flash-lite` / `gemini-3.1-flash-lite` as precision fallbacks, their combined **1,000 RPD** budget is preserved for burst absorption (<30% daily utilization).
+- **`gemma-4-26b-a4b-it` (14,400 RPD / 30 RPM / 16K TPM) & `gemma-4-31b-it` (14,400 RPD / 30 RPM / 16K TPM)**:
+  - Combined daily capacity: **28,800 RPD** and **60 RPM** across both models.
+  - With the fixed token estimator (`1.6 chars/token` for non-Latin scripts + `1,000` thinking-token reservation) and strict **12,500 TPM** client sliding-window cap in `gemini.py`, Gemma 4 stays strictly below its **16,000 TPM** ceiling (eliminating the `26.12K / 16K` TPM burst) while providing 28,800 RPD of high-capacity fallback across all stages.
 
 ---
 
@@ -636,18 +522,18 @@ The engineering implementation is organized into four sequential, verifiable pha
 ┌────────────────────────────────────────────────────────────────────────┐
 │ Phase 1: High-Priority Fixes (Critical Bugs & Failure Modes)           │
 │   ├── Task 1.1: Root Schema Unwrapping in parser.py                    │
-│   ├── Task 1.2: Pass duration_ms in record_call Across All Providers    │
+│   ├── Task 1.2: Pass duration_ms in record_call Across All Providers   │
 │   ├── Task 1.3: Release self._db_lock Before External Network Calls    │
-│   └── Task 1.4: Correct Default Model Identifiers in Providers         │
+│   └── Task 1.4: Right-Size Groq max_tokens & Enable Prefix Caching     │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Phase 2: Quota & Rate-Limiting Hardening                               │
+│ Phase 2: Quota & Rate-Limiting Hardening (2026 Console Specs)          │
 │   ├── Task 2.1: Migrate UsageTracker to Redis Sliding Windows          │
-│   ├── Task 2.2: Enforce Verified Client-Side Pacing Constants          │
-│   ├── Task 2.3: Activate Cloudflare Token-to-Neuron Accounting         │
-│   ├── Task 2.4: Pre-Call Quota Refund in AIHubMixQuotaTracker          │
-│   └── Task 2.5: Hugging Face TEI Cold Start (HTTP 503) Handling        │
+│   ├── Task 2.2: Model-Aware Pacing for Gemini/Gemma, Mistral & Groq    │
+│   ├── Task 2.3: Per-Model Header Tracking & Proactive 8K TPM Rotation  │
+│   ├── Task 2.4: Activate Cloudflare Token-to-Neuron Accounting         │
+│   └── Task 2.5: AIHubMix Quota Refund & Embedding RPD/503 Hardening    │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -657,9 +543,9 @@ The engineering implementation is organized into four sequential, verifiable pha
 └───────────────────────────────────┬────────────────────────────────────┘
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Phase 4: Model Re-Routing & Multi-Key Optimization                     │
-│   ├── Task 4.1: Update Default Pipeline Stage Routing Matrix           │
-│   └── Task 4.2: Add Health/Rate-Limit Self-Test Suite                  │
+│ Phase 4: Smart Mistral & 2026 Quota Stage Re-Routing                   │
+│   ├── Task 4.1: Update Stage Routing Matrix (Backend + Frontend UI)    │
+│   └── Task 4.2: Add Health & Rate-Limit Self-Test Suite                │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -671,112 +557,118 @@ The engineering implementation is organized into four sequential, verifiable pha
 - **Target File**: `backend/app/pipeline/parser.py` (line 16)
 - **Target Function**: `extract_and_parse_json(raw_text: str, target_model: Type[T], fallback_factory: Optional[Callable[[], T]] = None) -> T`
 - **Exact Modification**:
-  In Tier 1, Tier 2, Tier 3, and Tier 4, immediately after `json.loads(candidate_str)`, inspect if `isinstance(data, dict)`. If `data` contains a single root key matching `target_model.__name__`, `target_model.__name__.lower()`, or snake_case conversion of `target_model.__name__`, unwrap `data = data[root_key]`.
-  Also add a fallback unwrap check: if `len(data) == 1` and the sole value is itself a `dict` containing fields required by `target_model`, unwrap that inner dictionary.
+  In Tier 1, Tier 2, Tier 3, and Tier 4, immediately after `json.loads(candidate_str)`, inspect if `isinstance(data, dict)`. If `data` contains a single root key matching `target_model.__name__`, `target_model.__name__.lower()`, or snake_case conversion of `target_model.__name__`, unwrap `data = data[root_key]` (e.g. unwrapping `{"Stage2Result": {...}}` before `Stage2Result.model_validate(data)`).
+  Also add a general single-key wrapper check: if `len(data) == 1` and the sole value is a `dict` whose keys overlap with `target_model.model_fields`, unwrap that inner dictionary.
 - **Verification Command**:
   ```powershell
-  python -c "from backend.app.pipeline.parser import extract_and_parse_json; from backend.app.pipeline.models import EventScore; raw = '{\"Stage2Result\": {\"military_importance\": 8.0, \"urgency\": 7.0, \"credibility\": 85.0, \"civil_impact\": 4.0, \"composite_score\": 72.0, \"confidence\": 0.9, \"reasoning\": \"Strategic missile silo strike verified.\"}}'; res = extract_and_parse_json(raw, EventScore); assert res.military_importance == 8.0; print('Root unwrapping verified successfully.')"
+  python -c "from backend.app.pipeline.parser import extract_and_parse_json; from backend.app.pipeline.models import Stage2Result; raw = '{\"Stage2Result\": {\"importance_score\": 8, \"score_rationale\": \"strategic escalation\"}}'; res = extract_and_parse_json(raw, Stage2Result); assert res.importance_score == 8; print('Unwrap verified.')"
   ```
 
 #### Task 1.2: Pass `duration_ms` in `record_call` Across All Provider Adapters
 - **Target Files**:
-  - `backend/app/pipeline/providers/groq.py` (lines 280–292)
-  - `backend/app/pipeline/providers/gemini.py` (lines 182–195)
-  - `backend/app/pipeline/providers/mistral.py` (lines 133–145)
-  - `backend/app/pipeline/providers/cloudflare.py` (lines 220–232)
-  - `backend/app/pipeline/providers/aihubmix.py` (lines 255–268)
+  - `backend/app/pipeline/providers/groq.py` (lines 144, 281)
+  - `backend/app/pipeline/providers/gemini.py` (line 183)
+  - `backend/app/pipeline/providers/mistral.py` (line 134)
+  - `backend/app/pipeline/providers/cloudflare.py` (line 220)
+  - `backend/app/pipeline/providers/aihubmix.py` (line 255)
 - **Exact Modification**:
-  In each provider's `generate_text` or execution method, capture `t_start = time.perf_counter()` immediately before dispatching the HTTP call. Upon response receipt, calculate `duration_ms = (time.perf_counter() - t_start) * 1000.0`. Pass `duration_ms=duration_ms` into `get_usage_tracker().record_call(...)`.
-- **Verification Command**:
-  ```powershell
-  pytest backend/tests/test_usage_tracker.py -k "test_duration" -v
-  ```
-
-#### Task 1.3: Release `self._db_lock` Before External Embedding Calls
-- **Target File**: `backend/app/pipeline/orchestrator.py`
-- **Target Method**: `PipelineOrchestrator._build_pre_stage2_context(event, res_s1, title_val, raw_text_val, ev_id, location_val, threshold)`
-- **Exact Modification**:
-  Remove `async with self._db_lock:` from lines 1061–1062. Because `_fetch_neighborhood()` already uses `async with factory() as session:` to create an isolated database session, wrapping the call in `self._db_lock` is unnecessary. If serialization of recent event queries is desired, wrap only the database session query, ensuring the external HTTP call to `compute_live_scoring_neighborhood()` executes completely outside any lock.
-- **Verification Command**:
-  ```powershell
-  pytest backend/tests/test_pipeline_e2e.py -v
-  ```
-
-#### Task 1.4: Correct Default Model Identifiers in Provider Classes
-- **Target Files**:
-  - `backend/app/pipeline/providers/gemini.py`: Change `default_model` from `"gemini-3.5-flash-lite"` to `"gemini-2.0-flash"`.
-  - `backend/app/pipeline/providers/groq.py`: Change `default_model` from `"qwen/qwen3.8-27b"` to `"llama-3.1-8b-instant"`.
-  - `backend/app/pipeline/providers/mistral.py`: Ensure `DEFAULT_MISTRAL_MODEL = "ministral-3b-2512"`.
-- **Verification Command**:
-  ```powershell
-  python -c "from backend.app.pipeline.providers.gemini import GeminiProvider; from backend.app.pipeline.providers.groq import GroqProvider; g = GeminiProvider(); assert g.default_model == 'gemini-2.0-flash'; q = GroqProvider(); assert q.default_model == 'llama-3.1-8b-instant'; print('Defaults verified.')"
-  ```
-
----
-
-### Phase 2: Quota & Rate-Limiting Hardening
-
-#### Task 2.1: Migrate `UsageTracker` Sliding Windows and Counters to Redis
-- **Target File**: `backend/app/pipeline/usage_tracker.py`
-- **Target Class**: `ProviderUsageTracker`
-- **Exact Modification**:
-  1. Add Redis connection pooling using `get_redis_bus()` from `backend/app/services/redis_bus.py`.
-  2. Implement Redis sliding window rate-limiting using sorted sets:
-     - Key: `usage:window:{provider}:{model_or_key}`
-     - Member: `f"{time.time()}:{uuid.uuid4().hex[:6]}"`, Score: `time.time()`
-     - Pipeline transaction: `ZREMRANGEBYSCORE(key, 0, now - 60.0)`, `ZADD(key, {member: now})`, `ZCARD(key)`, `EXPIRE(key, 120)`.
-  3. Store daily token and request tallies using Redis hash structures with expiration:
-     - Key: `usage:daily:{provider}:{YYYYMMDD}`
-     - Commands: `HINCRBY(key, "requests", 1)`, `HINCRBY(key, "tokens", calc_tokens)`, `EXPIRE(key, 172800)`.
-  4. Retain in-memory dictionaries as a transparent fallback if Redis is unavailable (`redis is None`).
+  Capture `t_start = time.perf_counter()` immediately before dispatching the HTTP request, compute `duration_ms = (time.perf_counter() - t_start) * 1000.0` upon response receipt, and pass `duration_ms=duration_ms` into `get_usage_tracker().record_call(...)`.
 - **Verification Command**:
   ```powershell
   pytest backend/tests/test_usage_tracker.py -v
   ```
 
-#### Task 2.2: Clamp Client-Side Sliding Window Pacing to Official Limits
-- **Target Files**:
-  - `backend/app/pipeline/providers/mistral.py:58`: Set `self.min_interval_sec = 1.0` and `self.max_rpm = 60` (enforces 1 RPS Free Experiment plan limit).
-  - `backend/app/pipeline/providers/gemini.py:53`: Set `self.min_interval_sec = 4.0` and `self.max_rpm = 15`.
-  - `backend/app/pipeline/providers/aihubmix.py:153`: Set `self.min_interval_sec = 6.0` and `self.max_rpm = 10`.
-  - `backend/app/pipeline/providers/groq.py:76`: Set `self.min_interval_sec = 0.5` and `self.max_rpm = 30` per key.
+#### Task 1.3: Release `self._db_lock` Before External Embedding Calls
+- **Target File**: `backend/app/pipeline/orchestrator.py` (lines 1042–1065)
+- **Target Method**: `PipelineOrchestrator._build_pre_stage2_context(...)`
+- **Exact Modification**:
+  Remove `async with self._db_lock:` wrapping `await asyncio.shield(_fetch_neighborhood())` so external HTTP calls to `gemini-embedding-2` / `gemini-embedding-001` / `hf-space-tei` never block database writes or concurrent pipeline workers.
 - **Verification Command**:
   ```powershell
-  pytest backend/tests/test_new_providers.py -k "test_pacing" -v
+  pytest backend/tests/test_m3_pipeline.py -v
   ```
 
-#### Task 2.3: Activate Token-to-Neuron Accounting in `CloudflareProvider`
-- **Target File**: `backend/app/pipeline/providers/cloudflare.py`
-- **Target Class**: `CloudflareProvider` & `CloudflareNeuronTracker`
+#### Task 1.4: Right-Size Groq `max_tokens` for 8K TPM & Maximize Prompt Prefix Caching
+- **Target File**: `backend/app/pipeline/providers/groq.py` (lines 238–265)
 - **Exact Modification**:
-  In `generate_text()`, calculate neurons consumed using the official formula:
-  $$\text{neurons} = (\text{prompt\_tokens} \times 0.000002457) + (\text{completion\_tokens} \times 0.000018252)$$
-  Call `self.neuron_tracker.record_neurons(neurons)`.
-  Before dispatching calls, check `if not self.neuron_tracker.has_budget(estimated_neurons): raise RateLimitError("Daily Cloudflare Neuron budget exhausted")`.
+  1. Instead of forcing `effective_max_tokens = max(max_tokens, 3072)` on every `gpt-oss` / `qwen` JSON request (which saturates the **8,000 TPM** cap in 2–3 calls), scale `effective_max_tokens` to `max(max_tokens, 1536)` for standard JSON calls (and `2560` only when `max_tokens >= 2000` such as `situation_summary`).
+  2. When `json_mode=True`, ensure the static `"Provide output strictly in valid JSON format."` directive is appended to `system_prompt` (the cached prefix) rather than mutating the end of `user_content`, preserving deterministic prefix caching on Groq (`Cached tokens do not count towards your rate limits`).
+- **Verification Command**:
+  ```powershell
+  pytest backend/tests/test_groq_key_pool.py -v
+  ```
+
+---
+
+### Phase 2: Quota & Rate-Limiting Hardening (2026 Console Specs)
+
+#### Task 2.1: Migrate `UsageTracker` Sliding Windows and Daily Quotas to Redis
+- **Target File**: `backend/app/pipeline/usage_tracker.py`
+- **Target Class**: `ProviderUsageTracker`
+- **Exact Modification**:
+  1. Persist provider, model, and key counters plus daily RPD/TPD tallies (`usage:daily:{provider}:{model}:{YYYYMMDD}`) in Redis via `get_redis_bus()` with 48h TTL (`EXPIRE 172800`), while retaining in-memory dictionaries as a fast synchronous cache and fallback when Redis is disconnected.
+  2. Enforce explicit daily RPD sentinels matching the user's live console limits:
+     - `gemini:gemini-3.5-flash-lite`: `500 RPD` (`15 RPM`, `250K TPM`)
+     - `gemini:gemini-3.1-flash-lite`: `500 RPD` (`15 RPM`, `250K TPM`)
+     - `gemini:gemma-4-26b-a4b-it`: `14,400 RPD` (`30 RPM`, `16K TPM`)
+     - `gemini:gemma-4-31b-it`: `14,400 RPD` (`30 RPM`, `16K TPM`)
+     - `groq:openai/gpt-oss-120b`, `groq:openai/gpt-oss-20b`, `groq:qwen/qwen3.8-27b`: `1,000 RPD`, `8,000 TPM`, `200,000 TPD` per key.
+- **Verification Command**:
+  ```powershell
+  pytest backend/tests/test_usage_tracker.py -v
+  ```
+
+#### Task 2.2: Model-Aware Pacing for Gemini/Gemma (`16K TPM` Fix) & Mistral (`1.0 RPS` vs `12.5 RPS`)
+- **Target Files**:
+  - `backend/app/pipeline/providers/gemini.py` (lines 50–59, 131–140)
+  - `backend/app/pipeline/providers/mistral.py` (lines 57–61, 76–112)
+- **Exact Modification**:
+  1. **In `GeminiProvider` (`gemini.py`)**:
+     - For `gemma-4-26b-a4b-it` and `gemma-4-31b-it`: Set `self.max_rpm = 28` (official limit **30 RPM**), `self.min_interval_sec = 2.1`, and `self.max_tpm = 12500` (safe margin below **16,000 TPM**).
+     - Fix token estimation for non-Latin scripts and Gemma thinking tokens: compute `non_ascii_chars = sum(1 for c in prompt_text if ord(c) > 127)`, `ascii_chars = len(prompt_text) - non_ascii_chars`, `est_input_tokens = int(ascii_chars / 3.8 + non_ascii_chars / 1.5) + 25`, and for Gemma add a conservative `+ 1100` token reservation for internal `thought` + output tokens (instead of `+ 2048` or underestimating Arabic text).
+     - For `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite`: Set `self.max_rpm = 14` (official limit **15 RPM**), `self.min_interval_sec = 4.1`, and `self.max_tpm = 220000` (official limit **250,000 TPM**).
+  2. **In `MistralProvider` (`mistral.py`)**:
+     - Make pacing model-aware based on `model_name`:
+       - `mistral-large-2512` and `mistral-small-2603` (1.0 RPS / 60 RPM): `min_interval_sec = 1.05`, `max_rpm = 55`, `max_tpm = 450000`.
+       - `ministral-8b-2512` (3.13 RPS / 187 RPM): `min_interval_sec = 0.35`, `max_rpm = 170`, `max_tpm = 550000`.
+       - `ministral-3b-2512` (12.5 RPS / 750 RPM): `min_interval_sec = 0.12`, `max_rpm = 500`, `max_tpm = 1100000`.
+- **Verification Command**:
+  ```powershell
+  pytest backend/tests/test_new_providers.py -v
+  ```
+
+#### Task 2.3: Per-Model Header Tracking & Proactive 8K TPM Key Rotation in `GroqKeyPool`
+- **Target File**: `backend/app/pipeline/providers/key_pool.py` (lines 109–160, 262–397)
+- **Exact Modification**:
+  1. Track `remaining_requests` (RPD), `remaining_tokens` (TPM), `reset_requests_sec`, and `reset_tokens_sec` **per model** (`self._model_headers[norm_model]`) in addition to the last-seen key summary, since Groq enforces limits per `(organization, model)`.
+  2. **Proactive TPM Key Rotation on HTTP 200**: Because `x-ratelimit-remaining-tokens` is **always TPM (out of 8,000)**, when an HTTP 200 response reports `rem_tokens is not None and rem_tokens < 1200` and `reset_tokens_sec > 0`, proactively set `self._model_cooldowns[norm_m] = now + min(reset_tokens_sec, 15.0)` on that key so `acquire_next_key(model=model_name)` rotates to the next healthy key in the pool *before* hitting HTTP 429!
+  3. **Accurate TPD / RPD Exhaustion Classification**: On HTTP 429, if `retry_after > 90.0` (e.g., `199s–1,042s` rolling 200K TPD / 1K RPD window lockouts observed in production) or `rem_requests == 0`, classify `is_daily = True` so telemetry accurately increments `daily_quota_exhaustions` and the orchestrator fails over immediately when all keys are locked.
+- **Verification Command**:
+  ```powershell
+  pytest backend/tests/test_groq_key_pool.py -v
+  ```
+
+#### Task 2.4: Activate Token-to-Neuron Accounting in `CloudflareProvider`
+- **Target File**: `backend/app/pipeline/providers/cloudflare.py`
+- **Exact Modification**:
+  Compute neurons consumed from `prompt_tokens` and `completion_tokens` in `generate_text()` and invoke `self.neuron_tracker.record_neurons(neurons)`. Check `has_budget()` prior to dispatch so the 10,000 Neuron/day cap is enforced.
 - **Verification Command**:
   ```powershell
   pytest backend/tests/test_new_providers.py -k "cloudflare" -v
   ```
 
-#### Task 2.4: Pre-Call Quota Refund in `AIHubMixQuotaTracker`
-- **Target File**: `backend/app/pipeline/providers/aihubmix.py`
-- **Target Methods**: `record_request()`, `refund_request()`
+#### Task 2.5: Pre-Call Quota Refund in `AIHubMixQuotaTracker` & Embedding RPD/503 Hardening
+- **Target Files**:
+  - `backend/app/pipeline/providers/aihubmix.py`
+  - `backend/app/services/embedding_service.py`
 - **Exact Modification**:
-  In `AIHubMixQuotaTracker`, note that `record_request()` only increments request count (`self._requests_today += 1`), while token tallies are recorded post-response via `record_tokens()`. Add `def refund_request(self) -> None` which decrements `self._requests_today = max(0, self._requests_today - 1)` without altering `self._tokens_today` (preventing artificial free token budget corruption). In `generate_text()`, wrap the HTTP call in a `try...except` block: if an exception occurs prior to response receipt, invoke `self.quota_tracker.refund_request()` to restore the daily request count.
+  1. Add `refund_request()` to `AIHubMixQuotaTracker` and invoke it if the HTTP request raises an exception prior to completion, and record failed/429 calls in `get_usage_tracker().record_call()`.
+  2. In `embedding_service.py`:
+     - Check `get_quota_tracker()` before calling `gemini-embedding-2` (1,000 RPD) or `gemini-embedding-001` (1,000 RPD); when a model reaches `>= 950` RPD (`962/1K` observed in prod), proactively route to the secondary model or `hf-space-tei` (`HF_EMBEDDING_URL`) without waiting for a 429.
+     - In `call_hf_tei_api()`, include header `'x-wait-for-model': 'true'` and retry on HTTP 503 using `estimated_time`.
 - **Verification Command**:
   ```powershell
-  pytest backend/tests/test_aihubmix_provider.py -v
-  ```
-
-#### Task 2.5: Hugging Face TEI Cold Start (HTTP 503) Handling
-- **Target File**: `backend/app/services/embedding_service.py`
-- **Target Method**: `call_hf_tei_api(texts: list[str])`
-- **Exact Modification**:
-  1. Add header `'x-wait-for-model': 'true'` to request headers.
-  2. If HTTP 503 is returned, parse `estimated_time = response.json().get("estimated_time", 15.0)`. Sleep for `min(estimated_time, 25.0)` seconds and retry up to 2 times before falling back to local ONNX embeddings.
-- **Verification Command**:
-  ```powershell
-  python -m pytest backend/tests/test_embeddings_map.py -v
+  pytest backend/tests/test_aihubmix_provider.py backend/tests/test_embeddings_map.py -v
   ```
 
 ---
@@ -788,13 +680,9 @@ The engineering implementation is organized into four sequential, verifiable pha
 - **Target Class**: `CircuitBreaker`
 - **Specification**:
   - **States**: `State.CLOSED` (normal operation), `State.OPEN` (failing fast, zero outbound calls), `State.HALF_OPEN` (single probe request allowed).
-  - **Configurable Thresholds**:
-    - `failure_threshold: int = 5` (consecutive 5xx errors or network timeouts).
-    - `recovery_timeout_sec: float = 60.0` (time spent in OPEN before transitioning to HALF_OPEN).
-    - `success_threshold: int = 2` (successful probe requests in HALF_OPEN before transitioning back to CLOSED).
+  - **Configurable Thresholds**: `failure_threshold: int = 4` (consecutive 5xx errors or network timeouts), `recovery_timeout_sec: float = 60.0`, `success_threshold: int = 1`.
   - **Methods**: `record_success()`, `record_failure(error: Exception)`, `can_execute() -> bool`.
 - **Verification Command**:
-  Create and execute `backend/tests/test_circuit_breaker.py`:
   ```powershell
   pytest backend/tests/test_circuit_breaker.py -v
   ```
@@ -803,44 +691,55 @@ The engineering implementation is organized into four sequential, verifiable pha
 - **Target File**: `backend/app/pipeline/orchestrator.py`
 - **Target Method**: `_execute_stage_with_fallbacks(...)`
 - **Exact Modification**:
-  Maintain a registry of `CircuitBreaker` instances keyed by provider/model.
-  Before invoking a model candidate, check `if not cb.can_execute(): skip candidate immediately`.
-  On HTTP 5xx or timeout, record failure on the circuit breaker. If circuit trips to `OPEN`, place model into orchestrator cooldown immediately.
+  Maintain a registry of `CircuitBreaker` instances keyed by `f"{provider}:{model_name}"`. Skip any candidate whose circuit is `OPEN`, record `record_success()` on completion, and record `record_failure()` on HTTP 5xx or timeout so dead endpoints trip open instead of stalling every event for 30–45s.
 - **Verification Command**:
   ```powershell
-  pytest backend/tests/test_pipeline_e2e.py -k "fallback" -v
+  pytest backend/tests/test_m3_pipeline.py -v
   ```
 
 ---
 
-### Phase 4: Model Re-Routing & Multi-Key Optimization
+### Phase 4: Smart Mistral & 2026 Quota Stage Re-Routing
 
-#### Task 4.1: Update Default Pipeline Stage Routing Matrix
+#### Task 4.1: Update Default Pipeline Stage Routing Matrix (Backend & Frontend UI)
 - **Target Files**:
-  - `backend/app/pipeline/orchestrator.py:111-160` (`_init_default_configs()`) (Initial default stage configs seeded at runtime)
-  - `backend/app/api/settings.py:24-105` (`DEFAULT_AI_STAGES` dictionary)
-  - `backend/app/config.py` (`get_settings`)
+  - `backend/app/pipeline/orchestrator.py:111-198` (`_init_default_configs()`)
+  - `backend/app/api/settings.py:24-105` (`DEFAULT_AI_STAGES`)
+  - `frontend/src/components/settings/AIConfigMatrix.tsx:42-114` (`defaultGatekeeperStage`, `defaultSituationSummaryStage`, initial state)
 - **Exact Modification**:
-  Synchronize stage configuration across `_init_default_configs()` in `orchestrator.py`, `DEFAULT_AI_STAGES` in `settings.py`, and `config.py` using canonical stage identifiers aligned with the Section 5 Routing Matrix:
-  - `gatekeeper`: Primary `mistral:ministral-3b-2512`, Fallback 1 `cloudflare:@cf/meta/llama-3.2-1b-instruct`, Fallback 2 `groq:llama-3.1-8b-instant`.
-  - `extraction`: Primary `gemini:gemini-2.0-flash`, Fallback 1 `mistral:ministral-8b-2512`, Fallback 2 `cloudflare:@cf/meta/llama-3.2-3b-instruct`.
-  - `scoring`: Primary `groq:llama-3.1-8b-instant`, Fallback 1 `mistral:ministral-8b-2512`, Fallback 2 `cloudflare:@cf/meta/llama-3.2-3b-instruct`.
-  - `summarization`: Primary `groq:llama-3.1-8b-instant`, Fallback 1 `mistral:ministral-8b-2512`, Fallback 2 `cloudflare:@cf/meta/llama-3.2-3b-instruct`.
-  - `visuals`: Primary `cloudflare:@cf/meta/llama-3.2-3b-instruct`, Fallback 1 `groq:llama-3.1-8b-instant`, Fallback 2 `mistral:ministral-3b-2512`.
-  - `situation_summary`: Primary `aihubmix:coding-glm-5.3-free`, Fallback 1 `mistral:mistral-small-latest`.
+  Synchronize default stage routing across `orchestrator.py`, `settings.py`, and `AIConfigMatrix.tsx` to use **smarter Mistral models (`mistral-large-2512` and `mistral-small-2603`) for important decisions** and partition Groq / Gemini / Gemma 4 models according to their true 2026 rate limits:
+  - **`gatekeeper` (Stage 0)**:
+    - Primary: `mistral:ministral-3b-2512`
+    - Fallbacks: `gemini:gemma-4-26b-a4b-it` $\rightarrow$ `groq:openai/gpt-oss-20b` $\rightarrow$ `cloudflare:@cf/meta/llama-3.2-1b-instruct` $\rightarrow$ `gemini:gemma-4-31b-it` $\rightarrow$ `zai:glm-4.7-flash`
+  - **`extraction` (Stage 1 — Multilingual NLP & Entities)**:
+    - Primary: `groq:qwen/qwen3.8-27b`
+    - Fallbacks: **`mistral:mistral-small-2603`** $\rightarrow$ `gemini:gemini-3.5-flash-lite` $\rightarrow$ `gemini:gemma-4-31b-it` $\rightarrow$ `gemini:gemini-3.1-flash-lite` $\rightarrow$ `cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8-fast` $\rightarrow$ `groq:openai/gpt-oss-120b`
+  - **`scoring` (Stage 2 — Critical 1–10 Importance & Alert Decision)**:
+    - Primary: **`mistral:mistral-small-2603`**
+    - Fallbacks: **`mistral:mistral-large-2512`** $\rightarrow$ `gemini:gemini-3.5-flash-lite` $\rightarrow$ `gemini:gemini-3.1-flash-lite` $\rightarrow$ `groq:openai/gpt-oss-120b` $\rightarrow$ `gemini:gemma-4-31b-it` $\rightarrow$ `groq:qwen/qwen3.8-27b`
+  - **`summarization` (Stage 3 — Tactical BLUF & Headline)**:
+    - Primary: `groq:openai/gpt-oss-120b`
+    - Fallbacks: **`mistral:mistral-small-2603`** $\rightarrow$ **`mistral:mistral-large-2512`** $\rightarrow$ `gemini:gemini-3.5-flash-lite` $\rightarrow$ `gemini:gemma-4-31b-it` $\rightarrow$ `aihubmix:coding-glm-5.3-flash-free`
+  - **`visuals` (Stage 4 — Symbology & Trend Tags)**:
+    - Primary: `groq:openai/gpt-oss-20b`
+    - Fallbacks: `gemini:gemma-4-26b-a4b-it` $\rightarrow$ `mistral:ministral-8b-2512` $\rightarrow$ `cloudflare:@cf/meta/llama-3.2-3b-instruct` $\rightarrow$ `gemini:gemini-3.1-flash-lite`
+  - **`situation_summary` (Stage 5 — Executive SitRep & Narrative Fusion)**:
+    - Primary: **`mistral:mistral-large-2512`** (or `groq:openai/gpt-oss-120b` with `mistral:mistral-large-2512` Fallback 1)
+    - Fallbacks: `groq:openai/gpt-oss-120b` $\rightarrow$ `aihubmix:coding-glm-5.3-free` $\rightarrow$ **`mistral:mistral-small-2603`** $\rightarrow$ `gemini:gemma-4-31b-it` $\rightarrow$ `gemini:gemini-3.5-flash-lite`
 - **Verification Command**:
   ```powershell
-  python -c "from backend.app.config import get_settings; from backend.app.pipeline.orchestrator import PipelineOrchestrator; p = PipelineOrchestrator(use_mock=True); assert 'extraction' in p._stage_configs; print('Settings and orchestrator stage configs verified.')"
+  pytest backend/tests/test_m3_pipeline.py backend/tests/test_summary_api.py -v
   ```
 
 #### Task 4.2: Add Health & Rate-Limit Self-Test Suite
 - **Target File**: `backend/tests/test_ai_infrastructure_health.py`
 - **Exact Content**:
   Unit tests validating:
-  1. Key pool rotation across multiple keys with simulated 429 headers.
-  2. Circuit breaker state transitions (CLOSED -> OPEN -> HALF_OPEN -> CLOSED).
-  3. Parser root-unwrapping across all stage schemas (`Stage0Result`, `ExtractedEvent`, `EventScore`, `ExecutiveSummary`, `VisualMetadata`).
-  4. Quota sentinel calculations for Cloudflare neurons and AIHubMix daily limits.
+  1. `GroqKeyPool` per-model header isolation (`x-ratelimit-remaining-requests` = RPD, `x-ratelimit-remaining-tokens` = 8K TPM) and proactive rotation when `rem_tokens < 1200`.
+  2. `GeminiProvider` model-aware pacing (`30 RPM / 12.5K TPM` for `gemma-4-26b-a4b-it` & `gemma-4-31b-it` vs `15 RPM / 250K TPM` for `gemini-3.5-flash-lite` & `gemini-3.1-flash-lite`) and non-Latin token estimation.
+  3. `MistralProvider` model-aware pacing (`1.05s` for `mistral-large-2512` & `mistral-small-2603` vs `0.12s` for `ministral-3b-2512`).
+  4. `CircuitBreaker` state transitions (`CLOSED` -> `OPEN` -> `HALF_OPEN` -> `CLOSED`).
+  5. `parser.py` root schema unwrapping (`{"Stage2Result": {...}}`) across all stage models.
 - **Verification Command**:
   ```powershell
   pytest backend/tests/test_ai_infrastructure_health.py -v

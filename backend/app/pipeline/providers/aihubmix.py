@@ -12,6 +12,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import logging
+import time
 from typing import Any, Dict, Optional, Set
 import httpx
 
@@ -80,6 +81,12 @@ class AIHubMixQuotaTracker:
                     f"({self._tokens_today}/{self.max_tpd} TPD limit reached across free models)"
                 )
             self._requests_today += 1
+
+    async def refund_request(self) -> None:
+        """Roll back a recorded request if downstream HTTP network dispatch fails."""
+        async with self._lock:
+            if self._requests_today > 0:
+                self._requests_today -= 1
 
     async def record_tokens(self, tokens_used: int) -> None:
         async with self._lock:
@@ -196,6 +203,7 @@ class AIHubMixProvider(BaseAIProvider):
 
         # Check and record request in daily quota tracker
         await self.quota_tracker.record_request()
+        request_recorded = True
 
         headers = {
             "Content-Type": "application/json",
@@ -231,22 +239,29 @@ class AIHubMixProvider(BaseAIProvider):
         async def _call() -> httpx.Response:
             return await client.post(api_endpoint, json=payload, headers=headers)
 
+        t0 = time.monotonic()
         try:
-            response = await self._execute_with_retry(_call)
-        except httpx.HTTPStatusError as http_err:
-            if json_mode and http_err.response is not None and http_err.response.status_code == 400:
-                # If strict response_format was rejected by the underlying model, retry without it
-                logger.info(f"[aihubmix:{model_name}] Retrying without strict json_object wrapper...")
-                fallback_payload = dict(payload)
-                fallback_payload.pop("response_format", None)
+            try:
+                response = await self._execute_with_retry(_call)
+            except httpx.HTTPStatusError as http_err:
+                if json_mode and http_err.response is not None and http_err.response.status_code == 400:
+                    # If strict response_format was rejected by the underlying model, retry without it
+                    logger.info(f"[aihubmix:{model_name}] Retrying without strict json_object wrapper...")
+                    fallback_payload = dict(payload)
+                    fallback_payload.pop("response_format", None)
 
-                async def _call_no_rf() -> httpx.Response:
-                    return await client.post(api_endpoint, json=fallback_payload, headers=headers)
+                    async def _call_no_rf() -> httpx.Response:
+                        return await client.post(api_endpoint, json=fallback_payload, headers=headers)
 
-                response = await self._execute_with_retry(_call_no_rf)
-            else:
-                raise
+                    response = await self._execute_with_retry(_call_no_rf)
+                else:
+                    raise
+        except Exception:
+            if request_recorded:
+                await self.quota_tracker.refund_request()
+            raise
 
+        duration_ms = (time.monotonic() - t0) * 1000.0
         res_data = response.json()
 
         # Track token consumption in daily tracker
@@ -266,6 +281,7 @@ class AIHubMixProvider(BaseAIProvider):
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                duration_ms=duration_ms,
                 success=True,
                 status_code=response.status_code,
             )

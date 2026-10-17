@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, Optional
 import httpx
 
@@ -194,6 +195,7 @@ class CloudflareProvider(BaseAIProvider):
         async def _call() -> httpx.Response:
             return await client.post(api_endpoint, json=payload, headers=headers)
 
+        t0 = time.monotonic()
         try:
             response = await self._execute_with_retry(_call)
         except httpx.HTTPStatusError as http_err:
@@ -209,11 +211,19 @@ class CloudflareProvider(BaseAIProvider):
             else:
                 raise
 
+        duration_ms = (time.monotonic() - t0) * 1000.0
         res_data = response.json()
         usage = res_data.get("usage", {})
         total_tokens = usage.get("total_tokens", 0)
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
+
+        # Record daily Neurons
+        neurons_used = float(usage.get("neurons", 0)) or (total_tokens * 0.05 if total_tokens else 5.0)
+        try:
+            await get_cloudflare_neuron_tracker().record_neurons(neurons_used)
+        except Exception as n_err:
+            logger.warning(f"[Cloudflare AI] Daily neuron budget sentinel warning: {n_err}")
 
         try:
             get_usage_tracker().record_call(
@@ -224,6 +234,7 @@ class CloudflareProvider(BaseAIProvider):
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                duration_ms=duration_ms,
                 success=True,
                 status_code=response.status_code,
             )

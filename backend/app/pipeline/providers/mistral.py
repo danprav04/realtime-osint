@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, Optional
 import httpx
 
@@ -108,6 +109,21 @@ class MistralProvider(BaseAIProvider):
         async def _call() -> httpx.Response:
             return await client.post(api_endpoint, json=payload, headers=headers)
 
+        # Tier-aware pacing based on selected Mistral model
+        is_flagship_or_small = any(m in model_name.lower() for m in ("large", "small"))
+        if is_flagship_or_small:
+            # Mistral Large / Mistral Small have a 1.0 RPS cap on Experiment tier (1.05s spacing)
+            self.min_interval_sec = 1.05
+            self.max_rpm = 57
+        elif "8b" in model_name.lower():
+            self.min_interval_sec = 0.35
+            self.max_rpm = 150
+        else:
+            # ministral-3b allows up to 12.5 RPS
+            self.min_interval_sec = 0.12
+            self.max_rpm = 300
+
+        t0 = time.monotonic()
         try:
             response = await self._execute_with_retry(_call)
         except httpx.HTTPStatusError as http_err:
@@ -124,6 +140,7 @@ class MistralProvider(BaseAIProvider):
             else:
                 raise
 
+        duration_ms = (time.monotonic() - t0) * 1000.0
         res_data = response.json()
         usage = res_data.get("usage", {})
         total_tokens = usage.get("total_tokens", 0)
@@ -139,6 +156,7 @@ class MistralProvider(BaseAIProvider):
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                duration_ms=duration_ms,
                 success=True,
                 status_code=response.status_code,
             )

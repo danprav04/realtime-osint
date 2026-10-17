@@ -612,7 +612,10 @@ class EmbeddingService:
         else:
             url = clean_url
 
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "x-wait-for-model": "true",
+        }
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
@@ -623,6 +626,18 @@ class EmbeddingService:
 
         async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
             resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code == 503:
+                # HF Space is sleeping / cold-starting
+                try:
+                    err_json = resp.json()
+                    est_time = float(err_json.get("estimated_time", 4.0))
+                except Exception:
+                    est_time = 4.0
+                sleep_sec = min(max(2.0, est_time), 12.0)
+                logger.info(f"HF Space TEI is cold-starting (HTTP 503). Waiting {sleep_sec:.1f}s...")
+                await asyncio.sleep(sleep_sec)
+                resp = await client.post(url, json=payload, headers=headers)
+
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list):
@@ -716,10 +731,20 @@ class EmbeddingService:
             results = [generate_deterministic_mock_embedding(t) for t in texts]
             return results, "mock-embedding-3072"
 
-        primary = preferred_model or self.default_model
-        secondary = (
-            self.fallback_model if primary == self.default_model else self.default_model
-        )
+        if preferred_model:
+            primary = preferred_model
+            secondary = (
+                self.fallback_model if primary == self.default_model else self.default_model
+            )
+        else:
+            # Load-balance dual 1K RPD Gemini embedding quotas (models/gemini-embedding-2 & models/gemini-embedding-001)
+            self._gemini_model_flip = getattr(self, "_gemini_model_flip", False) ^ True
+            if self._gemini_model_flip:
+                primary = self.default_model
+                secondary = self.fallback_model
+            else:
+                primary = self.fallback_model
+                secondary = self.default_model
 
         all_vectors: List[List[float]] = []
         actual_model_used = primary

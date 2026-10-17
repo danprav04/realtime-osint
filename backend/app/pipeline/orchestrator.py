@@ -112,16 +112,15 @@ class PipelineOrchestrator:
         self._stage_configs = {
             "gatekeeper": AIStageConfig(
                 stage_id="gatekeeper",
-                provider="groq",
-                model_name="openai/gpt-oss-20b",
+                provider="mistral",
+                model_name="ministral-3b-2512",
                 temperature=0.0,
                 fallbacks=[
-                    AIFallbackConfig(provider="mistral", model_name="ministral-3b-2512", temperature=0.0),
-                    AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.0),
-                    AIFallbackConfig(provider="cloudflare", model_name="@cf/meta/llama-3.2-1b-instruct", temperature=0.0),
-                    AIFallbackConfig(provider="zai", model_name="glm-4.7-flash", temperature=0.0),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.0),
+                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.0),
+                    AIFallbackConfig(provider="cloudflare", model_name="@cf/meta/llama-3.2-1b-instruct", temperature=0.0),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.0),
+                    AIFallbackConfig(provider="zai", model_name="glm-4.7-flash", temperature=0.0),
                 ],
             ),
             "extraction": AIStageConfig(
@@ -130,27 +129,26 @@ class PipelineOrchestrator:
                 model_name="qwen/qwen3.8-27b",
                 temperature=0.2,
                 fallbacks=[
+                    AIFallbackConfig(provider="mistral", model_name="mistral-small-2603", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.2),
-                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.2),
-                    AIFallbackConfig(provider="cloudflare", model_name="@cf/meta/llama-3.1-8b-instruct-fp8-fast", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
+                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.2),
                 ],
             ),
             "scoring": AIStageConfig(
                 stage_id="scoring",
-                provider="gemini",
-                model_name="gemini-3.5-flash-lite",
+                provider="mistral",
+                model_name="mistral-small-2603",
                 temperature=0.1,
                 fallbacks=[
+                    AIFallbackConfig(provider="mistral", model_name="mistral-large-2512", temperature=0.1),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.1),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
-                    AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.1),
-                    AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.1),
-                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.1),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.1),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.1),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.1),
+                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.1),
                 ],
             ),
             "summarization": AIStageConfig(
@@ -159,38 +157,35 @@ class PipelineOrchestrator:
                 model_name="openai/gpt-oss-120b",
                 temperature=0.2,
                 fallbacks=[
+                    AIFallbackConfig(provider="mistral", model_name="mistral-small-2603", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="mistral-large-2512", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.2),
-                    AIFallbackConfig(provider="groq", model_name="qwen/qwen3.8-27b", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
-                    AIFallbackConfig(provider="siliconflow", model_name="THUDM/glm-4-9b-chat", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
                     AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-flash-free", temperature=0.2),
+                    AIFallbackConfig(provider="siliconflow", model_name="THUDM/glm-4-9b-chat", temperature=0.2),
                 ],
             ),
             "visuals": AIStageConfig(
                 stage_id="visuals",
                 provider="groq",
-                model_name="qwen/qwen3.8-27b",
+                model_name="openai/gpt-oss-20b",
                 temperature=0.2,
                 fallbacks=[
-                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                     AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.2),
                     AIFallbackConfig(provider="cloudflare", model_name="@cf/meta/llama-3.2-3b-instruct", temperature=0.2),
                     AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                 ],
             ),
             "situation_summary": AIStageConfig(
                 stage_id="situation_summary",
-                provider="groq",
-                model_name="openai/gpt-oss-120b",
+                provider="mistral",
+                model_name="mistral-large-2512",
                 temperature=0.2,
                 fallbacks=[
+                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
                     AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-free", temperature=0.2),
-                    AIFallbackConfig(provider="mistral", model_name="mistral-large-2512", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="mistral", model_name="mistral-small-2603", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
                 ],
@@ -1058,8 +1053,7 @@ class PipelineOrchestrator:
                         use_mock=self.use_mock,
                     )
 
-            async with self._db_lock:
-                neighborhood = await asyncio.shield(_fetch_neighborhood())
+            neighborhood = await asyncio.shield(_fetch_neighborhood())
             if neighborhood:
                 ctx.update(neighborhood)
         except Exception as exc:

@@ -4,6 +4,7 @@ backend/app/pipeline/providers/gemini.py - Google Gemini HTTP REST Provider
 
 import json
 import logging
+import time
 from typing import Any, Dict, Optional
 import httpx
 
@@ -47,15 +48,17 @@ class GeminiProvider(BaseAIProvider):
             base_backoff_sec=base_backoff_sec,
             jitter_sec=jitter_sec,
         )
-        # Safe pacing for Gemini free tier (15 RPM limit = 4.0s minimum gap; 15 RPM & 11K TPM for gemma-4)
+        # Safe pacing for Gemini free tier:
+        # Gemma 4 models (gemma-4-26b-a4b-it, gemma-4-31b-it): 30 RPM, 16K TPM, 14.4K RPD -> 2.05s min interval, 29 RPM, 15K TPM
+        # Gemini Flash Lite models (gemini-3.5-flash-lite, gemini-3.1-flash-lite): 15 RPM, 250K TPM, 500 RPD -> 4.1s min interval, 14 RPM
         if is_gemma:
-            self.min_interval_sec = 4.0
-            self.max_rpm = 15
-            self.max_tpm = 11000  # Conservative 11K TPM limit (Google AI Studio has a 16K TPM limit)
+            self.min_interval_sec = 2.05
+            self.max_rpm = 29
+            self.max_tpm = 15000  # Conservative 15K TPM cap (Google AI Studio has a 16K TPM limit)
         else:
             self.min_interval_sec = 4.1
             self.max_rpm = 14
-            self.max_tpm = 0
+            self.max_tpm = 240000
 
     @property
     def provider_name(self) -> str:
@@ -129,8 +132,11 @@ class GeminiProvider(BaseAIProvider):
                 payload["generationConfig"]["responseMimeType"] = "application/json"
 
         prompt_chars = len(prompt) + (len(system_prompt) if system_prompt else 0)
-        est_input_tokens = int(prompt_chars / 3.5) + 15
+        # Multilingual Arabic/Hebrew/Farsi text consumes ~1.6-1.8 chars/token
+        est_input_tokens = int(prompt_chars / 1.8) + 30
         total_est_tokens = est_input_tokens + effective_max_tokens
+
+        t0 = time.monotonic()
 
         async def _call() -> httpx.Response:
             return await client.post(url, json=payload, headers=headers)
@@ -168,6 +174,7 @@ class GeminiProvider(BaseAIProvider):
             else:
                 raise
 
+        duration_ms = (time.monotonic() - t0) * 1000.0
         res_data = response.json()
 
         # Synchronize token records with actual totalTokenCount reported by Google
@@ -188,6 +195,7 @@ class GeminiProvider(BaseAIProvider):
                 prompt_tokens=prompt_tokens,
                 completion_tokens=candidates_tokens,
                 total_tokens=actual_tokens,
+                duration_ms=duration_ms,
                 success=True,
                 status_code=response.status_code,
             )

@@ -13,6 +13,67 @@ logger = logging.getLogger("osint.pipeline.parser")
 T = TypeVar("T", bound=BaseModel)
 
 
+def _try_validate(data: Any, target_model: Type[T]) -> Optional[T]:
+    """
+    Attempt to validate data into target_model with resilient envelope unwrapping.
+    Handles responses wrapped in:
+      - Class name, e.g. {"Stage2Result": {...}}
+      - Generic wrappers, e.g. {"result": {...}}, {"data": {...}}, {"output": {...}}
+      - Single-key root objects or nested dictionaries matching target model fields.
+    """
+    if not isinstance(data, (dict, list)):
+        return None
+
+    # Direct validation attempt
+    try:
+        return target_model.model_validate(data)
+    except Exception:
+        pass
+
+    if isinstance(data, dict):
+        model_name_lower = target_model.__name__.lower()
+        wrapper_candidates = [
+            model_name_lower,
+            "result",
+            "data",
+            "output",
+            "response",
+            "stage",
+            "payload",
+            "analysis",
+        ]
+
+        # 1. Check known wrapper keys (case-insensitive)
+        for k, v in data.items():
+            if str(k).lower() in wrapper_candidates and isinstance(v, (dict, list)):
+                try:
+                    return target_model.model_validate(v)
+                except Exception:
+                    pass
+
+        # 2. Check if single-key dict where value is dict or list
+        if len(data) == 1:
+            only_val = next(iter(data.values()))
+            if isinstance(only_val, (dict, list)):
+                try:
+                    return target_model.model_validate(only_val)
+                except Exception:
+                    pass
+
+        # 3. Check any nested dict value that shares fields with target_model
+        target_fields = getattr(target_model, "model_fields", None)
+        if target_fields and isinstance(target_fields, dict):
+            expected_keys = set(target_fields.keys())
+            for v in data.values():
+                if isinstance(v, dict) and (set(v.keys()) & expected_keys):
+                    try:
+                        return target_model.model_validate(v)
+                    except Exception:
+                        pass
+
+    return None
+
+
 def extract_and_parse_json(
     raw_text: str,
     target_model: Type[T],
@@ -21,9 +82,10 @@ def extract_and_parse_json(
     """
     Resiliently parse LLM output into a validated Pydantic model.
     Applies 5 tiers of parsing, stripping, sanitization, and fallback:
-      Tier 1: Direct JSON parse
+      Tier 1: Direct JSON parse + envelope unwrapping
       Tier 2: Markdown code fence stripping (```json ... ```)
       Tier 3: Outermost bracket extraction ({ ... })
+      Tier 3b: Candidate JSON blocks search
       Tier 4: Regex syntax sanitization & repair (trailing commas, quotes)
       Tier 5: Fallback factory execution
     """
@@ -37,8 +99,9 @@ def extract_and_parse_json(
     # Tier 1: Direct JSON parse
     try:
         data = json.loads(text)
-        if isinstance(data, (dict, list)):
-            return target_model.model_validate(data)
+        validated = _try_validate(data, target_model)
+        if validated is not None:
+            return validated
     except Exception:
         pass
 
@@ -47,8 +110,9 @@ def extract_and_parse_json(
     for fence in reversed(fences):
         try:
             data = json.loads(fence.strip())
-            if isinstance(data, (dict, list)):
-                return target_model.model_validate(data)
+            validated = _try_validate(data, target_model)
+            if validated is not None:
+                return validated
         except Exception:
             continue
 
@@ -58,8 +122,9 @@ def extract_and_parse_json(
         bracketed_content = bracket_match.group(1).strip()
         try:
             data = json.loads(bracketed_content)
-            if isinstance(data, (dict, list)):
-                return target_model.model_validate(data)
+            validated = _try_validate(data, target_model)
+            if validated is not None:
+                return validated
         except Exception:
             text = bracketed_content
 
@@ -68,8 +133,9 @@ def extract_and_parse_json(
     for cand in reversed(cand_blocks):
         try:
             cand_data = json.loads(cand)
-            if isinstance(cand_data, (dict, list)):
-                return target_model.model_validate(cand_data)
+            validated = _try_validate(cand_data, target_model)
+            if validated is not None:
+                return validated
         except Exception:
             continue
 
@@ -83,8 +149,9 @@ def extract_and_parse_json(
         # Convert single-quoted string values: : 'value' -> : "value"
         cleaned = re.sub(r":\s*\'([^\']*?)\'", r': "\1"', cleaned)
         data = json.loads(cleaned)
-        if isinstance(data, (dict, list)):
-            return target_model.model_validate(data)
+        validated = _try_validate(data, target_model)
+        if validated is not None:
+            return validated
     except Exception:
         pass
 
