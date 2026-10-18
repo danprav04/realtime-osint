@@ -510,7 +510,7 @@ export function ProviderUsageModal({
                           <div className="p-2.5 rounded-lg bg-surface-raised/40 border border-white/5 space-y-1.5">
                             <span className="text-[10px] font-mono uppercase font-semibold text-accent-cyan flex items-center space-x-1">
                               <Zap className="w-3 h-3" />
-                              <span>Live Provider Headers (Groq / Quota)</span>
+                              <span>Live Provider Headers ({k.provider ? k.provider.toUpperCase() : 'QUOTA'})</span>
                             </span>
                             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-zinc-300">
                               <span>
