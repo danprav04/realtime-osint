@@ -824,6 +824,11 @@ class GroqKeyPool:
     def get_keys(self) -> List[GroqKey]:
         return list(self._keys)
 
+    def has_available_key_for_model(self, model: str) -> bool:
+        """Check if at least one key in the pool is currently available for the specified model."""
+        now = _get_loop_time()
+        return any(k.is_available(now, model=model) for k in self._keys)
+
     def broadcast_model_cooldown(
         self,
         model: str,

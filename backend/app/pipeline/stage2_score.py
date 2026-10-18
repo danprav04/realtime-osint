@@ -621,7 +621,7 @@ async def run_stage2_score(
         parsed = extract_and_parse_json(
             raw_text=raw_response,
             target_model=Stage2Result,
-            fallback_factory=fallback,
+            fallback_factory=None if raise_on_error else fallback,
         )
         return calibrate_stage2_result(parsed, theme_context, effective_context, intelligence_text)
     except PermissionError:

@@ -52,6 +52,20 @@ def get_today_utc_date_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _pad_and_normalize_vector(vector: List[float], target_dim: int = 3072) -> List[float]:
+    """Pad (or truncate) an embedding vector to target_dim and L2 normalize."""
+    if not vector:
+        return [0.0] * target_dim
+    if len(vector) >= target_dim:
+        vec = [float(x) for x in vector[:target_dim]]
+    else:
+        vec = [float(x) for x in vector] + [0.0] * (target_dim - len(vector))
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm > 1e-9:
+        vec = [x / norm for x in vec]
+    return vec
+
+
 def build_embedding_document(event: Event, theme_name: Optional[str] = None) -> str:
     """
     Construct a dense, high-signal composite text representation of an event.
@@ -643,6 +657,62 @@ class EmbeddingService:
                     )
         raise RuntimeError(f"QUOTA_EXCEEDED: Exhausted retries for {model}")
 
+    async def call_mistral_batch_api(
+        self, texts: List[str], model: str = "mistral-embed-2312"
+    ) -> List[List[float]]:
+        """
+        Execute batch embedding request to Mistral AI (https://api.mistral.ai/v1/embeddings)
+        rotating across keys in MistralKeyPool and padding 1024-dim vectors to 3072-dim.
+        """
+        from backend.app.pipeline.providers.factory import get_shared_mistral_pool
+        pool = get_shared_mistral_pool()
+        if not pool or not pool.keys:
+            raise RuntimeError("No Mistral API keys configured in MistralKeyPool")
+
+        key_slot = await pool.acquire_next_key(model="mistral-embed-2312")
+        url = "https://api.mistral.ai/v1/embeddings"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key_slot.api_key}",
+        }
+        payload = {
+            "model": "mistral-embed",
+            "input": texts,
+        }
+        t0 = time.monotonic()
+        await key_slot.acquire_pacing_slot("mistral-embed-2312")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            duration_ms = (time.monotonic() - t0) * 1000.0
+            await key_slot.update_from_response(
+                resp, "mistral-embed-2312", duration_sec=duration_ms / 1000.0
+            )
+            if resp.status_code == 429:
+                key_slot.mark_rate_limited("mistral-embed-2312", delay=10.0)
+                raise RuntimeError(f"Mistral embedding rate limited: {resp.text[:200]}")
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("data", [])
+            tokens = data.get("usage", {}).get("total_tokens", sum(len(t) // 3 for t in texts))
+            try:
+                from backend.app.pipeline.usage_tracker import get_usage_tracker
+                get_usage_tracker().record_call(
+                    provider="mistral",
+                    model="mistral-embed-2312",
+                    key=key_slot.api_key,
+                    key_field="mistral_api_key",
+                    prompt_tokens=tokens,
+                    completion_tokens=0,
+                    total_tokens=tokens,
+                    duration_ms=duration_ms,
+                    success=True,
+                    status_code=200,
+                )
+            except Exception:
+                pass
+            raw_vectors = [item["embedding"] for item in items]
+            return [_pad_and_normalize_vector(v, 3072) for v in raw_vectors]
+
     async def call_hf_tei_api(
         self, texts: List[str], endpoint_url: str, api_key: Optional[str] = None
     ) -> List[List[float]]:
@@ -785,32 +855,24 @@ class EmbeddingService:
                 logger.warning(f"HF Space primary request failed ({e}), falling back to Gemini...")
 
         if not active_key or active_key.startswith("mock_"):
+            # Try Mistral fallback first if configured
+            try:
+                vectors = await self.call_mistral_batch_api(texts, model="mistral-embed-2312")
+                return vectors, "mistral-embed-2312"
+            except Exception:
+                pass
             if hf_url and not (active_key and active_key.startswith("mock_")):
                 try:
                     logger.info(f"No Gemini API key; using Hugging Face Space TEI at {hf_url}...")
                     vectors = await self.call_hf_tei_api(texts, hf_url, hf_token)
-                    return vectors, "hf-space-tei"
+                    return [_pad_and_normalize_vector(v, 3072) for v in vectors], "hf-space-tei"
                 except Exception as hf_err:
                     logger.warning(f"HF Space TEI failed ({hf_err}), using deterministic mock embeddings.")
             logger.info("Using deterministic mock embeddings (mock mode or no API key)")
             results = [generate_deterministic_mock_embedding(t) for t in texts]
             return results, "mock-embedding-3072"
 
-        if preferred_model:
-            primary = preferred_model
-            secondary = (
-                self.fallback_model if primary == self.default_model else self.default_model
-            )
-        else:
-            # Load-balance dual 1K RPD Gemini embedding quotas (models/gemini-embedding-2 & models/gemini-embedding-001)
-            self._gemini_model_flip = getattr(self, "_gemini_model_flip", False) ^ True
-            if self._gemini_model_flip:
-                primary = self.default_model
-                secondary = self.fallback_model
-            else:
-                primary = self.fallback_model
-                secondary = self.default_model
-
+        primary = preferred_model or self.default_model
         all_vectors: List[List[float]] = []
         actual_model_used = primary
 
@@ -818,59 +880,43 @@ class EmbeddingService:
         total = len(texts)
         for i in range(0, total, MAX_ITEMS_PER_BATCH):
             batch = texts[i : i + MAX_ITEMS_PER_BATCH]
-            try:
-                vectors = await self.call_gemini_batch_api(batch, primary, active_key)
-                all_vectors.extend(vectors)
-                actual_model_used = primary
-            except RuntimeError as exc:
-                if "QUOTA_EXCEEDED" in str(exc):
-                    logger.warning(
-                        f"Primary model {primary} exhausted quota, failing over to {secondary}..."
-                    )
-                    # Attempt fallback model (Gemini Embedding 1)
-                    try:
-                        vectors = await self.call_gemini_batch_api(
-                            batch, secondary, active_key
-                        )
-                        all_vectors.extend(vectors)
-                        actual_model_used = secondary
-                    except Exception as fallback_exc:
-                        logger.warning(
-                            f"Fallback model {secondary} also failed: {fallback_exc}. Checking HF Space TEI..."
-                        )
-                        # Attempt tertiary fallback: Hugging Face Space private endpoint
-                        if hf_url:
-                            try:
-                                logger.info(f"Failing over to private Hugging Face Space TEI at {hf_url}...")
-                                hf_vecs = await self.call_hf_tei_api(batch, hf_url, hf_token)
-                                all_vectors.extend(hf_vecs)
-                                actual_model_used = "hf-space-tei"
-                                continue
-                            except Exception as hf_err:
-                                logger.error(f"HF Space TEI also failed: {hf_err}")
+            batch_vectors: Optional[List[List[float]]] = None
 
-                        # Ultimate deterministic fallback
-                        all_vectors.extend(
-                            [generate_deterministic_mock_embedding(t) for t in batch]
-                        )
-                        actual_model_used = "mock-fallback"
-                else:
+            # 1. Primary: Gemini Embedding 2
+            try:
+                batch_vectors = await self.call_gemini_batch_api(batch, primary, active_key)
+                actual_model_used = primary
+            except Exception as gemini_exc:
+                logger.warning(
+                    f"Gemini embedding failed for {primary} ({gemini_exc}); failing over to Mistral mistral-embed-2312..."
+                )
+
+                # 2. Fallback 1: Mistral mistral-embed-2312 (via 4-key MistralKeyPool)
+                try:
+                    batch_vectors = await self.call_mistral_batch_api(batch, model="mistral-embed-2312")
+                    actual_model_used = "mistral-embed-2312"
+                except Exception as mistral_exc:
+                    logger.warning(
+                        f"Mistral embedding fallback failed ({mistral_exc}); checking Hugging Face Space TEI..."
+                    )
+
+                    # 3. Fallback 2: Hugging Face Space TEI
                     if hf_url:
                         try:
-                            logger.info(f"Gemini error ({exc}); failing over to HF Space TEI at {hf_url}...")
-                            hf_vecs = await self.call_hf_tei_api(batch, hf_url, hf_token)
-                            all_vectors.extend(hf_vecs)
+                            logger.info(f"Failing over to Hugging Face Space TEI at {hf_url}...")
+                            hf_raw = await self.call_hf_tei_api(batch, hf_url, hf_token)
+                            batch_vectors = [_pad_and_normalize_vector(v, 3072) for v in hf_raw]
                             actual_model_used = "hf-space-tei"
-                            continue
                         except Exception as hf_err:
                             logger.error(f"HF Space TEI also failed: {hf_err}")
-                    logger.error(
-                        f"Error in batch embedding: {exc}. Using deterministic mock fallback."
-                    )
-                    all_vectors.extend(
-                        [generate_deterministic_mock_embedding(t) for t in batch]
-                    )
-                    actual_model_used = "mock-fallback"
+
+            if batch_vectors is None:
+                # 4. Ultimate deterministic mock fallback
+                logger.warning("All external embedding providers failed; using deterministic mock fallback.")
+                batch_vectors = [generate_deterministic_mock_embedding(t) for t in batch]
+                actual_model_used = "mock-fallback"
+
+            all_vectors.extend(batch_vectors)
 
             if i + MAX_ITEMS_PER_BATCH < total:
                 await asyncio.sleep(INTER_BATCH_DELAY_SEC)
@@ -2211,11 +2257,16 @@ class EmbeddingService:
         try:
             from backend.app.services.memory_rollup_service import get_memory_rollup_service
             rollup_svc = get_memory_rollup_service()
+            loc_str = ""
+            if isinstance(location_json, dict):
+                loc_str = str(location_json.get("name") or location_json.get("country") or "").strip()
+            elif isinstance(location_json, str):
+                loc_str = location_json.strip()
             hist_res = await rollup_svc.get_historical_context_and_baselines(
                 session=session,
                 theme_id=theme_id,
-                candidate_entities=entities or [],
-                candidate_location=location_name or location_country or "",
+                candidate_entities=list(extracted_entities or []),
+                candidate_location=loc_str,
             )
             historical_context = hist_res.get("precedents", [])
             entity_baselines = hist_res.get("entity_baselines", {})

@@ -236,7 +236,7 @@ async def run_stage1_extract(
         result = extract_and_parse_json(
             raw_text=raw_response,
             target_model=Stage1Result,
-            fallback_factory=fallback,
+            fallback_factory=None if raise_on_error else fallback,
         )
         if result:
             if result.translated_title:

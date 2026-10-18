@@ -52,10 +52,25 @@ class GeminiProvider(BaseAIProvider):
         # Safe pacing for Gemini free tier:
         # Gemma 4 models (gemma-4-26b-a4b-it, gemma-4-31b-it): 30 RPM, 16K TPM, 14.4K RPD -> 2.05s min interval, 29 RPM, 15K TPM
         # Gemini Flash Lite models (gemini-3.5-flash-lite, gemini-3.1-flash-lite): 15 RPM, 250K TPM, 500 RPD -> 4.1s min interval, 14 RPM
+        # Gemini 2.5 Flash Lite: 10 RPM, 250K TPM, 20 RPD -> 6.1s min interval, 9 RPM
+        # Gemini Flash (2.5, 3, etc.): 5 RPM, 250K TPM, 20 RPD -> 12.5s min interval, 4 RPM
+        def_model_lower = (default_model or "").lower()
         if is_gemma:
             self.min_interval_sec = 2.05
             self.max_rpm = 29
             self.max_tpm = 15000  # Conservative 15K TPM cap (Google AI Studio has a 16K TPM limit)
+        elif "2.5-flash-lite" in def_model_lower:
+            self.min_interval_sec = 6.1
+            self.max_rpm = 9
+            self.max_tpm = 240000
+        elif "flash-lite" in def_model_lower:
+            self.min_interval_sec = 4.1
+            self.max_rpm = 14
+            self.max_tpm = 240000
+        elif "flash" in def_model_lower:
+            self.min_interval_sec = 12.5
+            self.max_rpm = 4
+            self.max_tpm = 240000
         else:
             self.min_interval_sec = 4.1
             self.max_rpm = 14
@@ -133,9 +148,16 @@ class GeminiProvider(BaseAIProvider):
                 payload["generationConfig"]["responseMimeType"] = "application/json"
 
         prompt_chars = len(prompt) + (len(system_prompt) if system_prompt else 0)
-        # Multilingual Arabic/Hebrew/Farsi text consumes ~1.6-1.8 chars/token
-        est_input_tokens = int(prompt_chars / 1.8) + 30
-        total_est_tokens = est_input_tokens + effective_max_tokens
+        if is_gemma:
+            # Gemma 4 token estimation: realistic chars-per-token (~3.5 chars/tok)
+            # plus output tokens capped at min(effective_max_tokens, 600) rather than assuming full 2048 budget,
+            # preventing false >15,000 TPM pacing sleeps on consecutive calls
+            est_input_tokens = int(prompt_chars / 3.5) + 30
+            total_est_tokens = est_input_tokens + min(effective_max_tokens, 600)
+        else:
+            # Multilingual Arabic/Hebrew/Farsi text consumes ~1.6-1.8 chars/token
+            est_input_tokens = int(prompt_chars / 1.8) + 30
+            total_est_tokens = est_input_tokens + effective_max_tokens
 
         t0 = time.monotonic()
 

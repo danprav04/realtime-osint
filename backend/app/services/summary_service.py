@@ -345,12 +345,12 @@ class SituationSummaryService:
                 cached_model = payload.get("active_ai_model")
                 orchestrator = get_pipeline_orchestrator()
                 if not orchestrator.use_mock and total_events_count > 0:
-                    sum_cfg = orchestrator.get_stage_config("summarization")
+                    sum_cfg = orchestrator.get_stage_config("situation_summary")
                     primary_key = f"{sum_cfg.provider}:{sum_cfg.model_name}"
                     if (
                         cached_model
                         and cached_model != primary_key
-                        and orchestrator.get_cooldown_remaining(primary_key) <= 0.0
+                        and not orchestrator.is_model_in_cooldown(sum_cfg.provider, sum_cfg.model_name)
                     ):
                         logger.info(
                             f"Cached summary used fallback model ({cached_model}); "

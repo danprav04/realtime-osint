@@ -220,9 +220,7 @@ class AIHubMixProvider(BaseAIProvider):
 
         messages.append({"role": "user", "content": user_content})
 
-        # Reasoning models (e.g. coding-glm-5.3, coding-minimax-m3, nemotron) consume completion tokens
-        # for internal reasoning_content before emitting final content.
-        effective_max_tokens = max(max_tokens, 2048 if json_mode else 1024)
+        effective_max_tokens = max_tokens if max_tokens > 0 else (2048 if json_mode else 1024)
 
         payload: Dict[str, Any] = {
             "model": model_name,
@@ -256,9 +254,27 @@ class AIHubMixProvider(BaseAIProvider):
                     response = await self._execute_with_retry(_call_no_rf)
                 else:
                     raise
-        except Exception:
+        except Exception as exc:
             if request_recorded:
                 await self.quota_tracker.refund_request()
+            duration_ms = (time.monotonic() - t0) * 1000.0
+            status_code = getattr(getattr(exc, "response", None), "status_code", 429 if "429" in str(exc) else 500)
+            try:
+                get_usage_tracker().record_call(
+                    provider="aihubmix",
+                    model=model_name,
+                    key=self.api_key,
+                    key_field="aihubmix_api_key",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                    duration_ms=duration_ms,
+                    success=False,
+                    status_code=status_code,
+                    error=str(exc)[:200],
+                )
+            except Exception:
+                pass
             raise
 
         duration_ms = (time.monotonic() - t0) * 1000.0

@@ -200,7 +200,7 @@ async def run_stage4_visuals(
         result = extract_and_parse_json(
             raw_text=raw_response,
             target_model=Stage4Result,
-            fallback_factory=fallback,
+            fallback_factory=None if raise_on_error else fallback,
         )
         if not result.trend_category or not result.cluster_tags:
             fb = fallback()

@@ -192,7 +192,7 @@ async def run_stage3_summary(
         result = extract_and_parse_json(
             raw_text=raw_response,
             target_model=Stage3Result,
-            fallback_factory=fallback,
+            fallback_factory=None if raise_on_error else fallback,
         )
         if not result.headline or not result.summary:
             fb = fallback()

@@ -345,7 +345,7 @@ class Stage0Gatekeeper:
             parsed = extract_and_parse_json(
                 raw_text=raw_resp,
                 target_model=Stage0BatchResult,
-                fallback_factory=heuristic_fallback,
+                fallback_factory=None if raise_on_error else heuristic_fallback,
             )
             valid_indices = [i for i in parsed.keep if isinstance(i, int) and 0 <= i < len(chunk)]
             return valid_indices

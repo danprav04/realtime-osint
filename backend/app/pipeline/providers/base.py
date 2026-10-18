@@ -216,7 +216,22 @@ def classify_rate_limit_429(
     # Classify whether this is a Daily Quota lockout vs a Minute Rate Limit
     if has_daily_indicator and not has_minute_indicator:
         is_daily = True
-        reason = f"daily quota exhausted ({', '.join(quota_ids) or error_message[:80] or 'RPD/TPD'})"
+        # For Google Gemini, daily quotas (GenerateRequestsPerDay) reset at midnight Pacific Time.
+        # Google often sends a bogus retryDelay of ~21s which would cause continuous failed retries.
+        if (provider_name or "").lower() == "gemini":
+            from datetime import datetime, timezone, timedelta
+            try:
+                from zoneinfo import ZoneInfo
+                now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
+            except Exception:
+                now_pt = datetime.now(timezone(timedelta(hours=-7)))
+            tomorrow = now_pt.date() + timedelta(days=1)
+            midnight = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=now_pt.tzinfo)
+            daily_wait = max(3600.0, (midnight - now_pt).total_seconds())
+            retry_delay = daily_wait
+            reason = f"daily quota exhausted ({', '.join(quota_ids) or 'GenerateRequestsPerDay'}, reset in {daily_wait/3600:.1f}h at midnight PT)"
+        else:
+            reason = f"daily quota exhausted ({', '.join(quota_ids) or error_message[:80] or 'RPD/TPD'})"
     elif retry_delay is not None and retry_delay > 95.0 and not has_minute_indicator:
         is_daily = True
         reason = f"long quota lockout ({retry_delay:.0f}s)"
@@ -389,6 +404,15 @@ class BaseAIProvider(abc.ABC):
                 self._token_records.append(token_record)
             return token_record
 
+    def rollback_token_record(self, record_ref: Optional[List[Any]]) -> None:
+        """Roll back an estimated token reservation if the request failed or timed out."""
+        if record_ref is not None:
+            record_ref[1] = 0
+            try:
+                self._token_records.remove(record_ref)
+            except ValueError:
+                pass
+
     def update_last_token_record(self, actual_tokens: int, record_ref: Optional[List[Any]] = None) -> None:
         """Update the estimated token record with the actual token usage reported by the API."""
         if actual_tokens > 0:
@@ -413,6 +437,7 @@ class BaseAIProvider(abc.ABC):
 
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
+            token_record: Optional[List[Any]] = None
             try:
                 token_record = await self._acquire_pacing_slot(estimated_tokens=estimated_tokens)
 
@@ -428,6 +453,8 @@ class BaseAIProvider(abc.ABC):
 
                     # If daily quota (RPD/TPD) is exhausted, fail fast immediately to trigger fallback model
                     if is_daily_quota:
+                        if token_record is not None:
+                            self.rollback_token_record(token_record)
                         logger.warning(
                             f"[{self.provider_name}:{self.default_model}] Daily quota exhausted ({reason}). "
                             f"Failing over immediately."
@@ -442,11 +469,13 @@ class BaseAIProvider(abc.ABC):
                             )
                         else:
                             raise RuntimeError(
-                                f"Groq RateLimitError: 429 Rate limit reached ({reason})"
+                                f"{self.provider_name.capitalize()} RateLimitError: 429 Rate limit reached ({reason})"
                             )
 
                     # Otherwise, this is only a per-minute rate limit (RPM/TPM)
                     if attempt == self.max_retries:
+                        if token_record is not None:
+                            self.rollback_token_record(token_record)
                         if self.provider_name.lower() == "gemini":
                             raise RuntimeError(
                                 f"Gemini ResourceExhausted: 429 Quota Exceeded ({reason})"
@@ -457,11 +486,13 @@ class BaseAIProvider(abc.ABC):
                             )
                         else:
                             raise RuntimeError(
-                                f"Groq RateLimitError: 429 Rate limit reached ({reason})"
+                                f"{self.provider_name.capitalize()} RateLimitError: 429 Rate limit reached ({reason})"
                             )
 
                     # If the rate limit requires a long wait (>30s), fail fast to let orchestrator switch models
                     if retry_delay_sec is not None and retry_delay_sec > 30.0:
+                        if token_record is not None:
+                            self.rollback_token_record(token_record)
                         logger.warning(
                             f"[{self.provider_name}:{self.default_model}] 429 requires long wait ({retry_delay_sec:.1f}s > 30s) - failing over immediately"
                         )
@@ -475,7 +506,7 @@ class BaseAIProvider(abc.ABC):
                             )
                         else:
                             raise RuntimeError(
-                                f"Groq RateLimitError: 429 Minute rate limit requires long wait ({retry_delay_sec:.1f}s > 30s) ({reason})"
+                                f"{self.provider_name.capitalize()} RateLimitError: 429 Minute rate limit requires long wait ({retry_delay_sec:.1f}s > 30s) ({reason})"
                             )
 
                     now = asyncio.get_event_loop().time()
@@ -566,6 +597,8 @@ class BaseAIProvider(abc.ABC):
                 return response
 
             except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as net_err:
+                if token_record is not None:
+                    self.rollback_token_record(token_record)
                 last_error = net_err
                 err_label = "ReadTimeout" if isinstance(net_err, httpx.ReadTimeout) else str(net_err)
                 if isinstance(net_err, httpx.ReadTimeout) or attempt == self.max_retries:
@@ -574,5 +607,9 @@ class BaseAIProvider(abc.ABC):
                     )
                 delay = self.base_backoff * (2 ** attempt) + random.uniform(0.1, self.jitter)
                 await asyncio.sleep(delay)
+            except Exception:
+                if token_record is not None:
+                    self.rollback_token_record(token_record)
+                raise
 
         raise RuntimeError(f"[{self.provider_name}] Failed: {last_error}")

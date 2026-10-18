@@ -99,7 +99,7 @@ class PipelineOrchestrator:
         self._reload_subscribed: bool = False
         self._model_cooldowns: Dict[str, float] = {}
         from backend.app.pipeline.stage0_gatekeeper import Stage0Gatekeeper
-        self._gatekeeper = Stage0Gatekeeper(batch_size=6)
+        self._gatekeeper = Stage0Gatekeeper(batch_size=8)
 
         # Seed initial default stage configs
         self._init_default_configs()
@@ -116,11 +116,10 @@ class PipelineOrchestrator:
                 model_name="ministral-3b-2512",
                 temperature=0.0,
                 fallbacks=[
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.0),
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.0),
-                    AIFallbackConfig(provider="cloudflare", model_name="@cf/meta/llama-3.2-1b-instruct", temperature=0.0),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.0),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.0),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.0),
-                    AIFallbackConfig(provider="zai", model_name="glm-4.7-flash", temperature=0.0),
                 ],
             ),
             "extraction": AIStageConfig(
@@ -129,26 +128,22 @@ class PipelineOrchestrator:
                 model_name="qwen/qwen3.8-27b",
                 temperature=0.2,
                 fallbacks=[
-                    AIFallbackConfig(provider="mistral", model_name="ministral-14b-2512", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
-                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.2),
                 ],
             ),
             "scoring": AIStageConfig(
                 stage_id="scoring",
                 provider="mistral",
-                model_name="ministral-14b-2512",
+                model_name="codestral-2508",
                 temperature=0.1,
                 fallbacks=[
-                    AIFallbackConfig(provider="mistral", model_name="codestral-2508", temperature=0.1),
-                    AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.1),
+                    AIFallbackConfig(provider="mistral", model_name="ministral-14b-2512", temperature=0.1),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.1),
-                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.1),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.1),
-                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.1),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.1),
+                    AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-free", temperature=0.1),
                 ],
             ),
             "summarization": AIStageConfig(
@@ -158,11 +153,9 @@ class PipelineOrchestrator:
                 temperature=0.2,
                 fallbacks=[
                     AIFallbackConfig(provider="mistral", model_name="ministral-14b-2512", temperature=0.2),
-                    AIFallbackConfig(provider="mistral", model_name="codestral-2508", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="mistral-large-2512", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
-                    AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-flash-free", temperature=0.2),
-                    AIFallbackConfig(provider="siliconflow", model_name="THUDM/glm-4-9b-chat", temperature=0.2),
+                    AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-free", temperature=0.2),
                 ],
             ),
             "visuals": AIStageConfig(
@@ -171,23 +164,21 @@ class PipelineOrchestrator:
                 model_name="openai/gpt-oss-20b",
                 temperature=0.2,
                 fallbacks=[
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
                     AIFallbackConfig(provider="mistral", model_name="ministral-8b-2512", temperature=0.2),
-                    AIFallbackConfig(provider="cloudflare", model_name="@cf/meta/llama-3.2-3b-instruct", temperature=0.2),
-                    AIFallbackConfig(provider="siliconflow", model_name="Qwen/Qwen2.5-7B-Instruct", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemma-4-26b-a4b-it", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
                 ],
             ),
             "situation_summary": AIStageConfig(
                 stage_id="situation_summary",
-                provider="mistral",
-                model_name="ministral-14b-2512",
+                provider="aihubmix",
+                model_name="coding-glm-5.3-free",
                 temperature=0.2,
                 fallbacks=[
-                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
-                    AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-free", temperature=0.2),
-                    AIFallbackConfig(provider="mistral", model_name="codestral-2508", temperature=0.2),
-                    AIFallbackConfig(provider="gemini", model_name="gemma-4-31b-it", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="mistral-large-2512", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="labs-leanstral-1-5-1", temperature=0.2),
+                    AIFallbackConfig(provider="mistral", model_name="ministral-14b-2512", temperature=0.2),
+                    AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                 ],
             ),
         }
@@ -756,6 +747,16 @@ class PipelineOrchestrator:
                 )
                 continue
 
+            if not self.use_mock and p_name in ("cloudflare", "cf", "workers_ai", "workers-ai") and idx < len(candidates) - 1:
+                st = get_settings()
+                cf_acc = getattr(st, "CLOUDFLARE_ACCOUNT_ID", None) or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+                if not cf_acc:
+                    logger.debug(
+                        f"[Pipeline Fallback] Stage '{stage_id}': Skipping candidate #{idx} "
+                        f"('{p_name}:{m_name}') because CLOUDFLARE_ACCOUNT_ID is not configured."
+                    )
+                    continue
+
             try:
                 provider_inst = self._registry.get_provider(
                     provider=p_name,
@@ -823,6 +824,10 @@ class PipelineOrchestrator:
                             "(tpm)",
                             "requests per minute",
                             "tokens per minute",
+                            "model rate limit",
+                            "tokens exhausted",
+                            "model rps limit",
+                            "rps limit",
                         )
                     )
                     and not any(
@@ -835,6 +840,10 @@ class PipelineOrchestrator:
                             "(tpd)",
                             "requests per day",
                             "tokens per day",
+                            "monthly",
+                            "allowance",
+                            "balance",
+                            "insufficient_quota",
                         )
                     )
                 )
@@ -884,17 +893,32 @@ class PipelineOrchestrator:
                         err_str = str(exc).lower()
 
                 if is_rate_limit and not is_minute_only:
-                    cd_duration = 60.0
-                    m_retry = re.search(
-                        r"(?:retry-after|retry in|try again in|reset in)\s+([0-9.]+(?:\s*(?:ms|s|sec|secs|m|min|mins|h|hr|hrs))+)",
-                        err_str,
-                        re.IGNORECASE,
-                    )
-                    if m_retry:
-                        parsed_cd = parse_duration_seconds(m_retry.group(1))
-                        if parsed_cd and parsed_cd > 0:
-                            cd_duration = max(5.0, min(86400.0, parsed_cd))
-                    self.mark_model_cooldown(p_name, m_name, duration_sec=cd_duration)
+                    pool_has_keys = False
+                    if p_name == "groq":
+                        try:
+                            from backend.app.pipeline.providers.factory import get_shared_groq_pool
+                            pool_has_keys = get_shared_groq_pool().has_available_key_for_model(m_name)
+                        except Exception:
+                            pass
+                    elif p_name in ("mistral", "mistralai"):
+                        try:
+                            from backend.app.pipeline.providers.factory import get_shared_mistral_pool
+                            pool_has_keys = get_shared_mistral_pool().has_available_key_for_model(m_name)
+                        except Exception:
+                            pass
+
+                    if not pool_has_keys:
+                        cd_duration = 60.0
+                        m_retry = re.search(
+                            r"(?:retry-after|retry in|try again in|reset in)\s+([0-9.]+(?:\s*(?:ms|s|sec|secs|m|min|mins|h|hr|hrs))+)",
+                            err_str,
+                            re.IGNORECASE,
+                        )
+                        if m_retry:
+                            parsed_cd = parse_duration_seconds(m_retry.group(1))
+                            if parsed_cd and parsed_cd > 0:
+                                cd_duration = max(5.0, min(86400.0, parsed_cd))
+                        self.mark_model_cooldown(p_name, m_name, duration_sec=cd_duration)
                 elif is_gemma_tpm_saturation:
                     self.mark_model_cooldown(p_name, m_name, duration_sec=30.0)
 
@@ -967,6 +991,11 @@ class PipelineOrchestrator:
                     and (
                         resolve_api_key("gemini", gk_cfg.api_key_override, self._db_api_keys)
                         or resolve_api_key("groq", gk_cfg.api_key_override, self._db_api_keys)
+                        or resolve_api_key("mistral", gk_cfg.api_key_override, self._db_api_keys)
+                        or resolve_api_key("aihubmix", gk_cfg.api_key_override, self._db_api_keys)
+                        or resolve_api_key("cloudflare", gk_cfg.api_key_override, self._db_api_keys)
+                        or resolve_api_key("zai", gk_cfg.api_key_override, self._db_api_keys)
+                        or resolve_api_key("siliconflow", gk_cfg.api_key_override, self._db_api_keys)
                     )
                 )
             )

@@ -91,6 +91,10 @@ def setup_application_logging() -> None:
     if buffer_handler not in root.handlers:
         root.addHandler(buffer_handler)
 
+    # Suppress verbose HTTP client logs to protect against bot token leakage in stdout
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 setup_application_logging()
 logger = logging.getLogger("osint.main")

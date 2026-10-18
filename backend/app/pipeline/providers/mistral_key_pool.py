@@ -148,6 +148,10 @@ class MistralKey:
         self.monthly_allowance_usd: float = monthly_allowance_usd
         self.jitter_margin_sec: float = jitter_margin_sec
 
+    @property
+    def api_key(self) -> str:
+        return self.key
+
         self._pacing_lock = asyncio.Lock()
         self._last_request_time: float = 0.0
         self._last_request_by_model: Dict[str, float] = {}
