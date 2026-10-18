@@ -262,8 +262,8 @@ export const PROVIDER_RATE_LIMITS: ProviderRateLimitInfo[] = [
     rateLimitUrl: 'https://console.mistral.ai/limits/',
     usageUrl: 'https://console.mistral.ai/usage/',
     docsUrl: 'https://docs.mistral.ai/api/',
-    quotaSummary: '12.5 RPS • $10 Allowance • Ministral',
-    keyFields: ['mistral_api_key'],
+    quotaSummary: '12.5 RPS • $10/mo/Key (Multi-Key Rotated)',
+    keyFields: ['mistral_api_key', 'mistral_api_keys'],
     description: 'Mistral La Plateforme free tier allowance and high-throughput Ministral endpoints',
   },
   {

@@ -612,11 +612,81 @@ class ProviderUsageTracker:
                             if "model_cooldowns" in pool_match:
                                 k["model_cooldowns"] = pool_match["model_cooldowns"]
 
+            # Synchronize with live MistralKeyPool keys
+            mistral_keys_raw = resolve_api_keys("mistral", db_keys=effective_db_keys, settings=st)
+            for idx, raw_k in enumerate(mistral_keys_raw):
+                k_fp = _hash_key(raw_k)
+                pool_match = next((pk for pk in mistral_pool_keys if pk.get("masked_key") == mask_key(raw_k)), None)
+                if k_fp not in seen_key_fingerprints:
+                    seen_key_fingerprints.add(k_fp)
+                    total_req = pool_match.get("total_requests", 0) if pool_match else 0
+                    succ_req = pool_match.get("success_requests", 0) if pool_match else 0
+                    rem_req = pool_match.get("remaining_requests") if pool_match else None
+                    rem_tok = pool_match.get("remaining_tokens") if pool_match else None
+                    lim_req = pool_match.get("limit_requests") if pool_match else None
+                    lim_tok = pool_match.get("limit_tokens") if pool_match else None
+                    rst_req = pool_match.get("reset_requests_sec") if pool_match else None
+                    rst_tok = pool_match.get("reset_tokens_sec") if pool_match else None
+                    cd_sec = pool_match.get("cooldown_remaining_sec", 0.0) if pool_match else 0.0
+                    cd_rsn = pool_match.get("cooldown_reason", "") if pool_match else ""
+                    last_used = pool_match.get("last_used_at") if pool_match else None
+                    st_val = pool_match.get("status", "active") if pool_match else "active"
+
+                    keys_list.append({
+                        "key_hash": k_fp,
+                        "masked_key": mask_key(raw_k),
+                        "key_field": "mistral_api_key",
+                        "key_index": idx,
+                        "provider": "mistral",
+                        "status": st_val,
+                        "total_requests": total_req,
+                        "successful_requests": succ_req,
+                        "failed_requests": max(0, total_req - succ_req),
+                        "rate_limited_count": pool_match.get("minute_rate_limits", 0) if pool_match else 0,
+                        "success_rate_pct": round((succ_req / total_req * 100), 1) if total_req > 0 else 100.0,
+                        "total_tokens": 0,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "last_used_at": last_used,
+                        "remaining_requests": rem_req,
+                        "remaining_tokens": rem_tok,
+                        "limit_requests": lim_req,
+                        "limit_tokens": lim_tok,
+                        "reset_requests_sec": rst_req,
+                        "reset_tokens_sec": rst_tok,
+                        "cooldown_remaining_sec": cd_sec,
+                        "cooldown_reason": cd_rsn,
+                        "throttled_models": pool_match.get("throttled_models", []) if pool_match else [],
+                        "model_cooldowns": pool_match.get("model_cooldowns", {}) if pool_match else {},
+                    })
+                elif pool_match:
+                    for k in keys_list:
+                        if k["key_hash"] == k_fp:
+                            if pool_match.get("remaining_requests") is not None:
+                                k["remaining_requests"] = pool_match["remaining_requests"]
+                            if pool_match.get("remaining_tokens") is not None:
+                                k["remaining_tokens"] = pool_match["remaining_tokens"]
+                            if pool_match.get("limit_requests") is not None:
+                                k["limit_requests"] = pool_match["limit_requests"]
+                            if pool_match.get("limit_tokens") is not None:
+                                k["limit_tokens"] = pool_match["limit_tokens"]
+                            if pool_match.get("reset_requests_sec") is not None:
+                                k["reset_requests_sec"] = pool_match["reset_requests_sec"]
+                            if pool_match.get("reset_tokens_sec") is not None:
+                                k["reset_tokens_sec"] = pool_match["reset_tokens_sec"]
+                            if pool_match.get("cooldown_remaining_sec", 0.0) > 0:
+                                k["cooldown_remaining_sec"] = pool_match["cooldown_remaining_sec"]
+                                k["cooldown_reason"] = pool_match.get("cooldown_reason", "")
+                                k["status"] = pool_match.get("status", "minute_cooldown")
+                            if "throttled_models" in pool_match:
+                                k["throttled_models"] = pool_match["throttled_models"]
+                            if "model_cooldowns" in pool_match:
+                                k["model_cooldowns"] = pool_match["model_cooldowns"]
+
             # Check other providers configured in db_keys or environment
             single_key_providers = [
                 ("gemini", "gemini_api_key", effective_db_keys.get("gemini_api_key") or getattr(st, "GEMINI_API_KEY", None) or os.environ.get("GEMINI_API_KEY")),
                 ("aihubmix", "aihubmix_api_key", effective_db_keys.get("aihubmix_api_key") or getattr(st, "AIHUBMIX_API_KEY", None) or os.environ.get("AIHUBMIX_API_KEY")),
-                ("mistral", "mistral_api_key", effective_db_keys.get("mistral_api_key") or getattr(st, "MISTRAL_API_KEY", None) or os.environ.get("MISTRAL_API_KEY")),
                 ("cloudflare", "cloudflare_api_token", effective_db_keys.get("cloudflare_api_token") or getattr(st, "CLOUDFLARE_API_TOKEN", None) or os.environ.get("CLOUDFLARE_API_TOKEN") or getattr(st, "CLOUDFLARE_API_KEY", None) or os.environ.get("CLOUDFLARE_API_KEY")),
                 ("zai", "zai_api_key", effective_db_keys.get("zai_api_key") or getattr(st, "ZAI_API_KEY", None) or os.environ.get("ZAI_API_KEY")),
                 ("siliconflow", "siliconflow_api_key", effective_db_keys.get("siliconflow_api_key") or getattr(st, "SILICONFLOW_API_KEY", None) or os.environ.get("SILICONFLOW_API_KEY")),

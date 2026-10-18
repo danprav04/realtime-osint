@@ -73,7 +73,10 @@ class Settings(BaseSettings):
 
     def get_groq_api_keys(self) -> List[str]:
         """Return parsed, deduplicated list of Groq API keys from config/env."""
-        raw = self.GROQ_API_KEYS or self.GROQ_API_KEY or os.environ.get("GROQ_API_KEYS") or os.environ.get("GROQ_API_KEY")
+        if hasattr(self, "__pydantic_fields_set__") and "groq_api_key" in self.__pydantic_fields_set__ and "groq_api_keys" not in self.__pydantic_fields_set__:
+            raw = self.GROQ_API_KEY
+        else:
+            raw = self.GROQ_API_KEYS or self.GROQ_API_KEY or os.environ.get("GROQ_API_KEYS") or os.environ.get("GROQ_API_KEY")
         if not raw:
             return []
         items = [k.strip() for k in str(raw).replace("\r", "\n").replace(",", "\n").split("\n")]
