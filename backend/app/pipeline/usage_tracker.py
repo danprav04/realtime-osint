@@ -145,9 +145,35 @@ class ProviderUsageTracker:
                 m_stats["last_error"] = str(error_message or f"HTTP {status_code}")
             if is_rate_limit:
                 m_stats["rate_limited_count"] += 1
-                if cooldown_sec and float(cooldown_sec) > 0:
+                pool_has_keys = False
+                short_m = m_norm.split("/")[-1] if "/" in m_norm else m_norm
+                if p_norm == "groq":
+                    try:
+                        from backend.app.pipeline.providers.factory import get_shared_groq_pool
+                        p_obj = get_shared_groq_pool()
+                        if p_obj and p_obj.get_keys():
+                            pool_keys = {k.key for k in p_obj.get_keys()}
+                            if not key or key in pool_keys:
+                                pool_has_keys = p_obj.has_available_key_for_model(m_norm) or p_obj.has_available_key_for_model(short_m)
+                    except Exception:
+                        pass
+                elif p_norm in ("mistral", "mistralai"):
+                    try:
+                        from backend.app.pipeline.providers.factory import get_shared_mistral_pool
+                        m_obj = get_shared_mistral_pool()
+                        if m_obj and m_obj.get_keys():
+                            pool_keys = {k.key for k in m_obj.get_keys()}
+                            if not key or key in pool_keys:
+                                pool_has_keys = m_obj.has_available_key_for_model(m_norm) or m_obj.has_available_key_for_model(short_m)
+                    except Exception:
+                        pass
+
+                if not pool_has_keys and cooldown_sec and float(cooldown_sec) > 0:
                     m_stats["cooldown_remaining_sec"] = round(float(cooldown_sec), 1)
                     m_stats["cooldown_until_ts"] = now_loop + float(cooldown_sec)
+                else:
+                    m_stats["cooldown_remaining_sec"] = 0.0
+                    m_stats["cooldown_until_ts"] = 0.0
             m_stats["total_tokens"] += calc_tokens
             m_stats["prompt_tokens"] += prompt_tokens
             m_stats["completion_tokens"] += completion_tokens
@@ -320,30 +346,54 @@ class ProviderUsageTracker:
         # 3. Pull live GroqKeyPool keys & model cooldowns
         groq_pool_keys: List[Dict[str, Any]] = []
         groq_model_cooldowns: Dict[str, float] = {}
+        pool = None
         try:
             pool = get_shared_groq_pool()
             groq_tel = pool.get_telemetry()
             groq_pool_keys = groq_tel.get("keys", [])
+            all_groq_models = set()
             for pk in groq_pool_keys:
-                for m_k, cd_info in pk.get("model_cooldowns", {}).items():
-                    cd_val = cd_info.get("cooldown_remaining_sec", 0.0) if isinstance(cd_info, dict) else float(cd_info)
-                    if cd_val > groq_model_cooldowns.get(m_k, 0.0):
-                        groq_model_cooldowns[m_k] = cd_val
+                all_groq_models.update(pk.get("model_cooldowns", {}).keys())
+            for m_k in all_groq_models:
+                # If pool still has an available key for m_k, model is NOT in cooldown
+                if pool.has_available_key_for_model(m_k):
+                    groq_model_cooldowns[m_k] = 0.0
+                else:
+                    # All keys in cooldown: remaining time is time until FIRST key recovers (min)
+                    cds = []
+                    for pk in groq_pool_keys:
+                        cd_info = pk.get("model_cooldowns", {}).get(m_k)
+                        if cd_info:
+                            val = cd_info.get("cooldown_remaining_sec", 0.0) if isinstance(cd_info, dict) else float(cd_info)
+                            if val > 0:
+                                cds.append(val)
+                    groq_model_cooldowns[m_k] = min(cds) if cds else 0.0
         except Exception:
             pass
 
         # 3b. Pull live MistralKeyPool keys & model cooldowns
         mistral_pool_keys: List[Dict[str, Any]] = []
         mistral_model_cooldowns: Dict[str, float] = {}
+        m_pool = None
         try:
             m_pool = get_shared_mistral_pool()
             mistral_tel = m_pool.get_telemetry()
             mistral_pool_keys = mistral_tel.get("keys", [])
+            all_mistral_models = set()
             for pk in mistral_pool_keys:
-                for m_k, cd_info in pk.get("model_cooldowns", {}).items():
-                    cd_val = cd_info.get("cooldown_remaining_sec", 0.0) if isinstance(cd_info, dict) else float(cd_info)
-                    if cd_val > mistral_model_cooldowns.get(m_k, 0.0):
-                        mistral_model_cooldowns[m_k] = cd_val
+                all_mistral_models.update(pk.get("model_cooldowns", {}).keys())
+            for m_k in all_mistral_models:
+                if m_pool.has_available_key_for_model(m_k):
+                    mistral_model_cooldowns[m_k] = 0.0
+                else:
+                    cds = []
+                    for pk in mistral_pool_keys:
+                        cd_info = pk.get("model_cooldowns", {}).get(m_k)
+                        if cd_info:
+                            val = cd_info.get("cooldown_remaining_sec", 0.0) if isinstance(cd_info, dict) else float(cd_info)
+                            if val > 0:
+                                cds.append(val)
+                    mistral_model_cooldowns[m_k] = min(cds) if cds else 0.0
         except Exception:
             pass
 
@@ -391,14 +441,41 @@ class ProviderUsageTracker:
                 p_name = m_stats["provider"]
                 known_models_seen.add(f"{p_name}:{m_name.lower()}")
 
+                m_norm = m_name.lower().strip()
+                short_m = m_norm.split("/")[-1] if "/" in m_norm else m_norm
+
                 cooldown_key = f"{p_name}:{m_name.strip()}"
                 orch_cd = orchestrator_cooldowns.get(cooldown_key, 0.0)
-                pool_cd = (
-                    groq_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_name == "groq"
-                    else (mistral_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_name == "mistral" else 0.0)
-                )
+
+                pool_has_available = False
+                pool_cd = 0.0
+                is_pool_model = False
+                if p_name == "groq" and pool is not None and pool.get_keys():
+                    assigned_stages = stage_map.get(m_name, []) or stage_map.get(short_m, [])
+                    if assigned_stages or m_norm in groq_model_cooldowns or short_m in groq_model_cooldowns:
+                        is_pool_model = True
+                        if pool.has_available_key_for_model(m_name) or pool.has_available_key_for_model(short_m):
+                            pool_has_available = True
+                            pool_cd = 0.0
+                        else:
+                            pool_cd = groq_model_cooldowns.get(m_norm, groq_model_cooldowns.get(short_m, 0.0))
+                elif p_name in ("mistral", "mistralai") and m_pool is not None and m_pool.get_keys():
+                    assigned_stages = stage_map.get(m_name, []) or stage_map.get(short_m, [])
+                    if assigned_stages or m_norm in mistral_model_cooldowns or short_m in mistral_model_cooldowns:
+                        is_pool_model = True
+                        if m_pool.has_available_key_for_model(m_name) or m_pool.has_available_key_for_model(short_m):
+                            pool_has_available = True
+                            pool_cd = 0.0
+                        else:
+                            pool_cd = mistral_model_cooldowns.get(m_norm, mistral_model_cooldowns.get(short_m, 0.0))
+
                 recorded_cd = max(0.0, m_stats.get("cooldown_until_ts", 0.0) - now_loop)
-                active_cd = max(orch_cd, pool_cd, recorded_cd)
+                if pool_has_available:
+                    active_cd = 0.0
+                elif is_pool_model:
+                    active_cd = max(orch_cd, pool_cd)
+                else:
+                    active_cd = max(orch_cd, pool_cd, recorded_cd)
 
                 assigned_stages = sorted(list(stage_map.get(m_name, [])))
                 avg_lat = (
@@ -495,13 +572,31 @@ class ProviderUsageTracker:
                 if k_check not in known_models_seen:
                     known_models_seen.add(k_check)
                     assigned_stages = sorted(list(stage_map.get(m_name, [])))
+                    m_norm = m_name.lower().strip()
+                    short_m = m_norm.split("/")[-1] if "/" in m_norm else m_norm
+
                     cooldown_key = f"{p_cand}:{m_name.strip()}"
                     orch_cd = orchestrator_cooldowns.get(cooldown_key, 0.0)
-                    pool_cd = (
-                        groq_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_cand == "groq"
-                        else (mistral_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_cand == "mistral" else 0.0)
-                    )
-                    active_cd = max(orch_cd, pool_cd)
+
+                    pool_has_available = False
+                    pool_cd = 0.0
+                    if p_cand == "groq" and pool is not None and pool.get_keys():
+                        if pool.has_available_key_for_model(m_name) or pool.has_available_key_for_model(short_m):
+                            pool_has_available = True
+                            pool_cd = 0.0
+                        else:
+                            pool_cd = groq_model_cooldowns.get(m_norm, groq_model_cooldowns.get(short_m, 0.0))
+                    elif p_cand in ("mistral", "mistralai") and m_pool is not None and m_pool.get_keys():
+                        if m_pool.has_available_key_for_model(m_name) or m_pool.has_available_key_for_model(short_m):
+                            pool_has_available = True
+                            pool_cd = 0.0
+                        else:
+                            pool_cd = mistral_model_cooldowns.get(m_norm, mistral_model_cooldowns.get(short_m, 0.0))
+
+                    if pool_has_available:
+                        active_cd = 0.0
+                    else:
+                        active_cd = max(orch_cd, pool_cd)
                     models_list.append({
                         "model_name": m_name,
                         "provider": p_cand,

@@ -208,10 +208,19 @@ class GroqKey:
         if model:
             norm_model = model.strip().lower()
             model_expiry = self._model_cooldowns.get(norm_model, 0.0)
+            if model_expiry == 0.0 and "/" in norm_model:
+                model_expiry = self._model_cooldowns.get(norm_model.split("/")[-1], 0.0)
+            elif model_expiry == 0.0 and "/" not in norm_model:
+                for k_cd, exp in self._model_cooldowns.items():
+                    if k_cd.endswith(f"/{norm_model}"):
+                        model_expiry = exp
+                        break
             if model_expiry > 0:
                 if current_time >= model_expiry:
                     # Model cooldown expired on this key
                     self._model_cooldowns.pop(norm_model, None)
+                    if "/" in norm_model:
+                        self._model_cooldowns.pop(norm_model.split("/")[-1], None)
                     self._model_cooldown_reasons.pop(norm_model, None)
                 else:
                     return False
@@ -245,6 +254,13 @@ class GroqKey:
         current_time = now if now is not None else _get_loop_time()
         norm_model = model.strip().lower()
         expiry = self._model_cooldowns.get(norm_model, 0.0)
+        if expiry == 0.0 and "/" in norm_model:
+            expiry = self._model_cooldowns.get(norm_model.split("/")[-1], 0.0)
+        elif expiry == 0.0 and "/" not in norm_model:
+            for k_cd, exp in self._model_cooldowns.items():
+                if k_cd.endswith(f"/{norm_model}"):
+                    expiry = exp
+                    break
         if expiry > current_time:
             return max(0.0, expiry - current_time)
         return 0.0

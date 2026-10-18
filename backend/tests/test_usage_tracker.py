@@ -281,3 +281,65 @@ def test_provider_classification_and_catalog_defaults():
     assert gemma["provider"] == "gemini"
 
 
+def test_pool_model_not_in_cooldown_when_sibling_keys_available():
+    """Verify that a multi-key pool does NOT block a model when other keys in the pool are available."""
+    from backend.app.pipeline.providers.key_pool import GroqKeyPool, GroqKey
+    from backend.app.pipeline.providers.factory import get_shared_groq_pool
+
+    pool = get_shared_groq_pool()
+    orig_keys = list(pool._keys)
+    try:
+        # Set up 4 keys in pool
+        k1 = GroqKey("gsk_key_alpha_111111111111")
+        k2 = GroqKey("gsk_key_beta_2222222222222")
+        k3 = GroqKey("gsk_key_gamma_333333333333")
+        k4 = GroqKey("gsk_key_delta_444444444444")
+        pool._keys = [k1, k2, k3, k4]
+
+        # Keys 1 and 2 hit 429 on qwen/qwen3.8-27b
+        k1.mark_rate_limited(is_daily=True, retry_delay_sec=300.0, model="qwen/qwen3.8-27b")
+        k2.mark_rate_limited(is_daily=True, retry_delay_sec=250.0, model="qwen/qwen3.8-27b")
+        # Keys 3 and 4 remain completely active
+
+        tracker = ProviderUsageTracker()
+        tracker.reset_for_testing()
+
+        # Record a 429 call that occurred on Key 1
+        tracker.record_call(
+            provider="groq",
+            model="qwen/qwen3.8-27b",
+            key="gsk_key_alpha_111111111111",
+            key_field="groq_api_key",
+            success=False,
+            status_code=429,
+            error_message="daily tokens exhausted (TPD 200k, retry-after 300s)",
+            is_rate_limit=True,
+            cooldown_sec=300.0,
+        )
+
+        tel = tracker.get_telemetry()
+        groq_models = [m for m in tel["all_models"] if m["model_name"] == "qwen/qwen3.8-27b"]
+        assert len(groq_models) == 1
+        m_stat = groq_models[0]
+
+        # Because Key 3 and Key 4 are still available, the model itself must NOT be in cooldown!
+        assert m_stat["status"] != "cooldown"
+        assert m_stat["cooldown_remaining_sec"] == 0.0
+
+        # Now throttle keys 3 and 4 as well (all 4 keys now in cooldown)
+        k3.mark_rate_limited(is_daily=True, retry_delay_sec=45.0, model="qwen/qwen3.8-27b")
+        k4.mark_rate_limited(is_daily=True, retry_delay_sec=120.0, model="qwen/qwen3.8-27b")
+
+        tel2 = tracker.get_telemetry()
+        m_stat2 = next(m for m in tel2["all_models"] if m["model_name"] == "qwen/qwen3.8-27b")
+
+        # Now all keys are throttled, so model must be in cooldown
+        assert m_stat2["status"] == "cooldown"
+        # Cooldown must be min(45, 120, 250, 300) = ~45.0s (first key to recover), NOT 300s!
+        assert 40.0 <= m_stat2["cooldown_remaining_sec"] <= 50.0
+
+    finally:
+        pool._keys = orig_keys
+
+
+
