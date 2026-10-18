@@ -326,27 +326,29 @@ async def test_dedicated_situation_summary_fallback_chain():
     assert cfg.model_name == "openai/gpt-oss-120b"
 
     fallback_models = [fb.model_name for fb in cfg.fallbacks]
-    # Ensure GLM is before Mistral, and Gemini 3.5 flash lite is used
+    # Ensure GLM is the first fallback, followed by Gemini 3.5 flash lite
     assert fallback_models[0] == "coding-glm-5.3-free", "GLM must be the first fallback!"
-    assert fallback_models[1] == "mistral-large-2512", "Mistral must come after GLM!"
-    assert "gemini-3.5-flash-lite" in fallback_models, "Gemini 3.5 flash lite must be present in the chain!"
-    assert "mistral-small-2603" in fallback_models
+    assert fallback_models[1] == "gemini-3.5-flash-lite", "Gemini 3.5 flash lite must be the second fallback!"
+    assert "gemini-3.1-flash-lite" in fallback_models
     assert "gemma-4-31b-it" in fallback_models
 
-    # Ensure lightweight models are NOT present in the situation summary chain
+    # Ensure Mistral and lightweight models are NOT present in the situation summary chain
+    assert "mistral-large-2512" not in fallback_models
+    assert "mistral-small-2603" not in fallback_models
+    assert "ministral-14b-2512" not in fallback_models
     assert "ministral-8b-2512" not in fallback_models
     assert "ministral-3b-2512" not in fallback_models
     assert "@cf/meta/llama-3.2-1b-instruct" not in fallback_models
     assert "openai/gpt-oss-20b" not in fallback_models
 
-    # 3. Test execution failover through the chain: Groq -> GLM -> Mistral
+    # 3. Test execution failover through the chain: Groq -> GLM -> Gemini
     call_log = []
 
     async def mock_runner(provider, model, temperature, raise_on_error=True):
         call_log.append(f"{provider.provider_name}:{model}")
         if model in ("openai/gpt-oss-120b", "coding-glm-5.3-free"):
             raise RuntimeError(f"Simulated 429 Quota Exhaustion on {model}")
-        # mistral-large-2512 catches and succeeds!
+        # gemini-3.5-flash-lite catches and succeeds!
         return {"status": "ok", "synthesizer": f"{provider.provider_name}:{model}"}
 
     res = await orchestrator._execute_stage_with_fallbacks(
@@ -357,8 +359,8 @@ async def test_dedicated_situation_summary_fallback_chain():
 
     assert "groq:openai/gpt-oss-120b" in call_log
     assert "aihubmix:coding-glm-5.3-free" in call_log
-    assert "mistral:mistral-large-2512" in call_log
-    assert res["synthesizer"] == "mistral:mistral-large-2512"
+    assert "gemini:gemini-3.5-flash-lite" in call_log
+    assert res["synthesizer"] == "gemini:gemini-3.5-flash-lite"
 
 
 @pytest.mark.asyncio

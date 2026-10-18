@@ -60,11 +60,12 @@ DEFAULT_AI_STAGES = {
         "model_name": "openai/gpt-oss-120b",
         "temperature": 0.2,
         "fallbacks": [
-            {"provider": "mistral", "model_name": "ministral-14b-2512", "temperature": 0.2},
-            {"provider": "mistral", "model_name": "mistral-large-2512", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
-            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
             {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-31b-it", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
+            {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.2},
         ],
     },
     "visuals": {
@@ -78,14 +79,14 @@ DEFAULT_AI_STAGES = {
         ],
     },
     "situation_summary": {
-        "provider": "aihubmix",
-        "model_name": "coding-glm-5.3-free",
+        "provider": "groq",
+        "model_name": "openai/gpt-oss-120b",
         "temperature": 0.2,
         "fallbacks": [
-            {"provider": "mistral", "model_name": "mistral-large-2512", "temperature": 0.2},
-            {"provider": "mistral", "model_name": "labs-leanstral-1-5-1", "temperature": 0.2},
-            {"provider": "mistral", "model_name": "ministral-14b-2512", "temperature": 0.2},
+            {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-31b-it", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
         ],
     },
@@ -136,22 +137,25 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
                 cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[norm_k].get("fallbacks", []))
         else:
             # 2. Token-heavy Stage 3 (Summarization) and Situational Summary:
-            # Use single strongest model (coding-glm-5.3-flash-free or coding-glm-5.3-free).
-            # No duplicate intra-provider AI Hub Mix fallbacks since rate limits are shared globally.
+            # Mistral must NOT be used for summaries (too weak for narrative & SitRep intelligence synthesis).
+            if cfg.get("provider") in ("mistral", "mistralai"):
+                cfg["provider"] = "groq"
+                cfg["model_name"] = "openai/gpt-oss-120b"
+
             default_stage_key = norm_k if norm_k in DEFAULT_AI_STAGES else "situation_summary"
             if cfg.get("provider") == "aihubmix":
                 cfg["model_name"] = "coding-glm-5.3-flash-free" if "flash" in str(cfg.get("model_name") or cfg.get("model", "")) else "coding-glm-5.3-free"
-                # Strip any aihubmix fallbacks if primary is already aihubmix
+                # Strip any aihubmix or mistral fallbacks
                 if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
                     cfg["fallbacks"] = [
                         (dict(fb, model_name=fb.get("model_name") or fb.get("model")) if isinstance(fb, dict) else fb)
                         for fb in cfg["fallbacks"]
-                        if not (isinstance(fb, dict) and fb.get("provider") == "aihubmix")
+                        if not (isinstance(fb, dict) and (fb.get("provider") in ("aihubmix", "mistral", "mistralai")))
                     ]
                 elif "fallbacks" not in cfg:
                     cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[default_stage_key]["fallbacks"])
             else:
-                # Primary is not aihubmix: allow at most ONE aihubmix fallback using coding-glm-5.3-flash-free or coding-glm-5.3-free
+                # Primary is not aihubmix: allow at most ONE aihubmix fallback, and NO mistral fallbacks
                 if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
                     filtered_fb = []
                     has_aihubmix = False
@@ -160,6 +164,8 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
                             fb_copy = dict(fb)
                             if "model" in fb_copy and "model_name" not in fb_copy:
                                 fb_copy["model_name"] = fb_copy["model"]
+                            if fb_copy.get("provider") in ("mistral", "mistralai"):
+                                continue  # Purge mistral from summaries
                             if fb_copy.get("provider") == "aihubmix":
                                 if not has_aihubmix:
                                     if not fb_copy.get("model_name"):

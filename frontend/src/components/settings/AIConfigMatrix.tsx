@@ -52,14 +52,15 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   });
 
   const defaultSituationSummaryStage = (): AIStageConfig => ({
-    provider: 'aihubmix',
-    model_name: 'coding-glm-5.3-free',
+    provider: 'groq',
+    model_name: 'openai/gpt-oss-120b',
     temperature: 0.2,
     fallbacks: [
-      { provider: 'mistral', model_name: 'mistral-large-2512', temperature: 0.2 },
-      { provider: 'mistral', model_name: 'labs-leanstral-1-5-1', temperature: 0.2 },
-      { provider: 'mistral', model_name: 'ministral-14b-2512', temperature: 0.2 },
+      { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
       { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+      { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
+      { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.2 },
+      { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
     ],
   });
 
@@ -85,10 +86,12 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
             { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.1 },
           ]),
           summarization: defaultStage('groq', 'openai/gpt-oss-120b', [
-            { provider: 'mistral', model_name: 'ministral-14b-2512', temperature: 0.2 },
-            { provider: 'mistral', model_name: 'mistral-large-2512', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
             { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemma-4-31b-it', temperature: 0.2 },
+            { provider: 'gemini', model_name: 'gemma-4-26b-a4b-it', temperature: 0.2 },
+            { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.2 },
           ]),
           visuals: defaultStage('groq', 'openai/gpt-oss-20b', [
             { provider: 'mistral', model_name: 'ministral-8b-2512', temperature: 0.2 },
