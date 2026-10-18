@@ -63,6 +63,7 @@ DEFAULT_AI_STAGES = {
             {"provider": "mistral", "model_name": "ministral-14b-2512", "temperature": 0.2},
             {"provider": "mistral", "model_name": "mistral-large-2512", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
             {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
         ],
     },
@@ -85,6 +86,7 @@ DEFAULT_AI_STAGES = {
             {"provider": "mistral", "model_name": "labs-leanstral-1-5-1", "temperature": 0.2},
             {"provider": "mistral", "model_name": "ministral-14b-2512", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
+            {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
         ],
     },
 }

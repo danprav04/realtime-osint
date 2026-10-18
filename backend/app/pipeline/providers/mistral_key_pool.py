@@ -148,10 +148,6 @@ class MistralKey:
         self.monthly_allowance_usd: float = monthly_allowance_usd
         self.jitter_margin_sec: float = jitter_margin_sec
 
-    @property
-    def api_key(self) -> str:
-        return self.key
-
         self._pacing_lock = asyncio.Lock()
         self._last_request_time: float = 0.0
         self._last_request_by_model: Dict[str, float] = {}
@@ -184,6 +180,10 @@ class MistralKey:
         self.reset_requests_sec: Optional[float] = None
         self.reset_tokens_sec: Optional[float] = None
         self.retry_after_sec: Optional[float] = None
+
+    @property
+    def api_key(self) -> str:
+        return self.key
 
     def reserve_slot(self, model: str, slot_time: float, spacing: float) -> None:
         """Atomically reserve a future execution slot for a specific model under _pool_lock."""
