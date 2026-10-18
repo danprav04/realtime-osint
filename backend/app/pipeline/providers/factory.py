@@ -20,10 +20,12 @@ from backend.app.pipeline.providers.zai import ZaiProvider
 from backend.app.pipeline.providers.siliconflow import SiliconFlowProvider
 from backend.app.pipeline.providers.mock import MockAIProvider
 from backend.app.pipeline.providers.key_pool import GroqKeyPool, parse_key_list
+from backend.app.pipeline.providers.mistral_key_pool import MistralKeyPool
 
 logger = logging.getLogger("osint.ai.factory")
 
 _shared_groq_pool: Optional[GroqKeyPool] = None
+_shared_mistral_pool: Optional[MistralKeyPool] = None
 
 
 def get_shared_groq_pool(keys: Optional[List[str]] = None) -> GroqKeyPool:
@@ -43,6 +45,25 @@ def get_shared_groq_pool(keys: Optional[List[str]] = None) -> GroqKeyPool:
         if fallback_keys:
             _shared_groq_pool.set_keys(fallback_keys)
     return _shared_groq_pool
+
+
+def get_shared_mistral_pool(keys: Optional[List[str]] = None) -> MistralKeyPool:
+    """
+    Get or initialize the process-wide MistralKeyPool singleton.
+    Ensures all Mistral models across stages share synchronized rotation,
+    model-aware pacing, and 429 cooldown status.
+    """
+    global _shared_mistral_pool
+    if _shared_mistral_pool is None:
+        init_keys = keys if keys is not None else resolve_api_keys("mistral")
+        _shared_mistral_pool = MistralKeyPool(keys=init_keys)
+    elif keys:
+        _shared_mistral_pool.set_keys(keys)
+    elif not _shared_mistral_pool.total_keys:
+        fallback_keys = resolve_api_keys("mistral")
+        if fallback_keys:
+            _shared_mistral_pool.set_keys(fallback_keys)
+    return _shared_mistral_pool
 
 
 def resolve_api_keys(
@@ -99,7 +120,16 @@ def resolve_api_keys(
         return parse_key_list(env_val)
 
     elif p_norm in ("mistral", "mistralai"):
-        env_val = getattr(st, "MISTRAL_API_KEY", None) or os.environ.get("MISTRAL_API_KEY")
+        if hasattr(st, "get_mistral_api_keys"):
+            parsed_st = st.get_mistral_api_keys()
+            if parsed_st:
+                return parsed_st
+        env_val = (
+            getattr(st, "MISTRAL_API_KEYS", None)
+            or os.environ.get("MISTRAL_API_KEYS")
+            or getattr(st, "MISTRAL_API_KEY", None)
+            or os.environ.get("MISTRAL_API_KEY")
+        )
         return parse_key_list(env_val)
 
     elif p_norm in ("cloudflare", "cf", "workers_ai", "workers-ai"):
@@ -177,7 +207,12 @@ def get_stage_provider(
     elif provider_name in ("aihubmix", "aihub", "inferera"):
         return AIHubMixProvider(api_key=primary_key, default_model=stage_config.model_name)
     elif provider_name in ("mistral", "mistralai"):
-        return MistralProvider(api_key=primary_key, default_model=stage_config.model_name)
+        pool = get_shared_mistral_pool(keys=keys if keys else None)
+        return MistralProvider(
+            api_key=primary_key,
+            key_pool=pool,
+            default_model=stage_config.model_name,
+        )
     elif provider_name in ("cloudflare", "cf", "workers_ai", "workers-ai"):
         cf_account = (
             (db_keys.get("cloudflare_account_id") if db_keys else None)
@@ -248,8 +283,20 @@ class ProviderRegistry:
                     default_model=model_name,
                 )
             elif p_norm in ("mistral", "mistralai"):
+                all_resolved_keys = resolve_api_keys("mistral")
+                parsed_keys = parse_key_list(api_key) if api_key else []
+                if len(parsed_keys) > 1:
+                    pool_keys = parsed_keys
+                elif all_resolved_keys:
+                    pool_keys = all_resolved_keys
+                elif parsed_keys:
+                    pool_keys = parsed_keys
+                else:
+                    pool_keys = None
+                pool = get_shared_mistral_pool(keys=pool_keys)
                 self._providers[key] = MistralProvider(
                     api_key=api_key,
+                    key_pool=pool,
                     default_model=model_name,
                 )
             elif p_norm in ("cloudflare", "cf", "workers_ai", "workers-ai"):

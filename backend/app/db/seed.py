@@ -548,6 +548,9 @@ DEFAULT_SETTINGS_DATA: Dict[str, Any] = {
         "theme_switch_mode": "zero_code",
         "memory_budget_mb": 900,
     },
+    "world_theater_context": {
+        "initialized": True,
+    },
     "max_lookback_hours": {
         "rss": 1.0,
         "telegram": 1.0,
@@ -664,6 +667,9 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
         existing_setting = set_res.scalars().first()
 
         if not existing_setting:
+            if key == "world_theater_context":
+                from backend.app.services.world_theater_service import get_default_world_theater_data
+                val = get_default_world_theater_data()
             new_setting = SystemSettings(key=key, value_json=val)
             session.add(new_setting)
             seeded_counts["settings"] += 1

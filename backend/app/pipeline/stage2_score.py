@@ -78,8 +78,13 @@ def build_stage2_system_prompt(theme_context: Dict[str, Any]) -> str:
         "Score on a 1-10 scale. Critical military strikes 9-10, proxy/sanctions 7-8, diplomatic 4-6, background 1-3."
     )
 
+    from backend.app.services.world_theater_service import get_world_theater_service
+    theater_block = get_world_theater_service().get_prompt_block("scoring")
+
     return f"""You are a senior geopolitical intelligence watch officer and threat prioritization analyst.
 Your mission is to evaluate the following intelligence event and assign an objective importance score from 1 to 10 based on the user's active theme configuration, multi-dimensional signal analysis, general theater context, and semantic embedding corroboration.
+
+{theater_block}
 
 THEME CONFIGURATION:
 - Theme Name: {theme_name}
@@ -117,6 +122,7 @@ RULES:
 6. Set `should_alert` to true IF AND ONLY IF `importance_score` >= {threshold} AND it is not a repetitive same-source echo.
 7. Provide a 1-2 sentence `score_rationale` explaining the decision (mentioning corroboration, novelty, or signal confidence when relevant).
 8. Check which tracked keywords and entities are present and populate `matched_keywords` and `matched_entities`.
+9. GEOPOLITICAL REALITY & SOVEREIGN AUTHORITY: Actions, warnings, diplomatic interventions, or endorsements by sitting heads of state (e.g. US President Donald Trump, Israeli PM Benjamin Netanyahu, Iranian leadership) must be evaluated as high-impact sovereign developments, not private citizen comments.
 
 You MUST respond strictly with a valid JSON object matching the requested schema. No markdown backticks."""
 
@@ -440,6 +446,8 @@ def calibrate_stage2_result(
     should_alert = bool(score >= threshold and not is_same_source_echo and not is_contradiction)
 
     rationale = (result.score_rationale or "Standard intelligence assessment.").strip()
+    from backend.app.services.world_theater_service import sanitize_world_theater_text
+    rationale = sanitize_world_theater_text(rationale)
     if notes:
         primary_note = notes[0]
         if primary_note.lower() not in rationale.lower():

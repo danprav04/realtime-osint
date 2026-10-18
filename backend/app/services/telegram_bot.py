@@ -98,8 +98,10 @@ class TelegramBotService:
         else:
             time_str = str(payload.published_at)
 
+        from backend.app.services.world_theater_service import sanitize_world_theater_text
         # Truncate summary if oversized to avoid exceeding 4096 character Telegram ceiling
-        summary = payload.summary[:3000] if payload.summary else "N/A"
+        raw_summary = payload.summary[:3000] if payload.summary else "N/A"
+        summary = sanitize_world_theater_text(raw_summary)
         link = payload.source_url if payload.source_url else "N/A"
 
         return (
@@ -129,14 +131,18 @@ class TelegramBotService:
 
         lines = [badge, ""]
 
+        from backend.app.services.world_theater_service import sanitize_world_theater_text
+
         # 1. Headline / Title
         headline = (payload.headline or payload.title or "").strip()
+        headline = sanitize_world_theater_text(headline)
         if headline:
             lines.append(f"<b>{html.escape(headline)}</b>")
             lines.append("")
 
         # 2. Executive Summary
         summary = (payload.summary or "").strip()
+        summary = sanitize_world_theater_text(summary)
         if summary:
             lines.append(html.escape(summary[:3000]))
             lines.append("")

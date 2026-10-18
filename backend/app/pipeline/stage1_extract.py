@@ -218,10 +218,17 @@ async def run_stage1_extract(
     def fallback():
         return _heuristic_stage1_fallback(raw_text, title)
 
+    from backend.app.services.world_theater_service import (
+        get_world_theater_service,
+        sanitize_world_theater_text,
+    )
+    theater_block = get_world_theater_service().get_prompt_block("extraction")
+    system_prompt = f"{STAGE1_SYSTEM_PROMPT}\n\n{theater_block}"
+
     try:
         raw_response = await provider.generate_text(
             prompt=prompt,
-            system_prompt=STAGE1_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             model=model,
             temperature=temperature if temperature is not None else 0.2,
             json_mode=True,
@@ -231,6 +238,13 @@ async def run_stage1_extract(
             target_model=Stage1Result,
             fallback_factory=fallback,
         )
+        if result:
+            if result.translated_title:
+                result.translated_title = sanitize_world_theater_text(result.translated_title)
+            if result.translated_text:
+                result.translated_text = sanitize_world_theater_text(result.translated_text)
+            if result.extracted_entities:
+                result.extracted_entities = [sanitize_world_theater_text(e) for e in result.extracted_entities]
         return result
     except PermissionError:
         raise

@@ -277,6 +277,17 @@ class PipelineOrchestrator:
             except Exception as exc:
                 logger.warning(f"Could not load initial DB configs: {exc}")
 
+            # Start World Theater continuous background sync
+            try:
+                from backend.app.services.world_theater_service import get_world_theater_service
+                wt_svc = get_world_theater_service(
+                    session_factory=self._session_factory,
+                    redis_bus=self._redis_bus,
+                )
+                await wt_svc.start_continuous_sync(interval_seconds=14400.0)
+            except Exception as wt_err:
+                logger.warning(f"Failed to start World Theater continuous sync: {wt_err}")
+
             # Subscribe to Redis config reload channel
             try:
                 bus = self._get_redis_bus()
@@ -351,6 +362,12 @@ class PipelineOrchestrator:
 
             if all_tasks:
                 await asyncio.gather(*all_tasks, return_exceptions=True)
+
+            try:
+                from backend.app.services.world_theater_service import get_world_theater_service
+                await get_world_theater_service().stop()
+            except Exception:
+                pass
 
             await self._registry.close_all()
             logger.info("Pipeline Orchestrator stopped.")
@@ -604,6 +621,12 @@ class PipelineOrchestrator:
 
             async with self._db_lock:
                 await asyncio.shield(_do_reload())
+
+            try:
+                from backend.app.services.world_theater_service import get_world_theater_service
+                await get_world_theater_service().load_from_db()
+            except Exception as wt_load_err:
+                logger.debug(f"World theater reload error: {wt_load_err}")
 
             logger.info("Pipeline Orchestrator configurations reloaded successfully.")
         except Exception as exc:
@@ -1294,6 +1317,10 @@ class PipelineOrchestrator:
             final_summary = _heuristic_stage3_fallback(intelligence_text, final_headline).summary
         else:
             final_summary = raw_summary
+
+        from backend.app.services.world_theater_service import sanitize_world_theater_text
+        final_headline = sanitize_world_theater_text(final_headline)
+        final_summary = sanitize_world_theater_text(final_summary)
 
         # Construct AnalyzedEvent
         analyzed = AnalyzedEvent(

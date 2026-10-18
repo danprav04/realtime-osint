@@ -329,9 +329,13 @@ class Stage0Gatekeeper:
 
         try:
             self.batch_calls_count += 1
+            from backend.app.services.world_theater_service import get_world_theater_service
+            theater_block = get_world_theater_service().get_prompt_block("gatekeeper")
+            sys_prompt = f"{STAGE0_SYSTEM_PROMPT}\n\n{theater_block}"
+
             raw_resp = await provider.generate_text(
                 prompt=prompt,
-                system_prompt=STAGE0_SYSTEM_PROMPT,
+                system_prompt=sys_prompt,
                 model=model,
                 temperature=temperature if temperature is not None else 0.1,
                 max_tokens=2048,

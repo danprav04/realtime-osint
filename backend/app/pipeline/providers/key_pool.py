@@ -669,3 +669,12 @@ class GroqKeyPool:
             "total_success": total_success,
             "keys": key_stats,
         }
+
+
+# Re-export Mistral pool components for unified imports
+from backend.app.pipeline.providers.mistral_key_pool import (
+    MISTRAL_MODEL_LIMITS,
+    MistralKey,
+    MistralKeyPool,
+    get_mistral_model_limits,
+)

@@ -567,4 +567,38 @@ export interface ServerLogsResponse {
   stats: ServerLogStats;
 }
 
+export interface WorldLeaderInfo {
+  head_of_state?: string;
+  head_of_government?: string;
+  supreme_leader?: string;
+  president?: string;
+  vice_president?: string;
+  title?: string;
+  defense?: string;
+  military?: string;
+  operational_focus?: string;
+  administration_stance?: string;
+  [key: string]: any;
+}
+
+export interface ActiveTheaterInfo {
+  theater: string;
+  scope: string;
+  status: string;
+}
+
+export interface WorldTheaterContext {
+  temporal_anchor: {
+    current_year: number;
+    current_date_utc: string;
+    iso_timestamp: string;
+  };
+  global_leadership: Record<string, WorldLeaderInfo>;
+  active_operational_theaters: ActiveTheaterInfo[];
+  geopolitical_rules: string[];
+  last_synced_at?: string;
+  sync_source?: string;
+  live_api_status?: string;
+}
+
 

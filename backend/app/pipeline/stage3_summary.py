@@ -22,6 +22,7 @@ CRITICAL RULES & NEGATIVE CONSTRAINTS:
 - The headline and summary MUST ALWAYS BE WRITTEN IN 100% FLUENT ENGLISH.
 - NEVER output single-word ratings, confidence labels, or priority classifications (such as "High", "Critical", "Medium", "Low", "Urgent", "Disputed", "Alert") as the headline. The headline MUST describe the specific event action (e.g. who did what where).
 - NEVER output priority or confidence assessments as the summary. The summary MUST be 2-3 complete sentences detailing incident facts and operational implications.
+- GEOPOLITICAL ACCURACY & CURRENT HEADS OF STATE: Accurately reflect current sovereign officeholders (e.g. Donald Trump is the sitting 47th President of the United States; Benjamin Netanyahu is Prime Minister of Israel; Masoud Pezeshkian is President of Iran). NEVER refer to incumbent heads of state as "former" leaders. All reporting must be grounded in the current operational reality.
 
 You MUST respond strictly with a valid JSON object matching this exact schema:
 {
@@ -173,10 +174,17 @@ async def run_stage3_summary(
         return res
 
 
+    from backend.app.services.world_theater_service import (
+        get_world_theater_service,
+        sanitize_world_theater_text,
+    )
+    theater_block = get_world_theater_service().get_prompt_block("summarization")
+    system_prompt = f"{STAGE3_SYSTEM_PROMPT}\n\n{theater_block}"
+
     try:
         raw_response = await provider.generate_text(
             prompt=prompt,
-            system_prompt=STAGE3_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             model=model,
             temperature=temperature if temperature is not None else 0.2,
             json_mode=True,
@@ -192,6 +200,9 @@ async def run_stage3_summary(
                 result.headline = fb.headline
             if not result.summary:
                 result.summary = fb.summary
+        if result:
+            result.headline = sanitize_world_theater_text(result.headline)
+            result.summary = sanitize_world_theater_text(result.summary)
         return result
 
     except PermissionError:
@@ -200,12 +211,18 @@ async def run_stage3_summary(
         if raise_on_error:
             raise
         logger.warning(f"RuntimeError in Stage 3 ({r_err}), gracefully falling back to heuristics.")
-        return fallback()
+        res = fallback()
+        res.headline = sanitize_world_theater_text(res.headline)
+        res.summary = sanitize_world_theater_text(res.summary)
+        return res
     except Exception as exc:
         if raise_on_error:
             raise
         logger.warning(f"Stage 3 execution exception ({exc}), using fallback.")
-        return fallback()
+        res = fallback()
+        res.headline = sanitize_world_theater_text(res.headline)
+        res.summary = sanitize_world_theater_text(res.summary)
+        return res
 
 
 async def run_periodic_digest(
@@ -225,6 +242,12 @@ async def run_periodic_digest(
     if not events:
         return fallback()
 
+    from backend.app.services.world_theater_service import (
+        get_world_theater_service,
+        sanitize_world_theater_text,
+    )
+    theater_block = get_world_theater_service().get_prompt_block("digest")
+
     # Build concise compact digest event summaries to preserve token budget
     event_lines = []
     for ev in events[:20]:
@@ -241,10 +264,12 @@ async def run_periodic_digest(
         f"Provide valid JSON matching the PeriodicDigestResult schema."
     )
 
+    digest_sys_prompt = f"{DIGEST_SYSTEM_PROMPT.format(theme_name=theme_name, alert_threshold=alert_threshold)}\n\n{theater_block}"
+
     try:
         raw_response = await provider.generate_text(
             prompt=prompt,
-            system_prompt=DIGEST_SYSTEM_PROMPT.format(theme_name=theme_name, alert_threshold=alert_threshold),
+            system_prompt=digest_sys_prompt,
             model=model,
             temperature=temperature if temperature is not None else 0.2,
             json_mode=True,
@@ -254,7 +279,12 @@ async def run_periodic_digest(
             target_model=PeriodicDigestResult,
             fallback_factory=fallback,
         )
+        if result and result.executive_overview:
+            result.executive_overview = sanitize_world_theater_text(result.executive_overview)
         return result
     except Exception as exc:
         logger.warning(f"Periodic digest generation exception, using fallback: {exc}")
-        return fallback()
+        fb = fallback()
+        if fb and fb.executive_overview:
+            fb.executive_overview = sanitize_world_theater_text(fb.executive_overview)
+        return fb

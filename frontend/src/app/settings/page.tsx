@@ -6,6 +6,7 @@ import {
   Layers,
   Radio,
   Cpu,
+  Globe,
   Key,
   RotateCw,
   Terminal,
@@ -31,13 +32,14 @@ import { ThemeForm } from '@/components/settings/ThemeForm';
 import { SourceManager } from '@/components/settings/SourceManager';
 import { AIConfigMatrix } from '@/components/settings/AIConfigMatrix';
 import { ApiKeyManager } from '@/components/settings/ApiKeyManager';
+import { WorldTheaterManager } from '@/components/settings/WorldTheaterManager';
 import { ServerLogsViewer } from '@/components/settings/ServerLogsViewer';
 import { ProviderRateLimitsBar } from '@/components/settings/ProviderRateLimitsBar';
 import { AppIcon } from '@/components/AppIcon';
 import { cn } from '@/lib/utils';
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'themes' | 'sources' | 'ai' | 'keys' | 'logs'>('themes');
+  const [activeTab, setActiveTab] = useState<'themes' | 'sources' | 'ai' | 'theater' | 'keys' | 'logs'>('themes');
   const [loading, setLoading] = useState(true);
 
   // Loaded data
@@ -58,6 +60,7 @@ export default function SettingsPage() {
         tabParam === 'themes' ||
         tabParam === 'sources' ||
         tabParam === 'ai' ||
+        tabParam === 'theater' ||
         tabParam === 'keys' ||
         tabParam === 'logs'
       ) {
@@ -115,6 +118,12 @@ export default function SettingsPage() {
       label: 'AI Pipeline Matrix',
       icon: Cpu,
       desc: 'Per-stage Gemini vs Groq model and temperature selection',
+    },
+    {
+      id: 'theater' as const,
+      label: 'World Theater Context',
+      icon: Globe,
+      desc: 'Live geopolitical baseline, sovereign world leadership roster, and active flashpoints',
     },
     {
       id: 'keys' as const,
@@ -241,6 +250,8 @@ export default function SettingsPage() {
             onRefresh={loadAllSettings}
           />
         )}
+
+        {activeTab === 'theater' && <WorldTheaterManager />}
 
         {activeTab === 'keys' && (
           <ApiKeyManager

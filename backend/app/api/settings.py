@@ -244,7 +244,7 @@ async def get_system_settings(
             masked_keys[k] = ""
         elif k == "hf_embedding_url":
             masked_keys[k] = str(v)
-        elif k == "groq_api_key" and ("," in str(v) or "\n" in str(v)):
+        elif k in ("groq_api_key", "mistral_api_key") and ("," in str(v) or "\n" in str(v)):
             sub_keys = [sk.strip() for sk in str(v).replace("\r", "\n").replace(",", "\n").split("\n") if sk.strip()]
             masked_subs = []
             for sk in sub_keys:
@@ -289,6 +289,13 @@ async def get_groq_pool_status() -> Dict[str, Any]:
     """Return live Groq API key rotation pool telemetry, status, and health."""
     from backend.app.pipeline.providers.factory import get_shared_groq_pool
     return get_shared_groq_pool().get_telemetry()
+
+
+@router.get("/mistral-pool", dependencies=[Depends(require_api_key)])
+async def get_mistral_pool_status() -> Dict[str, Any]:
+    """Return live Mistral AI key rotation pool telemetry, status, and health."""
+    from backend.app.pipeline.providers.factory import get_shared_mistral_pool
+    return get_shared_mistral_pool().get_telemetry()
 
 
 @router.get("/provider-usage", dependencies=[Depends(require_api_key)])
@@ -362,6 +369,11 @@ async def update_system_settings(
                     from backend.app.pipeline.providers.factory import get_shared_groq_pool
                     from backend.app.pipeline.providers.key_pool import parse_key_list
                     get_shared_groq_pool().set_keys(parse_key_list(clean_v))
+                elif k == "mistral_api_key":
+                    os.environ["MISTRAL_API_KEYS"] = clean_v
+                    from backend.app.pipeline.providers.factory import get_shared_mistral_pool
+                    from backend.app.pipeline.providers.key_pool import parse_key_list
+                    get_shared_mistral_pool().set_keys(parse_key_list(clean_v))
                 elif k == "telegram_bot_token":
                     from backend.app.services.telegram_bot import get_telegram_bot
                     get_telegram_bot().bot_token = clean_v
@@ -686,5 +698,76 @@ async def emit_test_server_log(
         "status": "emitted",
         "message": "Test log entry created successfully",
         "entry": entry,
+    }
+
+
+# =========================================================================
+# World Theater & Geopolitical Context Endpoints
+# =========================================================================
+
+@router.get("/world-theater", dependencies=[Depends(require_api_key)])
+async def get_world_theater_context() -> Dict[str, Any]:
+    """Retrieve current World Theater context, leadership roster, active flashpoints, and sync status."""
+    from backend.app.services.world_theater_service import get_world_theater_service
+    svc = get_world_theater_service()
+    return svc.get_context()
+
+
+@router.put("/world-theater", dependencies=[Depends(require_api_key)])
+async def update_world_theater_context(
+    payload: Dict[str, Any],
+    session: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Update custom World Theater context facts, leaders, or operational rules."""
+    from backend.app.services.world_theater_service import get_world_theater_service
+    svc = get_world_theater_service(session_factory=lambda: session)
+    
+    current = svc.get_context()
+    current.update(payload)
+    current["last_synced_at"] = datetime.now(timezone.utc).isoformat()
+    current["sync_source"] = "operator_manual_update"
+    svc.set_context(current)
+
+    # Persist to DB
+    res = await session.execute(
+        select(SystemSettings).where(SystemSettings.key == "world_theater_context")
+    )
+    existing = res.scalars().first()
+    if existing:
+        existing.value_json = current
+        flag_modified(existing, "value_json")
+    else:
+        session.add(SystemSettings(key="world_theater_context", value_json=current))
+    await session.commit()
+
+    # Broadcast reload
+    try:
+        bus = get_redis_bus()
+        await bus.publish(CHANNEL_CONFIG_RELOAD, {"type": "world_theater_updated"})
+    except Exception as exc:
+        logger.debug(f"Could not broadcast world theater reload: {exc}")
+
+    return {
+        "status": "updated",
+        "message": "World Theater context updated and broadcast to all workers",
+        "context": current,
+    }
+
+
+@router.post("/world-theater/refresh", dependencies=[Depends(require_api_key)])
+async def refresh_world_theater_from_api(
+    session: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Force an active resynchronization of World Theater leadership from live Wikidata APIs."""
+    from backend.app.services.world_theater_service import get_world_theater_service
+    svc = get_world_theater_service(session_factory=lambda: session)
+    updated = await svc.sync_from_live_apis(timeout=8.0)
+    return {
+        "status": "synchronized",
+        "message": "Synchronized World Theater leadership from live external APIs",
+        "live_api_status": updated.get("live_api_status"),
+        "sync_source": updated.get("sync_source"),
+        "last_synced_at": updated.get("last_synced_at"),
+        "context": updated,
     }
 

@@ -747,9 +747,16 @@ class SituationSummaryService:
         ) -> SituationBriefingLLMOutput:
             nonlocal active_ai_model
             active_ai_model = f"{provider.provider_name}:{model or sum_stage_cfg.model_name}"
+            from backend.app.services.world_theater_service import (
+                get_world_theater_service,
+                sanitize_world_theater_text,
+            )
+            theater_block = get_world_theater_service().get_prompt_block("sitrep")
+            system_prompt = f"{SITUATION_SUMMARY_SYSTEM_PROMPT}\n\n{theater_block}"
+
             raw_resp = await provider.generate_text(
                 prompt=prompt_text,
-                system_prompt=SITUATION_SUMMARY_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 model=model,
                 temperature=temperature if temperature is not None else 0.2,
                 max_tokens=3072,
@@ -762,6 +769,10 @@ class SituationSummaryService:
             )
             if not parsed or not isinstance(parsed, SituationBriefingLLMOutput):
                 raise ValueError(f"AI Model '{active_ai_model}' returned invalid or empty situation summary JSON")
+            if parsed.executive_bluf:
+                parsed.executive_bluf = sanitize_world_theater_text(parsed.executive_bluf)
+            if parsed.strategic_assessment:
+                parsed.strategic_assessment = sanitize_world_theater_text(parsed.strategic_assessment)
             return parsed
 
         try:

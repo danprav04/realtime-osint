@@ -182,10 +182,17 @@ async def run_stage4_visuals(
         return res
 
 
+    from backend.app.services.world_theater_service import (
+        get_world_theater_service,
+        sanitize_world_theater_text,
+    )
+    theater_block = get_world_theater_service().get_prompt_block("visuals")
+    system_prompt = f"{STAGE4_SYSTEM_PROMPT}\n\n{theater_block}"
+
     try:
         raw_response = await provider.generate_text(
             prompt=prompt,
-            system_prompt=STAGE4_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             model=model,
             temperature=temperature if temperature is not None else 0.2,
             json_mode=True,
@@ -203,6 +210,8 @@ async def run_stage4_visuals(
                 result.cluster_tags = fb.cluster_tags
             if not result.narrative_insight:
                 result.narrative_insight = fb.narrative_insight
+        if result and result.narrative_insight:
+            result.narrative_insight = sanitize_world_theater_text(result.narrative_insight)
         return result
 
     except PermissionError:
@@ -211,12 +220,18 @@ async def run_stage4_visuals(
         if raise_on_error:
             raise
         logger.warning(f"RuntimeError in Stage 4 ({r_err}), gracefully falling back to heuristics.")
-        return fallback()
+        res = fallback()
+        if res and res.narrative_insight:
+            res.narrative_insight = sanitize_world_theater_text(res.narrative_insight)
+        return res
     except Exception as exc:
         if raise_on_error:
             raise
         logger.warning(f"Stage 4 execution exception ({exc}), using fallback.")
-        return fallback()
+        res = fallback()
+        if res and res.narrative_insight:
+            res.narrative_insight = sanitize_world_theater_text(res.narrative_insight)
+        return res
 
 
 async def run_dashboard_trend_synthesis(
@@ -236,6 +251,12 @@ async def run_dashboard_trend_synthesis(
     if not events:
         return fallback()
 
+    from backend.app.services.world_theater_service import (
+        get_world_theater_service,
+        sanitize_world_theater_text,
+    )
+    theater_block = get_world_theater_service().get_prompt_block("visuals")
+
     categories: Dict[str, int] = {}
     for ev in events:
         cat = getattr(ev, "trend_category", "Geopolitical Development") or "Geopolitical Development"
@@ -252,7 +273,7 @@ async def run_dashboard_trend_synthesis(
     try:
         raw_response = await provider.generate_text(
             prompt=prompt,
-            system_prompt=AGGREGATE_TRENDS_PROMPT.format(theme_name=theme_name),
+            system_prompt=f"{AGGREGATE_TRENDS_PROMPT.format(theme_name=theme_name)}\n\n{theater_block}",
             model=model,
             temperature=temperature if temperature is not None else 0.2,
             json_mode=True,
@@ -262,7 +283,12 @@ async def run_dashboard_trend_synthesis(
             target_model=DashboardTrendSynthesis,
             fallback_factory=fallback,
         )
+        if result and result.trend_narrative:
+            result.trend_narrative = sanitize_world_theater_text(result.trend_narrative)
         return result
     except Exception as exc:
         logger.warning(f"Dashboard trend synthesis exception, using fallback: {exc}")
-        return fallback()
+        fb = fallback()
+        if fb and fb.trend_narrative:
+            fb.trend_narrative = sanitize_world_theater_text(fb.trend_narrative)
+        return fb

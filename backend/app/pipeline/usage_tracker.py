@@ -253,7 +253,7 @@ class ProviderUsageTracker:
         Incorporates live GroqKeyPool status, Orchestrator cooldowns, and active AI pipeline stages.
         """
         from backend.app.config import get_settings
-        from backend.app.pipeline.providers.factory import get_shared_groq_pool, resolve_api_keys
+        from backend.app.pipeline.providers.factory import get_shared_groq_pool, get_shared_mistral_pool, resolve_api_keys
 
         st = get_settings()
         effective_db_keys = dict(db_keys or {})
@@ -332,6 +332,21 @@ class ProviderUsageTracker:
         except Exception:
             pass
 
+        # 3b. Pull live MistralKeyPool keys & model cooldowns
+        mistral_pool_keys: List[Dict[str, Any]] = []
+        mistral_model_cooldowns: Dict[str, float] = {}
+        try:
+            m_pool = get_shared_mistral_pool()
+            mistral_tel = m_pool.get_telemetry()
+            mistral_pool_keys = mistral_tel.get("keys", [])
+            for pk in mistral_pool_keys:
+                for m_k, cd_info in pk.get("model_cooldowns", {}).items():
+                    cd_val = cd_info.get("cooldown_remaining_sec", 0.0) if isinstance(cd_info, dict) else float(cd_info)
+                    if cd_val > mistral_model_cooldowns.get(m_k, 0.0):
+                        mistral_model_cooldowns[m_k] = cd_val
+        except Exception:
+            pass
+
         # 4. Pull live AIHubMix quota stats
         aihubmix_quota: Dict[str, Any] = {}
         try:
@@ -378,7 +393,10 @@ class ProviderUsageTracker:
 
                 cooldown_key = f"{p_name}:{m_name.strip()}"
                 orch_cd = orchestrator_cooldowns.get(cooldown_key, 0.0)
-                pool_cd = groq_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_name == "groq" else 0.0
+                pool_cd = (
+                    groq_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_name == "groq"
+                    else (mistral_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_name == "mistral" else 0.0)
+                )
                 recorded_cd = max(0.0, m_stats.get("cooldown_until_ts", 0.0) - now_loop)
                 active_cd = max(orch_cd, pool_cd, recorded_cd)
 
@@ -475,7 +493,10 @@ class ProviderUsageTracker:
                     assigned_stages = sorted(list(stage_map.get(m_name, [])))
                     cooldown_key = f"{p_cand}:{m_name.strip()}"
                     orch_cd = orchestrator_cooldowns.get(cooldown_key, 0.0)
-                    pool_cd = groq_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_cand == "groq" else 0.0
+                    pool_cd = (
+                        groq_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_cand == "groq"
+                        else (mistral_model_cooldowns.get(m_name.lower().strip(), 0.0) if p_cand == "mistral" else 0.0)
+                    )
                     active_cd = max(orch_cd, pool_cd)
                     models_list.append({
                         "model_name": m_name,

@@ -92,7 +92,23 @@ class Settings(BaseSettings):
 
     # Mistral AI (La Plateforme Experiment / Free Plan)
     MISTRAL_API_KEY: Optional[str] = None
+    MISTRAL_API_KEYS: Optional[str] = None
     MISTRAL_BASE_URL: str = "https://api.mistral.ai/v1"
+
+    def get_mistral_api_keys(self) -> List[str]:
+        """Return parsed, deduplicated list of Mistral API keys from config/env."""
+        raw = self.MISTRAL_API_KEYS or self.MISTRAL_API_KEY or os.environ.get("MISTRAL_API_KEYS") or os.environ.get("MISTRAL_API_KEY")
+        if not raw:
+            return []
+        items = [k.strip() for k in str(raw).replace("\r", "\n").replace(",", "\n").split("\n")]
+        seen = set()
+        out = []
+        for k in items:
+            clean = k.strip().strip("'\"")
+            if clean and not clean.startswith("***") and clean not in seen:
+                seen.add(clean)
+                out.append(clean)
+        return out
 
     # Cloudflare Workers AI (10,000 Neurons/day free)
     CLOUDFLARE_ACCOUNT_ID: Optional[str] = None

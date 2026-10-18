@@ -14,6 +14,7 @@ import type {
   ServerLogsResponse,
   ServerLogEntry,
   ServerLogStats,
+  WorldTheaterContext,
 } from './types';
 
 const DEFAULT_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -382,6 +383,43 @@ export async function emitTestServerLog(
   return fetchApi<{ status: string; message: string; entry: ServerLogEntry }>('/api/settings/logs/test', {
     method: 'POST',
     body: JSON.stringify({ level, message }),
+  });
+}
+
+// World Theater & Geopolitical Context
+export async function getWorldTheaterContext(): Promise<WorldTheaterContext> {
+  return fetchApi<WorldTheaterContext>('/api/settings/world-theater');
+}
+
+export async function updateWorldTheaterContext(
+  payload: Partial<WorldTheaterContext>
+): Promise<{ status: string; message: string; context: WorldTheaterContext }> {
+  return fetchApi<{ status: string; message: string; context: WorldTheaterContext }>(
+    '/api/settings/world-theater',
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function refreshWorldTheaterFromApi(): Promise<{
+  status: string;
+  message: string;
+  live_api_status?: string;
+  sync_source?: string;
+  last_synced_at?: string;
+  context: WorldTheaterContext;
+}> {
+  return fetchApi<{
+    status: string;
+    message: string;
+    live_api_status?: string;
+    sync_source?: string;
+    last_synced_at?: string;
+    context: WorldTheaterContext;
+  }>('/api/settings/world-theater/refresh', {
+    method: 'POST',
   });
 }
 
