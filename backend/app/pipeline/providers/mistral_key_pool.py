@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import logging
 import random
+import time
 from typing import Any, Deque, Dict, List, Optional, Tuple
 import httpx
 
@@ -29,8 +30,7 @@ def _get_loop_time() -> float:
     try:
         return asyncio.get_running_loop().time()
     except RuntimeError:
-        import time
-        return time.time()
+        return time.monotonic()
 
 
 def seconds_until_next_month_utc() -> float:
@@ -138,6 +138,7 @@ class MistralKey:
         self,
         key: str,
         monthly_allowance_usd: float = 10.0,
+        jitter_margin_sec: float = 0.08,
     ):
         self.key: str = key.strip()
         self.masked_key: str = mask_key(self.key)
@@ -145,10 +146,18 @@ class MistralKey:
         self.cooldown_until: float = 0.0
         self.cooldown_reason: str = ""
         self.monthly_allowance_usd: float = monthly_allowance_usd
+        self.jitter_margin_sec: float = jitter_margin_sec
 
         self._pacing_lock = asyncio.Lock()
         self._last_request_time: float = 0.0
         self._last_request_by_model: Dict[str, float] = {}
+
+        # Atomic reservation queues per model
+        self._reserved_slots: Dict[str, Deque[float]] = {}
+        self._last_reserved_slot: Dict[str, float] = {}
+
+        # 60-second sliding-window TPM tracking per model
+        self._model_token_records: Dict[str, Deque[Tuple[float, int]]] = {}
 
         # Telemetry metrics
         self.total_requests: int = 0
@@ -172,6 +181,63 @@ class MistralKey:
         self.reset_tokens_sec: Optional[float] = None
         self.retry_after_sec: Optional[float] = None
 
+    def reserve_slot(self, model: str, slot_time: float, spacing: float) -> None:
+        """Atomically reserve a future execution slot for a specific model under _pool_lock."""
+        if not model:
+            return
+        norm_m = model.strip().lower()
+        if norm_m not in self._reserved_slots:
+            self._reserved_slots[norm_m] = deque()
+        self._reserved_slots[norm_m].append(slot_time)
+        self._last_reserved_slot[norm_m] = slot_time + spacing
+
+    def record_token_usage(self, model: str, tokens: int, now: Optional[float] = None) -> None:
+        """Record token usage into 60-second sliding-window TPM tracking for a model."""
+        if not model or tokens <= 0:
+            return
+        norm_m = model.strip().lower()
+        records = self._model_token_records.setdefault(norm_m, deque())
+        if now is None:
+            if records and records[0][0] > 1e8:
+                import time as _t
+                now = _t.time()
+            else:
+                now = _get_loop_time()
+        records.append((now, tokens))
+        cutoff = now - 60.0
+        while records and records[0][0] < cutoff:
+            records.popleft()
+        if model != norm_m:
+            self._model_token_records[model] = records
+
+    record_tokens = record_token_usage
+
+    def get_sliding_tpm(self, model: Optional[str], now: Optional[float] = None) -> int:
+        """Calculate total tokens consumed in the active 60-second sliding window."""
+        if not model:
+            return 0
+        norm_m = model.strip().lower()
+        records = self._model_token_records.get(norm_m)
+        if not records:
+            return 0
+        current_time = now
+        if current_time is None:
+            if records and records[0][0] > 1e8:
+                import time as _t
+                current_time = _t.time()
+            else:
+                current_time = _get_loop_time()
+        else:
+            if records and records[0][0] > 1e8 and current_time < 1e8:
+                import time as _t
+                current_time = _t.time()
+        cutoff = current_time - 60.0
+        while records and records[0][0] < cutoff:
+            records.popleft()
+        return sum(t for _, t in records)
+
+    get_current_tpm = get_sliding_tpm
+
     def is_available(self, now: Optional[float] = None, model: Optional[str] = None) -> bool:
         """Check if key is available to accept requests (optionally for a specific model)."""
         if self.status == KeyStatus.UNAUTHORIZED:
@@ -191,7 +257,7 @@ class MistralKey:
             else:
                 return False
 
-        # If a specific model was requested, check per-model cooldown
+        # If a specific model was requested, check per-model cooldown and TPM
         if model:
             norm_model = model.strip().lower()
             model_expiry = self._model_cooldowns.get(norm_model, 0.0)
@@ -199,8 +265,22 @@ class MistralKey:
                 if current_time >= model_expiry:
                     self._model_cooldowns.pop(norm_model, None)
                     self._model_cooldown_reasons.pop(norm_model, None)
-                    return True
+                else:
+                    return False
+
+            # Check 60-second sliding TPM cap
+            limits = get_mistral_model_limits(norm_model)
+            tpm_limit = limits.get("tpm")
+            if tpm_limit and tpm_limit > 0:
+                sliding_tpm = self.get_sliding_tpm(norm_model, now=current_time)
+                if sliding_tpm >= tpm_limit:
+                    return False
+
+            # If waiting on model cooldown > 3.0s, not available
+            if self.get_model_cooldown_remaining(norm_model, now=current_time) > 3.0:
                 return False
+
+            return True
 
         return self.status == KeyStatus.ACTIVE
 
@@ -226,25 +306,57 @@ class MistralKey:
                 return max(0.0, self.cooldown_until - current_time)
 
         if model:
-            model_wait = self.get_model_cooldown_remaining(model, now=current_time)
+            norm_model = model.strip().lower()
+            model_wait = self.get_model_cooldown_remaining(norm_model, now=current_time)
             if model_wait > 0:
                 return model_wait
 
-        # Model RPS spacing check
-        limits = get_mistral_model_limits(model)
-        min_interval = limits["min_interval"]
-        norm_m = limits["model"]
-        last_t = self._last_request_by_model.get(norm_m, 0.0)
-        if last_t > 0:
-            elapsed = current_time - last_t
-            if elapsed < min_interval:
-                return max(0.0, min_interval - elapsed)
+            limits = get_mistral_model_limits(norm_model)
+            min_interval = limits["min_interval"]
+            spacing = min_interval + self.jitter_margin_sec
+
+            # Check 60-second sliding TPM cap
+            max_tpm = limits.get("tpm")
+            if max_tpm and max_tpm > 0:
+                sliding_tpm = self.get_sliding_tpm(norm_model, now=current_time)
+                if sliding_tpm >= max_tpm:
+                    records = self._model_token_records.get(norm_model)
+                    if records:
+                        oldest_t = records[0][0]
+                        curr = current_time
+                        if oldest_t > 1e8 and curr < 1e8:
+                            import time as _t
+                            curr = _t.time()
+                        tpm_wait = max(0.0, (oldest_t + 60.0 + self.jitter_margin_sec) - curr)
+                        if tpm_wait > 0:
+                            return tpm_wait
+
+            # Model RPS spacing check against atomic reservations and last request
+            last_req = self._last_request_by_model.get(norm_model, 0.0)
+            last_res = self._last_reserved_slot.get(norm_model, 0.0)
+
+            if last_res > current_time:
+                return max(0.0, last_res - current_time)
+
+            if last_req > 0:
+                elapsed = current_time - last_req
+                if elapsed < min_interval:
+                    return max(0.0, (min_interval - elapsed) + self.jitter_margin_sec)
+
+            return 0.0
+
+        # If model is not specified, check global last request
+        if self._last_request_time > 0:
+            elapsed = current_time - self._last_request_time
+            if elapsed < 0.1:
+                return max(0.0, 0.1 - elapsed)
 
         return 0.0
 
     async def acquire_pacing_slot(self, model: Optional[str] = None) -> None:
         """
-        Enforce pacing and cooldown under the key's private lock according to Mistral's model limits.
+        Enforce pacing, sliding-window TPM, and cooldown under the key's private lock
+        according to Mistral's model limits with a 0.08s jitter margin to avoid edge collisions.
         """
         async with self._pacing_lock:
             loop = asyncio.get_event_loop()
@@ -271,15 +383,47 @@ class MistralKey:
                 await asyncio.sleep(wait_m)
                 now = loop.time()
 
-            # 3. Enforce model RPS spacing
+            # 3. Enforce 60-second sliding-window TPM cap
+            tpm_limit = limits.get("tpm")
+            if tpm_limit and tpm_limit > 0:
+                current_window_tokens = self.get_sliding_tpm(norm_model, now=now)
+                if current_window_tokens >= tpm_limit:
+                    records = self._model_token_records.get(norm_model)
+                    if records:
+                        oldest_t = records[0][0]
+                        curr = now
+                        if oldest_t > 1e8 and curr < 1e8:
+                            import time as _t
+                            curr = _t.time()
+                        tpm_wait = (oldest_t + 60.0 + self.jitter_margin_sec) - curr
+                        if tpm_wait > 0:
+                            logger.info(
+                                f"[MistralKey:{self.masked_key}:{norm_model}] Reached {tpm_limit} TPM sliding-window cap; "
+                                f"pacing {tpm_wait:.2f}s..."
+                            )
+                            await asyncio.sleep(tpm_wait)
+                            now = loop.time()
+
+            # 4. Enforce model RPS spacing with 0.08s jitter margin or pop atomic reservation
             min_interval = limits["min_interval"]
-            last_m_time = self._last_request_by_model.get(norm_model, 0.0)
-            if last_m_time > 0:
-                elapsed = now - last_m_time
-                if elapsed < min_interval:
-                    wait_spacing = min_interval - elapsed
-                    await asyncio.sleep(wait_spacing)
-                    now = loop.time()
+            spacing = min_interval + self.jitter_margin_sec
+            reserved_deque = self._reserved_slots.get(norm_model)
+            reserved_slot: Optional[float] = None
+            if reserved_deque and len(reserved_deque) > 0:
+                reserved_slot = reserved_deque.popleft()
+
+            if reserved_slot is not None and reserved_slot > now:
+                wait_slot = reserved_slot - now
+                await asyncio.sleep(wait_slot)
+                now = loop.time()
+            else:
+                last_m_time = self._last_request_by_model.get(norm_model, 0.0)
+                if last_m_time > 0:
+                    elapsed = now - last_m_time
+                    if elapsed < min_interval:
+                        wait_spacing = (min_interval - elapsed) + self.jitter_margin_sec
+                        await asyncio.sleep(wait_spacing)
+                        now = loop.time()
 
             self._last_request_by_model[norm_model] = now
             self._last_request_time = now
@@ -381,7 +525,7 @@ class MistralKey:
                 # Minute TPM or model RPS rate limit: apply cooldown to model only!
                 effective_sec = retry_after or reset_tok_sec or reset_req_sec or 3.0
                 effective_sec = max(effective_sec, 2.0)
-                reason = f"model rate limit (retry-after {effective_sec:g}s)"
+                reason = f"minute rate limit / model RPS limit (retry-after {effective_sec:g}s)"
                 self.mark_rate_limited(
                     is_daily=False,
                     retry_delay_sec=effective_sec,
@@ -398,6 +542,17 @@ class MistralKey:
         # HTTP 200: Success
         if response.status_code == 200:
             self.mark_success(model=model)
+            # Parse token usage from response body if present
+            try:
+                body = response.json()
+                if isinstance(body, dict):
+                    usage_data = body.get("usage", {})
+                    tot_tok = usage_data.get("total_tokens", 0)
+                    if tot_tok and tot_tok > 0 and model:
+                        self.record_token_usage(model, tot_tok)
+            except Exception:
+                pass
+
             if rem_tok == 0 and reset_tok_sec is not None and reset_tok_sec > 0:
                 if model:
                     norm_m = model.strip().lower()
@@ -437,12 +592,16 @@ class MistralKey:
 
         if model and not is_daily:
             norm_model = model.strip().lower()
+            formatted_reason = reason or f"minute rate limit / model RPS limit on {model}"
+            if "minute rate limit" not in formatted_reason.lower():
+                formatted_reason = f"minute rate limit / model RPS limit ({formatted_reason})"
             self._model_cooldowns[norm_model] = now + delay
-            self._model_cooldown_reasons[norm_model] = reason or f"Rate limit on {model}"
+            self._model_cooldown_reasons[norm_model] = formatted_reason
+            self.cooldown_reason = formatted_reason
             self._model_rate_limits[norm_model] = self._model_rate_limits.get(norm_model, 0) + 1
             self.minute_rate_limits += 1
             logger.warning(
-                f"[MistralKey:{self.masked_key}] Model '{model}' rate limited ({reason}). "
+                f"[MistralKey:{self.masked_key}] Model '{model}' rate limited ({formatted_reason}). "
                 f"Cooldown {delay:.2f}s applied strictly to model '{model}'. Key remains ACTIVE for other models."
             )
             if self.status != KeyStatus.UNAUTHORIZED:
@@ -570,11 +729,15 @@ class MistralKeyPool:
     def get_keys(self) -> List[MistralKey]:
         return list(self._keys)
 
+    def has_available_key_for_model(self, model: str) -> bool:
+        """Check if at least one key in the pool is currently available for the specified model."""
+        now = _get_loop_time()
+        return any(k.is_available(now, model=model) for k in self._keys)
+
     async def acquire_next_key(self, model: Optional[str] = None) -> Optional[MistralKey]:
         """
-        Select next available key using round-robin distribution with cooldown avoidance.
-        If model is specified, filters out keys where that specific model is in cooldown.
-        Returns None if all keys are unavailable for that model.
+        Select next available key using round-robin distribution with atomic RPS slot reservation.
+        Evenly distributes concurrent callers across Key 1, 2, 3, 4 without piling or contention.
         """
         async with self._pool_lock:
             if not self._keys:
@@ -583,27 +746,43 @@ class MistralKeyPool:
             loop = asyncio.get_event_loop()
             now = loop.time()
             n = len(self._keys)
+            limits = get_mistral_model_limits(model)
+            norm_model = limits["model"]
+            spacing = limits["min_interval"] + (self._keys[0].jitter_margin_sec if self._keys else 0.08)
 
-            # 1. Round-robin scan for an immediately available key
+            # 1. Round-robin scan for an immediately available key (wait <= 0.05s)
             for offset in range(n):
                 idx = (self._round_robin_idx + offset) % n
                 candidate = self._keys[idx]
                 if candidate.is_available(now, model=model):
-                    self._round_robin_idx = (idx + 1) % n
-                    return candidate
+                    wait = candidate.get_seconds_until_ready(now, model=model)
+                    if wait <= 0.05:
+                        candidate.reserve_slot(norm_model, slot_time=now, spacing=spacing)
+                        self._round_robin_idx = (idx + 1) % n
+                        return candidate
 
-            # 2. Inspect if any key will be ready shortly (within 2.0s jitter/window)
+            # 2. Inspect which key will be ready soonest (within 3.0s window) with round-robin tie breaking
             best_key: Optional[MistralKey] = None
             best_wait = float("inf")
-            for candidate in self._keys:
-                if candidate.status == KeyStatus.UNAUTHORIZED:
+            best_idx = -1
+
+            for offset in range(n):
+                idx = (self._round_robin_idx + offset) % n
+                candidate = self._keys[idx]
+                if candidate.status in (KeyStatus.UNAUTHORIZED, KeyStatus.DAILY_EXHAUSTED):
+                    continue
+                if candidate.get_model_cooldown_remaining(norm_model, now=now) > 3.0:
                     continue
                 wait = candidate.get_seconds_until_ready(now, model=model)
-                if wait < best_wait:
+                if wait < best_wait - 1e-5:
                     best_wait = wait
                     best_key = candidate
+                    best_idx = idx
 
-            if best_key and best_wait <= 2.0:
+            if best_key and best_wait <= 15.0:
+                slot_time = now + best_wait
+                best_key.reserve_slot(norm_model, slot_time=slot_time, spacing=spacing)
+                self._round_robin_idx = (best_idx + 1) % n
                 return best_key
 
             return None

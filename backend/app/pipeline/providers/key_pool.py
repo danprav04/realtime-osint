@@ -106,6 +106,19 @@ class GroqKey:
         self.auth_errors: int = 0
         self.last_used_at: Optional[str] = None
 
+        # Per-(key, model) bucket isolation (locks, headers, sliding RPM/TPM, daily counters)
+        self._model_pacing_locks: Dict[str, asyncio.Lock] = {}
+        self._model_headers: Dict[str, Dict[str, Any]] = {}
+        self._model_request_timestamps: Dict[str, Deque[float]] = {}
+        self._model_token_records: Dict[str, Deque[Tuple[float, int]]] = {}
+        self._model_daily_tokens: Dict[str, int] = {}
+        self._model_daily_requests: Dict[str, int] = {}
+        self._model_last_request_time: Dict[str, float] = {}
+        self._current_date_utc: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self._created_loop_time: float = _get_loop_time()
+        self._model_daily_last_reset: Dict[str, float] = {}
+        self._model_daily_reset_at: Dict[str, float] = {}
+
         # Per-model cooldown tracking
         self._model_cooldowns: Dict[str, float] = {}  # model_name.lower() -> cooldown_until loop timestamp
         self._model_cooldown_reasons: Dict[str, str] = {}
@@ -120,16 +133,63 @@ class GroqKey:
         self.reset_tokens_sec: Optional[float] = None
         self.retry_after_sec: Optional[float] = None
 
+    def _get_model_lock(self, norm_model: str) -> asyncio.Lock:
+        """Get or initialize the private pacing lock for a specific model bucket on this key."""
+        if norm_model not in self._model_pacing_locks:
+            self._model_pacing_locks[norm_model] = asyncio.Lock()
+        return self._model_pacing_locks[norm_model]
+
+    def _check_daily_rollover(self, current_time: Optional[float] = None, model: Optional[str] = None) -> None:
+        """
+        Reset daily token and request counters when:
+        1. UTC calendar date changes.
+        2. Simulated or elapsed loop time exceeds 24 hours (86,400s) since last reset.
+        3. Provider reset header timestamp has elapsed.
+        """
+        now_t = current_time if current_time is not None else _get_loop_time()
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        if today_utc != self._current_date_utc:
+            self._current_date_utc = today_utc
+            self._model_daily_tokens.clear()
+            self._model_daily_requests.clear()
+            self._model_daily_last_reset.clear()
+            self._model_daily_reset_at.clear()
+            return
+
+        # Check per-model elapsed time or header reset timestamp
+        models_to_check = [model.strip().lower()] if model else list(set(self._model_daily_tokens.keys()) | set(self._model_daily_requests.keys()))
+        for norm_m in models_to_check:
+            last_reset = self._model_daily_last_reset.setdefault(norm_m, self._created_loop_time)
+            reset_at = self._model_daily_reset_at.get(norm_m, 0.0)
+            if (reset_at > 0.0 and now_t >= reset_at) or (now_t - last_reset >= 86400.0):
+                self._model_daily_tokens[norm_m] = 0
+                self._model_daily_requests[norm_m] = 0
+                self._model_daily_last_reset[norm_m] = now_t
+                self._model_daily_reset_at.pop(norm_m, None)
+
+    def record_token_usage(self, model: str, tokens: int) -> None:
+        """Record token usage for sliding-window TPM (8,000) and daily TPD (200,000) tracking."""
+        if not model or tokens <= 0:
+            return
+        norm_m = model.strip().lower()
+        now = _get_loop_time()
+        self._check_daily_rollover(current_time=now, model=norm_m)
+        self._model_daily_last_reset.setdefault(norm_m, now)
+        self._model_token_records.setdefault(norm_m, deque()).append((now, tokens))
+        self._model_daily_tokens[norm_m] = self._model_daily_tokens.get(norm_m, 0) + tokens
+
     def is_available(self, now: Optional[float] = None, model: Optional[str] = None) -> bool:
         """
         Check if key is available to accept requests.
         If model is specified, checks whether this specific model is currently
-        in a per-model rate limit cooldown on this key.
+        in a per-model rate limit cooldown or daily quota exhaustion on this key.
         """
         if self.status == KeyStatus.UNAUTHORIZED:
             return False
 
         current_time = now if now is not None else _get_loop_time()
+        self._check_daily_rollover(current_time=current_time, model=model)
 
         # Check key-level global cooldown (e.g. account/org daily quota or 401/403)
         if self.status in (KeyStatus.MINUTE_COOLDOWN, KeyStatus.DAILY_EXHAUSTED):
@@ -144,7 +204,7 @@ class GroqKey:
             else:
                 return False
 
-        # If a specific model was requested, check per-model cooldown
+        # If a specific model was requested, check per-model cooldown and daily limits
         if model:
             norm_model = model.strip().lower()
             model_expiry = self._model_cooldowns.get(norm_model, 0.0)
@@ -153,8 +213,28 @@ class GroqKey:
                     # Model cooldown expired on this key
                     self._model_cooldowns.pop(norm_model, None)
                     self._model_cooldown_reasons.pop(norm_model, None)
-                    return True
+                else:
+                    return False
+
+            # Check daily bucket limits for this model (dynamic RPD or 200,000 TPD)
+            limit_r = (
+                self._model_headers.get(norm_model, {}).get("limit_requests")
+                or self.limit_requests
+                or 1000
+            )
+            if self._model_daily_requests.get(norm_model, 0) >= limit_r:
                 return False
+            if self._model_daily_tokens.get(norm_model, 0) >= 200000:
+                return False
+
+            # Check sliding TPM/RPM pacing wait time (> 3.0s means waiting on sliding window)
+            if self.get_seconds_until_ready(current_time, model=norm_model) > 3.0:
+                return False
+
+            return True
+
+        if self.get_seconds_until_ready(current_time) > 3.0:
+            return False
 
         return self.status == KeyStatus.ACTIVE
 
@@ -172,6 +252,7 @@ class GroqKey:
     def get_seconds_until_ready(self, now: Optional[float] = None, model: Optional[str] = None) -> float:
         """Estimate how many seconds until this key can issue its next request (optionally for a model)."""
         current_time = now if now is not None else _get_loop_time()
+        self._check_daily_rollover(current_time=current_time, model=model)
         if self.status == KeyStatus.UNAUTHORIZED:
             return float("inf")
 
@@ -180,11 +261,45 @@ class GroqKey:
                 return max(0.0, self.cooldown_until - current_time)
 
         if model:
+            norm_model = model.strip().lower()
             model_wait = self.get_model_cooldown_remaining(model, now=current_time)
             if model_wait > 0:
                 return model_wait
 
-        # Sliding window check (only if max_rpm explicitly set > 0)
+            # Check daily quota limits (dynamic RPD or 200,000 TPD)
+            limit_r = (
+                self._model_headers.get(norm_model, {}).get("limit_requests")
+                or self.limit_requests
+                or 1000
+            )
+            if self._model_daily_requests.get(norm_model, 0) >= limit_r or self._model_daily_tokens.get(norm_model, 0) >= 200000:
+                hdr = self._model_headers.get(norm_model, {})
+                return hdr.get("reset_requests_sec") or 3600.0
+
+            wait_time = 0.0
+            # 60s sliding window RPM (30 RPM default)
+            timestamps = self._model_request_timestamps.get(norm_model)
+            rpm_limit = self.max_rpm if self.max_rpm > 0 else 30
+            if timestamps:
+                active_ts = [t for t in timestamps if (current_time - t) < 60.0]
+                if len(active_ts) >= rpm_limit:
+                    wait_time = max(wait_time, (active_ts[0] + 60.2) - current_time)
+
+            # 60s sliding window TPM (8,000 TPM limit)
+            token_records = self._model_token_records.get(norm_model)
+            if token_records:
+                active_toks = [(ts, tok) for ts, tok in token_records if (current_time - ts) < 60.0]
+                if sum(tok for _, tok in active_toks) >= 8000:
+                    wait_time = max(wait_time, (active_toks[0][0] + 60.2) - current_time)
+
+            if self.min_interval_sec > 0 and self._model_last_request_time.get(norm_model, 0.0) > 0:
+                elapsed = current_time - self._model_last_request_time[norm_model]
+                if elapsed < self.min_interval_sec:
+                    wait_time = max(wait_time, self.min_interval_sec - elapsed)
+
+            return max(0.0, wait_time)
+
+        # Sliding window check without model (only if max_rpm explicitly set > 0)
         wait_time = 0.0
         if self.max_rpm > 0 and self._request_timestamps and len(self._request_timestamps) >= self.max_rpm:
             earliest = self._request_timestamps[0]
@@ -200,12 +315,18 @@ class GroqKey:
 
     async def acquire_pacing_slot(self, model: Optional[str] = None) -> None:
         """
-        Enforce pacing and cooldown under the key's private lock.
-        Requests on this key do not block requests on other keys in the pool.
+        Enforce pacing and cooldown under the key and model's private lock.
+        Requests on this key and model do not block requests on other keys or models in the pool.
         """
-        async with self._pacing_lock:
+        norm_model = model.strip().lower() if model else None
+        lock = self._get_model_lock(norm_model) if norm_model else self._pacing_lock
+
+        async with lock:
             loop = asyncio.get_event_loop()
             now = loop.time()
+            self._check_daily_rollover(current_time=now, model=norm_model)
+            if norm_model:
+                self._model_daily_last_reset.setdefault(norm_model, now)
 
             # 1. Honor active key-level cooldown if any (set strictly by what Groq returned)
             if now < self.cooldown_until:
@@ -217,8 +338,7 @@ class GroqKey:
                 now = loop.time()
 
             # 2. Honor model-level cooldown if specified and pending
-            if model:
-                norm_model = model.strip().lower()
+            if norm_model:
                 m_exp = self._model_cooldowns.get(norm_model, 0.0)
                 if now < m_exp:
                     wait_m = m_exp - now
@@ -228,8 +348,44 @@ class GroqKey:
                     await asyncio.sleep(wait_m)
                     now = loop.time()
 
-            # 3. Enforce 60-second sliding-window RPM cap (if configured)
-            if self.max_rpm > 0:
+            # 3. Enforce 60-second sliding-window RPM cap
+            if norm_model:
+                timestamps = self._model_request_timestamps.setdefault(norm_model, deque())
+                while timestamps and (now - timestamps[0]) >= 60.0:
+                    timestamps.popleft()
+
+                rpm_limit = self.max_rpm if self.max_rpm > 0 else 30
+                if len(timestamps) >= rpm_limit:
+                    window_wait = (timestamps[0] + 60.2) - now
+                    if window_wait > 0:
+                        logger.info(
+                            f"[GroqKey:{self.masked_key}:{norm_model}] Reached {rpm_limit} RPM sliding-window cap; "
+                            f"pacing {window_wait:.1f}s..."
+                        )
+                        await asyncio.sleep(window_wait)
+                        now = loop.time()
+                    while timestamps and (now - timestamps[0]) >= 60.0:
+                        timestamps.popleft()
+
+                # 4. Enforce 60-second sliding-window TPM cap (8,000 TPM)
+                token_records = self._model_token_records.setdefault(norm_model, deque())
+                while token_records and (now - token_records[0][0]) >= 60.0:
+                    token_records.popleft()
+
+                current_window_tokens = sum(tok for _, tok in token_records)
+                if current_window_tokens >= 8000:
+                    tpm_wait = (token_records[0][0] + 60.2) - now
+                    if tpm_wait > 0:
+                        logger.info(
+                            f"[GroqKey:{self.masked_key}:{norm_model}] Reached 8,000 TPM sliding-window cap; "
+                            f"pacing {tpm_wait:.1f}s..."
+                        )
+                        await asyncio.sleep(tpm_wait)
+                        now = loop.time()
+                    while token_records and (now - token_records[0][0]) >= 60.0:
+                        token_records.popleft()
+
+            elif self.max_rpm > 0:
                 while self._request_timestamps and (now - self._request_timestamps[0]) >= 60.0:
                     self._request_timestamps.popleft()
 
@@ -245,12 +401,18 @@ class GroqKey:
                     while self._request_timestamps and (now - self._request_timestamps[0]) >= 60.0:
                         self._request_timestamps.popleft()
 
-            # 4. Enforce minimum spacing between consecutive requests on this key (if configured)
-            if self.min_interval_sec > 0 and self._last_request_time > 0:
-                elapsed = now - self._last_request_time
+            # 5. Enforce minimum spacing between consecutive requests on this key (if configured)
+            last_req = self._model_last_request_time.get(norm_model, 0.0) if norm_model else self._last_request_time
+            if self.min_interval_sec > 0 and last_req > 0:
+                elapsed = now - last_req
                 if elapsed < self.min_interval_sec:
                     await asyncio.sleep(self.min_interval_sec - elapsed)
                     now = loop.time()
+
+            if norm_model:
+                self._model_last_request_time[norm_model] = now
+                self._model_request_timestamps.setdefault(norm_model, deque()).append(now)
+                self._model_daily_requests[norm_model] = self._model_daily_requests.get(norm_model, 0) + 1
 
             self._last_request_time = now
             if self.max_rpm > 0:
@@ -296,6 +458,23 @@ class GroqKey:
 
         now = _get_loop_time()
 
+        if model:
+            norm_model = model.strip().lower()
+            self._model_headers[norm_model] = {
+                "remaining_requests": rem_requests,
+                "remaining_tokens": rem_tokens,
+                "limit_requests": lim_requests,
+                "limit_tokens": lim_tokens,
+                "reset_requests_sec": reset_requests_sec,
+                "reset_tokens_sec": reset_tokens_sec,
+                "retry_after_sec": retry_after,
+                "updated_at": now,
+            }
+            if lim_requests is not None and rem_requests is not None and lim_requests >= rem_requests:
+                self._model_daily_requests[norm_model] = lim_requests - rem_requests
+            if reset_requests_sec is not None and reset_requests_sec > 0:
+                self._model_daily_reset_at[norm_model] = now + reset_requests_sec
+
         # 2. HTTP 429: Rate Limit Reached
         if response.status_code == 429:
             lock_delay: Optional[float] = None
@@ -305,35 +484,60 @@ class GroqKey:
             # Check error body and fallback classifier first
             is_daily_cls, fallback_delay, fallback_reason = classify_rate_limit_429(response, "groq")
 
+            err_body = ""
+            try:
+                err_body = response.text.lower()
+            except Exception:
+                pass
+
+            is_tpd_exhaustion = (
+                is_daily_cls
+                or "tokens per day" in err_body
+                or "tpd" in err_body
+                or "tokens/day" in err_body
+            )
+
             # Priority 1: retry-after header returned by Groq on 429
             if retry_after is not None and retry_after > 0:
                 lock_delay = retry_after
                 if rem_requests == 0 and (rem_tokens is None or rem_tokens > 0):
                     is_daily = True
                     reason = f"daily requests exhausted (retry-after {retry_after:g}s)"
+                elif is_tpd_exhaustion:
+                    is_daily = True
+                    reason = f"daily tokens exhausted (TPD 200k, retry-after {retry_after:g}s)"
+                elif retry_after > 90.0:
+                    is_daily = True
+                    reason = f"daily quota exhausted (rolling window, retry-after {retry_after:g}s)"
                 else:
                     is_daily = False
                     reason = f"rate limit (retry-after {retry_after:g}s)"
 
-            # Priority 2: tokens exhausted (TPM reset) - require >= 1.0s to avoid sub-millisecond storms
+            # Priority 2: TPD exhaustion detected without explicit retry_after header
+            elif is_tpd_exhaustion:
+                lock_delay = fallback_delay if (fallback_delay and fallback_delay > 0) else 60.0
+                is_daily = True
+                reason = fallback_reason or "daily tokens exhausted (TPD 200k)"
+
+            # Priority 3: tokens exhausted (TPM reset) - require >= 1.0s to avoid sub-millisecond storms
             elif (rem_tokens == 0 or (rem_tokens is not None and rem_tokens < 1000)) and reset_tokens_sec is not None and reset_tokens_sec >= 1.0:
                 lock_delay = reset_tokens_sec
                 is_daily = False
                 reason = f"tokens exhausted (reset in {reset_tokens_sec:g}s)"
 
-            # Priority 3: requests exhausted (RPD reset - Groq requests are always RPD)
+            # Priority 4: requests exhausted (RPD reset - Groq requests are always RPD)
             elif rem_requests == 0 and reset_requests_sec is not None and reset_requests_sec > 0:
                 lock_delay = reset_requests_sec
                 is_daily = True
                 reason = f"daily requests exhausted (reset in {reset_requests_sec:g}s)"
 
-            # Priority 4: delay parsed from body (e.g. "Please try again in 4.2s")
+            # Priority 5: delay parsed from body (e.g. "Please try again in 4.2s")
             elif fallback_delay is not None and fallback_delay > 0:
                 lock_delay = fallback_delay
-                is_daily = is_daily_cls
+                is_daily = is_daily_cls or (fallback_delay > 90.0)
                 reason = fallback_reason or f"rate limit (body parsed {fallback_delay:g}s)"
 
-            # Priority 5: any reset header present with at least 1.0s
+            # Priority 6: any reset header present with at least 1.0s
             elif reset_tokens_sec is not None and reset_tokens_sec >= 1.0:
                 lock_delay = reset_tokens_sec
                 is_daily = False
@@ -343,10 +547,11 @@ class GroqKey:
                 is_daily = True
                 reason = f"rate limit (reset-requests {reset_requests_sec:g}s)"
 
-            # Priority 6: Fallback floor
+            # Priority 7: Fallback floor
             else:
                 is_daily = is_daily_cls
                 lock_delay = fallback_delay if (fallback_delay and fallback_delay > 0) else 5.0
+
             # When retry_after is explicitly provided by the provider header, respect it directly.
             # Otherwise enforce a minimum floor of 3.0s (60s for daily) to avoid 0.001s retry storms.
             if retry_after is not None and retry_after > 0:
@@ -354,7 +559,7 @@ class GroqKey:
             elif is_daily:
                 effective_lock = max(lock_delay or 0.0, 60.0)
             else:
-                effective_lock = max(lock_delay or 0.0, 3.0)
+                effective_lock = max(lock_delay or 0.0, 3.05)
 
             self.mark_rate_limited(
                 is_daily=is_daily,
@@ -366,9 +571,11 @@ class GroqKey:
 
         # 3. HTTP 200 (Success):
         if response.status_code == 200:
-            self.mark_success(model=model)
-            # If Groq indicated that remaining tokens reached 0 or are critically depleted (< 1000 of 8000 TPM):
-            if (rem_tokens == 0 or (rem_tokens is not None and rem_tokens < 1000)) and reset_tokens_sec is not None and reset_tokens_sec > 0:
+            # Proactive TPM rotation on HTTP 200:
+            # When rem_tokens is not None and rem_tokens < 1200 and reset_tokens_sec > 0,
+            # proactively set self._model_cooldowns[norm_m] = max(existing, now + min(reset_tokens_sec, 15.0))
+            if (rem_tokens == 0 or (rem_tokens is not None and rem_tokens < 1200)) and reset_tokens_sec is not None and reset_tokens_sec > 0:
+                proactive_cd = min(reset_tokens_sec, 15.0)
                 dep_reason = (
                     f"tokens depleted (reset in {reset_tokens_sec:g}s)"
                     if rem_tokens == 0
@@ -376,25 +583,28 @@ class GroqKey:
                 )
                 if model:
                     norm_m = model.strip().lower()
-                    self._model_cooldowns[norm_m] = now + reset_tokens_sec
+                    existing_cd = self._model_cooldowns.get(norm_m, 0.0)
+                    self._model_cooldowns[norm_m] = max(existing_cd, now + proactive_cd)
                     self._model_cooldown_reasons[norm_m] = dep_reason
                     logger.info(
                         f"[GroqKey:{self.masked_key}] 200 OK with remaining tokens={rem_tokens} for model '{model}'. "
-                        f"Model cooldown until reset in {reset_tokens_sec:g}s. Key remains ACTIVE."
+                        f"Proactive model cooldown until reset in {proactive_cd:g}s. Key remains ACTIVE."
                     )
                 else:
                     self.status = KeyStatus.MINUTE_COOLDOWN
-                    self.cooldown_until = now + reset_tokens_sec
+                    self.cooldown_until = max(self.cooldown_until, now + proactive_cd)
                     self.cooldown_reason = dep_reason
                     logger.info(
                         f"[GroqKey:{self.masked_key}] 200 OK with remaining tokens={rem_tokens}. "
-                        f"Cooldown until reset in {reset_tokens_sec:g}s."
+                        f"Proactive cooldown until reset in {proactive_cd:g}s."
                     )
+                self.success_requests += 1
             # If Groq indicated that remaining daily requests reached 0 on this request:
             elif rem_requests == 0 and reset_requests_sec is not None and reset_requests_sec > 0:
                 if model:
                     norm_m = model.strip().lower()
-                    self._model_cooldowns[norm_m] = now + reset_requests_sec
+                    existing_cd = self._model_cooldowns.get(norm_m, 0.0)
+                    self._model_cooldowns[norm_m] = max(existing_cd, now + reset_requests_sec)
                     self._model_cooldown_reasons[norm_m] = f"requests depleted (reset in {reset_requests_sec:g}s)"
                     logger.info(
                         f"[GroqKey:{self.masked_key}] 200 OK with requests=0 for model '{model}'. "
@@ -402,18 +612,29 @@ class GroqKey:
                     )
                 else:
                     self.status = KeyStatus.DAILY_EXHAUSTED
-                    self.cooldown_until = now + reset_requests_sec
+                    self.cooldown_until = max(self.cooldown_until, now + reset_requests_sec)
                     self.cooldown_reason = f"requests depleted (reset in {reset_requests_sec:g}s)"
                     logger.info(
                         f"[GroqKey:{self.masked_key}] 200 OK with requests=0. "
                         f"Daily exhausted cooldown until reset in {reset_requests_sec:g}s."
                     )
+                self.success_requests += 1
             else:
-                # Key is active and has available capacity
-                if self.status != KeyStatus.UNAUTHORIZED:
-                    self.status = KeyStatus.ACTIVE
-                    self.cooldown_until = 0.0
-                    self.cooldown_reason = ""
+                self.mark_success(model=model)
+
+            # Record token usage if usage field is present in response
+            if model:
+                try:
+                    data = response.json()
+                    if isinstance(data, dict):
+                        usage = data.get("usage", {})
+                        tok = usage.get("total_tokens") or (
+                            usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+                        )
+                        if tok and tok > 0:
+                            self.record_token_usage(model, tok)
+                except Exception:
+                    pass
 
     def mark_success(self, model: Optional[str] = None) -> None:
         """Record successful call on this key."""
@@ -438,18 +659,23 @@ class GroqKey:
         Mark rate limit following HTTP 429 using the exact duration returned by Groq.
         If model is provided, locks strictly that model on this key while keeping the key
         active and available for all other models.
-        If model is None, sets key-level cooldown for backward compatibility.
+        Retains longer cooldowns: self._model_cooldowns[norm_model] = max(existing, now + delay).
         """
         now = _get_loop_time()
-        self.cooldown_reason = reason or "HTTP 429 Rate Limit"
 
         # Lock for the exact delay returned by the provider (never arbitrary numbers)
         delay = float(retry_delay_sec) if (retry_delay_sec is not None and retry_delay_sec > 0) else (60.0 if is_daily else 1.0)
 
         if model:
             norm_model = model.strip().lower()
-            self._model_cooldowns[norm_model] = now + delay
-            self._model_cooldown_reasons[norm_model] = reason or f"Rate limit on {model}"
+            existing = self._model_cooldowns.get(norm_model, 0.0)
+            target = now + delay
+            if target >= existing:
+                self._model_cooldowns[norm_model] = target
+                self._model_cooldown_reasons[norm_model] = reason or f"Rate limit on {model}"
+            else:
+                self._model_cooldowns[norm_model] = existing
+
             self._model_rate_limits[norm_model] = self._model_rate_limits.get(norm_model, 0) + 1
             if is_daily:
                 self.daily_quota_exhaustions += 1
@@ -464,18 +690,28 @@ class GroqKey:
                 self.status = KeyStatus.ACTIVE
             return
 
+        existing_key = self.cooldown_until
+        target_key = now + delay
         if is_daily:
             self.status = KeyStatus.DAILY_EXHAUSTED
             self.daily_quota_exhaustions += 1
-            self.cooldown_until = now + delay
+            if target_key >= existing_key:
+                self.cooldown_until = target_key
+                self.cooldown_reason = reason or "Daily quota exhausted"
+            else:
+                self.cooldown_until = existing_key
             logger.warning(
                 f"[GroqKey:{self.masked_key}] Daily quota exhausted ({reason}). "
                 f"Cooldown applied for {delay:.2f}s as returned by provider."
             )
         else:
-            self.status = KeyStatus.MINUTE_COOLDOWN
             self.minute_rate_limits += 1
-            self.cooldown_until = now + delay
+            if target_key >= existing_key:
+                self.status = KeyStatus.MINUTE_COOLDOWN
+                self.cooldown_until = target_key
+                self.cooldown_reason = reason or "Rate limit reached"
+            else:
+                self.cooldown_until = existing_key
             logger.warning(
                 f"[GroqKey:{self.masked_key}] Rate limit reached ({reason}). "
                 f"Cooldown applied for {delay:.2f}s as returned by provider."
@@ -530,6 +766,9 @@ class GroqKey:
             "reset_requests_sec": self.reset_requests_sec,
             "reset_tokens_sec": self.reset_tokens_sec,
             "retry_after_sec": self.retry_after_sec,
+            "model_headers": {m: dict(h) for m, h in self._model_headers.items()},
+            "model_daily_tokens": dict(self._model_daily_tokens),
+            "model_daily_requests": dict(self._model_daily_requests),
         }
 
 
@@ -631,21 +870,31 @@ class GroqKeyPool:
                     return candidate
 
             # 2. If no key is immediately active for this model, inspect if any key is closest to ready (within 3s)
-            best_key: Optional[GroqKey] = None
-            best_wait = float("inf")
-            for candidate in self._keys:
-                if candidate.status == KeyStatus.UNAUTHORIZED:
-                    continue
-                wait = candidate.get_seconds_until_ready(now, model=model)
-                if wait < best_wait:
-                    best_wait = wait
-                    best_key = candidate
+            best_key, best_wait = self.get_best_wait_time(model=model, now=now)
 
             # If the closest key will be ready within 3.0 seconds (short jitter / window rollover), return it
             if best_key and best_wait <= 3.0:
                 return best_key
 
             return None
+
+    def get_best_wait_time(
+        self,
+        model: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> Tuple[Optional[GroqKey], float]:
+        """Find the key closest to being ready for a given model and return (key, seconds_until_ready)."""
+        current_time = now if now is not None else _get_loop_time()
+        best_key: Optional[GroqKey] = None
+        best_wait = float("inf")
+        for candidate in self._keys:
+            if candidate.status == KeyStatus.UNAUTHORIZED:
+                continue
+            wait = candidate.get_seconds_until_ready(current_time, model=model)
+            if wait < best_wait:
+                best_wait = wait
+                best_key = candidate
+        return best_key, best_wait
 
     def get_telemetry(self) -> Dict[str, Any]:
         """Return comprehensive live status for all keys in the pool."""

@@ -538,3 +538,383 @@ async def test_groq_key_pool_broadcast_model_cooldown():
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_twelve_independent_buckets_across_four_keys_and_three_models():
+    """Verify complete isolation across 4 keys x 3 models = 12 independent buckets."""
+    keys = ["gsk_key1", "gsk_key2", "gsk_key3", "gsk_key4"]
+    models = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    pool = GroqKeyPool(keys=keys)
+
+    # 1. Acquire pacing slots across all 12 buckets to establish state
+    for k in pool.get_keys():
+        for m in models:
+            await k.acquire_pacing_slot(model=m)
+
+    # Verify each key has independent model locks, request timestamps, and daily request counters
+    for k in pool.get_keys():
+        for m in models:
+            assert m in k._model_pacing_locks
+            assert len(k._model_request_timestamps[m]) == 1
+            assert k._model_daily_requests[m] == 1
+
+    # 2. Put bucket (Key 1, qwen/qwen3.8-27b) on a 100s cooldown
+    k1 = pool.get_keys()[0]
+    k1.mark_rate_limited(is_daily=False, retry_delay_sec=100.0, reason="TPM limit", model="qwen/qwen3.8-27b")
+
+    # (Key 1, qwen/qwen3.8-27b) is throttled
+    assert k1.is_available(model="qwen/qwen3.8-27b") is False
+    # But Key 1's other two buckets are 100% available
+    assert k1.is_available(model="openai/gpt-oss-120b") is True
+    assert k1.is_available(model="openai/gpt-oss-20b") is True
+
+    # Keys 2, 3, 4 are available for all 3 models
+    for k in pool.get_keys()[1:]:
+        for m in models:
+            assert k.is_available(model=m) is True
+
+    # 3. Simulate token consumption strictly in bucket (Key 2, openai/gpt-oss-120b)
+    k2 = pool.get_keys()[1]
+    k2.record_token_usage("openai/gpt-oss-120b", 4500)
+    assert sum(tok for _, tok in k2._model_token_records["openai/gpt-oss-120b"]) == 4500
+    assert k2._model_daily_tokens["openai/gpt-oss-120b"] == 4500
+
+    # Ensure other 11 buckets have 0 token records
+    for k in pool.get_keys():
+        for m in models:
+            if k == k2 and m == "openai/gpt-oss-120b":
+                continue
+            assert sum(tok for _, tok in k._model_token_records.get(m, [])) == 0
+
+    # 4. Key rotation for qwen/qwen3.8-27b skips Key 1 (on cooldown) and picks Key 2
+    next_qwen = await pool.acquire_next_key(model="qwen/qwen3.8-27b")
+    assert next_qwen is not None
+    assert next_qwen.key == "gsk_key2"
+
+    # Pool round-robin index continues to Key 3, then Key 4, and rotates back to Key 1 for openai/gpt-oss-120b
+    next_120b_1 = await pool.acquire_next_key(model="openai/gpt-oss-120b")
+    assert next_120b_1.key == "gsk_key3"
+    next_120b_2 = await pool.acquire_next_key(model="openai/gpt-oss-120b")
+    assert next_120b_2.key == "gsk_key4"
+    next_120b_3 = await pool.acquire_next_key(model="openai/gpt-oss-120b")
+    assert next_120b_3.key == "gsk_key1"
+
+
+def test_groq_key_mark_rate_limited_cooldown_retention():
+    """Verify mark_rate_limited retains longer cooldowns and does not overwrite with shorter ones."""
+    key = GroqKey("gsk_retention_test")
+    model = "qwen/qwen3.8-27b"
+
+    # 1. Establish initial long daily cooldown (14,400s)
+    key.mark_rate_limited(
+        is_daily=True,
+        retry_delay_sec=14400.0,
+        reason="Daily TPD 200k exhausted",
+        model=model,
+    )
+    rem_initial = key.get_model_cooldown_remaining(model)
+    assert 14390.0 <= rem_initial <= 14401.0
+    assert key._model_cooldown_reasons[model] == "Daily TPD 200k exhausted"
+    assert key.daily_quota_exhaustions == 1
+
+    # 2. Attempt to apply a shorter minute cooldown (15s)
+    key.mark_rate_limited(
+        is_daily=False,
+        retry_delay_sec=15.0,
+        reason="Minute RPM limit",
+        model=model,
+    )
+    # Expiry must NOT have regressed to 15s; it must remain ~14400s!
+    rem_after_short = key.get_model_cooldown_remaining(model)
+    assert 14390.0 <= rem_after_short <= 14401.0
+    # Reason must not be downgraded
+    assert key._model_cooldown_reasons[model] == "Daily TPD 200k exhausted"
+    assert key.minute_rate_limits == 1
+
+    # 3. Apply an even longer cooldown (20,000s) -> should update
+    key.mark_rate_limited(
+        is_daily=True,
+        retry_delay_sec=20000.0,
+        reason="Extended 24h block",
+        model=model,
+    )
+    rem_longer = key.get_model_cooldown_remaining(model)
+    assert 19990.0 <= rem_longer <= 20001.0
+    assert key._model_cooldown_reasons[model] == "Extended 24h block"
+
+
+def test_tpd_exhaustion_classified_as_daily_with_remaining_requests_positive():
+    """Verify HTTP 429 for 24h TPD exhaustion is classified as daily even when remaining requests > 0."""
+    key = GroqKey("gsk_tpd_test")
+    req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    # Groq response: 985 requests left today, but 200K TPD reached (retry-after 1042s)
+    resp = httpx.Response(
+        429,
+        request=req,
+        headers={
+            "retry-after": "1042",
+            "x-ratelimit-remaining-requests": "985",
+            "x-ratelimit-remaining-tokens": "7500",
+            "x-ratelimit-limit-requests": "1000",
+            "x-ratelimit-limit-tokens": "8000",
+        },
+        json={
+            "error": {
+                "message": (
+                    "Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_test` "
+                    "on tokens per day (TPD): Limit 200000, Used 200000. Please try again in 17m22s."
+                )
+            }
+        },
+    )
+
+    key.update_from_response(resp, model="qwen/qwen3.8-27b")
+
+    # Must be classified as DAILY exhaustion, not minute rate limit
+    assert key.daily_quota_exhaustions == 1
+    assert key.minute_rate_limits == 0
+    cd = key.get_model_cooldown_remaining("qwen/qwen3.8-27b")
+    assert 1030.0 <= cd <= 1043.0
+    assert key.is_available(model="qwen/qwen3.8-27b") is False
+    # Key itself remains ACTIVE for other models
+    assert key.status == KeyStatus.ACTIVE
+    assert key.is_available(model="openai/gpt-oss-120b") is True
+
+
+@pytest.mark.asyncio
+async def test_groq_rotation_does_not_broadcast_model_cooldown_across_keys():
+    """Verify that a 429 on one key does not broadcast cooldown to other keys during execution."""
+    keys = ["gsk_key1", "gsk_key2"]
+    pool = GroqKeyPool(keys=keys)
+    provider = GroqProvider(key_pool=pool, default_model="qwen/qwen3.8-27b")
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+
+    async def mock_post(url, json=None, headers=None):
+        auth_hdr = headers.get("Authorization", "")
+        req = httpx.Request("POST", url)
+        if "gsk_key1" in auth_hdr:
+            # Key 1 hits 429 TPD exhaustion
+            return httpx.Response(
+                429,
+                request=req,
+                headers={"retry-after": "500"},
+                json={"error": {"message": "Rate limit reached on tokens per day (TPD)"}},
+            )
+        else:
+            # Key 2 succeeds
+            return httpx.Response(
+                200,
+                request=req,
+                json={"choices": [{"message": {"content": "ok"}}]},
+            )
+
+    mock_client.post = mock_post
+    provider._client = mock_client
+
+    result = await provider.generate_text("test", model="qwen/qwen3.8-27b")
+    assert result == "ok"
+
+    # Key 1 has cooldown for qwen/qwen3.8-27b
+    k1, k2 = pool.get_keys()
+    assert k1.get_model_cooldown_remaining("qwen/qwen3.8-27b") > 400.0
+    # Crucial: Key 2 was NOT broadcast locked! Key 2 remains completely ready!
+    assert k2.get_model_cooldown_remaining("qwen/qwen3.8-27b") == 0.0
+    assert k2.is_available(model="qwen/qwen3.8-27b") is True
+
+
+@pytest.mark.asyncio
+async def test_execute_with_key_rotation_short_wait_retry_sleep():
+    """Verify that when all keys have best_wait <= 12.0s, rotation sleeps and retries rather than failing."""
+    keys = ["gsk_single_key"]
+    pool = GroqKeyPool(keys=keys)
+    provider = GroqProvider(key_pool=pool, default_model="qwen/qwen3.8-27b")
+
+    # Put single key on a short 0.15s cooldown
+    k1 = pool.get_keys()[0]
+    k1.mark_rate_limited(is_daily=False, retry_delay_sec=0.15, reason="Transient short pause", model="qwen/qwen3.8-27b")
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+
+    async def mock_post(url, json=None, headers=None):
+        req = httpx.Request("POST", url)
+        return httpx.Response(
+            200,
+            request=req,
+            json={"choices": [{"message": {"content": "Recovered After Short Wait"}}]},
+        )
+
+    mock_client.post = mock_post
+    provider._client = mock_client
+
+    # Should NOT raise 429; should sleep ~0.15s + 0.08s and succeed
+    result = await provider.generate_text("prompt", model="qwen/qwen3.8-27b")
+    assert result == "Recovered After Short Wait"
+
+
+def test_proactive_tpm_rotation_on_http_200():
+    """Verify HTTP 200 with remaining tokens < 1200 proactively sets cooldown for that model."""
+    key = GroqKey("gsk_proactive_test")
+    req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    resp_200 = httpx.Response(
+        200,
+        request=req,
+        headers={
+            "x-ratelimit-remaining-requests": "990",
+            "x-ratelimit-remaining-tokens": "850",  # < 1200 tokens remaining
+            "x-ratelimit-reset-tokens": "5.5s",
+        },
+        json={"choices": [{"message": {"content": "ok"}}]},
+    )
+
+    key.update_from_response(resp_200, model="qwen/qwen3.8-27b")
+
+    # Proactive cooldown set for model
+    assert key.is_available(model="qwen/qwen3.8-27b") is False
+    cd = key.get_model_cooldown_remaining("qwen/qwen3.8-27b")
+    assert 4.5 <= cd <= 5.6
+    # Key remains active for other models
+    assert key.status == KeyStatus.ACTIVE
+    assert key.is_available(model="openai/gpt-oss-120b") is True
+
+
+@pytest.mark.asyncio
+async def test_exact_one_time_token_recording_per_call():
+    """Verify that a single generate_text request records token usage exactly once (not duplicated)."""
+    pool = GroqKeyPool(keys=["gsk_dedup_test"])
+    provider = GroqProvider(key_pool=pool, default_model="qwen/qwen3.8-27b")
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.is_closed = False
+
+    async def mock_post(url, json=None, headers=None):
+        req = httpx.Request("POST", url)
+        return httpx.Response(
+            200,
+            request=req,
+            headers={
+                "x-ratelimit-remaining-requests": "999",
+                "x-ratelimit-remaining-tokens": "7850",
+            },
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "total_tokens": 150,
+                },
+            },
+        )
+
+    mock_client.post = mock_post
+    provider._client = mock_client
+
+    key = pool.get_keys()[0]
+    await provider.generate_text("test prompt", model="qwen/qwen3.8-27b")
+
+    # Tokens must be recorded exactly once: 150 total, not 300
+    records = list(key._model_token_records["qwen/qwen3.8-27b"])
+    assert len(records) == 1, f"Expected exactly 1 record, got {len(records)}"
+    assert records[0][1] == 150
+    assert sum(tok for _, tok in records) == 150
+    assert key._model_daily_tokens["qwen/qwen3.8-27b"] == 150
+
+
+def test_utc_date_rollover_resets_daily_counters():
+    """Verify that daily counters reset when UTC date changes or after 24h simulated time."""
+    key = GroqKey("gsk_rollover_test")
+    model = "qwen/qwen3.8-27b"
+
+    # Saturate key with 200,000 tokens
+    key.record_token_usage(model, 200_000)
+    assert key.is_available(model=model) is False
+
+    # Scenario 1: Advance simulated time by 24 hours + 1 second (86,401s)
+    last_reset = key._model_daily_last_reset[model]
+    assert key.is_available(now=last_reset + 86401.0, model=model) is True
+    assert key._model_daily_tokens[model] == 0
+
+    # Scenario 2: Simulate UTC date change
+    key2 = GroqKey("gsk_rollover_test2")
+    key2._model_daily_tokens[model] = 200_000
+    key2._model_daily_requests[model] = 1000
+    assert key2.is_available(model=model) is False
+    key2._current_date_utc = "2020-01-01"  # Different UTC date
+    assert key2.is_available(model=model) is True
+    assert key2._model_daily_tokens.get(model, 0) == 0
+    assert key2._model_daily_requests.get(model, 0) == 0
+
+    # Scenario 3: Simulate header reset time elapsed
+    key3 = GroqKey("gsk_rollover_test3")
+    key3._model_daily_tokens[model] = 200_000
+    assert key3.is_available(model=model) is False
+    key3._model_daily_reset_at[model] = 500.0
+    assert key3.is_available(now=501.0, model=model) is True
+    assert key3._model_daily_tokens[model] == 0
+
+
+@pytest.mark.asyncio
+async def test_sliding_tpm_saturation_rotates_to_idle_sibling_key():
+    """Verify that when Key 1 reaches 8,000 sliding TPM, is_available returns False and pool selects Key 2."""
+    pool = GroqKeyPool(keys=["gsk_saturated", "gsk_idle"])
+    k1, k2 = pool.get_keys()
+    model = "qwen/qwen3.8-27b"
+
+    # Push 8,500 tokens into Key 1 within 60s sliding window
+    k1.record_token_usage(model, 8500)
+
+    # Key 1 has wait > 3.0s, so is_available must return False
+    assert k1.get_seconds_until_ready(model=model) >= 55.0
+    assert k1.is_available(model=model) is False
+
+    # Key 2 is completely idle
+    assert k2.get_seconds_until_ready(model=model) == 0.0
+    assert k2.is_available(model=model) is True
+
+    # acquire_next_key must rotate to Key 2
+    selected = await pool.acquire_next_key(model=model)
+    assert selected is not None
+    assert selected.key == "gsk_idle"
+
+
+def test_dynamic_rpd_limit_in_is_available():
+    """Verify that models with higher limits (e.g. 14,400 RPD) are not blocked at 1,000 requests."""
+    key = GroqKey("gsk_rpd_test")
+    model = "llama-3.1-8b-instant"
+
+    # Set model headers for 14,400 limit and 1,100 used
+    key._model_headers[model] = {
+        "limit_requests": 14400,
+        "remaining_requests": 13300,
+    }
+    key._model_daily_requests[model] = 1100
+
+    # Must remain AVAILABLE with 13,300 requests left (not blocked by hardcoded 1000)
+    assert key.is_available(model=model) is True
+
+    # Once 14,400 requests are exhausted, becomes unavailable
+    key._model_daily_requests[model] = 14400
+    assert key.is_available(model=model) is False
+
+
+def test_cooldown_reason_preserved_from_model_clobbering():
+    """Verify that model-level rate limits do not overwrite key-level cooldown_reason."""
+    key = GroqKey("gsk_reason_test")
+
+    # Set key-level daily exhaustion cooldown
+    key.mark_rate_limited(is_daily=True, retry_delay_sec=1000.0, reason="Daily token limit reached", model=None)
+    assert key.cooldown_reason == "Daily token limit reached"
+    assert key.status == KeyStatus.DAILY_EXHAUSTED
+
+    # Model-level rate limit must NOT clobber key.cooldown_reason
+    key.mark_rate_limited(is_daily=False, retry_delay_sec=2.0, reason="Model TPM limit", model="qwen/qwen3.8-27b")
+    assert key.cooldown_reason == "Daily token limit reached"
+    assert key._model_cooldown_reasons["qwen/qwen3.8-27b"] == "Model TPM limit"
+
+    # Shorter key-level cooldown must NOT overwrite longer reason or expiry
+    key.mark_rate_limited(is_daily=False, retry_delay_sec=2.0, reason="Short pause", model=None)
+    assert key.cooldown_reason == "Daily token limit reached"
+

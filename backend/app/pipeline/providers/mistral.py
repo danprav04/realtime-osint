@@ -141,7 +141,9 @@ class MistralProvider(BaseAIProvider):
                 all_unauth = all(k.status == KeyStatus.UNAUTHORIZED for k in keys)
                 if all_unauth:
                     raise PermissionError("Mistral API key is invalid or unauthorized (HTTP 401)")
-                reason_detail = last_429_reason or f"All Mistral API keys in pool are in cooldown for model '{model_name}'"
+                reason_detail = last_429_reason or f"All Mistral API keys in pool are in cooldown for model '{model_name}' (minute rate limit / model RPS limit)"
+                if "minute rate limit" not in reason_detail.lower():
+                    reason_detail = f"{reason_detail} (minute rate limit / model RPS limit)"
                 raise RuntimeError(
                     f"Mistral RateLimitError: 429 Rate limit reached for model '{model_name}' ({reason_detail})"
                 )
@@ -167,7 +169,7 @@ class MistralProvider(BaseAIProvider):
                     last_429_reason = (
                         key_slot._model_cooldown_reasons.get(model_name.lower())
                         or key_slot.cooldown_reason
-                        or "Mistral Rate limit reached"
+                        or "Mistral Rate limit reached (minute rate limit / model RPS limit)"
                     )
                     model_lock_sec = key_slot.get_model_cooldown_remaining(model_name) or (key_slot.retry_after_sec or 3.0)
                     is_monthly = key_slot.status == KeyStatus.DAILY_EXHAUSTED
@@ -214,9 +216,10 @@ class MistralProvider(BaseAIProvider):
                     key_slot.update_from_response(fallback_resp, model=model_name)
                     if fallback_resp.status_code == 200:
                         setattr(fallback_resp, "_used_key", key_slot.key)
+                        setattr(fallback_resp, "_used_key_slot", key_slot)
                         return fallback_resp
                     if fallback_resp.status_code == 429:
-                        last_429_reason = key_slot.cooldown_reason or "Mistral Rate limit reached"
+                        last_429_reason = key_slot.cooldown_reason or "Mistral Rate limit reached (minute rate limit / model RPS limit)"
                         continue
                     response = fallback_resp
 
@@ -233,6 +236,7 @@ class MistralProvider(BaseAIProvider):
                     response.raise_for_status()
 
                 setattr(response, "_used_key", key_slot.key)
+                setattr(response, "_used_key_slot", key_slot)
                 return response
 
             except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as net_err:
@@ -245,6 +249,8 @@ class MistralProvider(BaseAIProvider):
                 continue
 
         if last_429_reason:
+            if "minute rate limit" not in last_429_reason.lower():
+                last_429_reason = f"{last_429_reason} (minute rate limit / model RPS limit)"
             raise RuntimeError(
                 f"Mistral RateLimitError: 429 Rate limit reached for model '{model_name}' ({last_429_reason})"
             )
@@ -271,7 +277,8 @@ class MistralProvider(BaseAIProvider):
 
         messages.append({"role": "user", "content": user_content})
 
-        effective_max_tokens = max(max_tokens, 1536 if json_mode else 1024)
+        # Preserve caller-specified max_tokens (e.g. Stage 0 max_tokens=256)
+        effective_max_tokens = max_tokens if max_tokens is not None else (1536 if json_mode else 1024)
 
         def _build_payload() -> Dict[str, Any]:
             pl: Dict[str, Any] = {

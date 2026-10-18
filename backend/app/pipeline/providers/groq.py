@@ -8,6 +8,7 @@ High-speed inference provider supporting:
   - Automatic 401/403 unauthorized key deactivation.
 """
 
+import asyncio
 import json
 import logging
 import random
@@ -113,6 +114,19 @@ class GroqProvider(BaseAIProvider):
                     raise PermissionError(
                         "Groq API key is invalid or unauthorized (HTTP 401)"
                     )
+
+                # If all keys are temporarily waiting on a short minute window (best_wait <= 12.0s),
+                # sleep and retry rather than immediately raising a 429 to the orchestrator
+                _, best_wait = self.key_pool.get_best_wait_time(model=model_name)
+                if best_wait <= 12.0 and attempt < max_attempts - 1:
+                    sleep_time = min(best_wait + random.uniform(0.05, 0.15), 12.0)
+                    logger.info(
+                        f"[groq:{model_name}] All keys temporarily on short cooldown (best_wait={best_wait:.2f}s). "
+                        f"Sleeping {sleep_time:.2f}s and retrying (attempt {attempt + 1}/{max_attempts})..."
+                    )
+                    await asyncio.sleep(sleep_time)
+                    continue
+
                 reason_detail = last_429_reason or f"All Groq API keys in pool are in cooldown for model '{model_name}'"
                 raise RuntimeError(
                     f"Groq RateLimitError: 429 Rate limit reached for model '{model_name}' ({reason_detail})"
@@ -142,15 +156,6 @@ class GroqProvider(BaseAIProvider):
                     )
                     model_lock_sec = key_slot.get_model_cooldown_remaining(model_name) or (key_slot.retry_after_sec or 3.0)
                     is_daily = key_slot.status == KeyStatus.DAILY_EXHAUSTED
-                    # Groq rate limits apply at the Organization level across all keys in the pool.
-                    # Broadcast once all individual keys have been attempted or on daily exhaustion.
-                    if is_daily or attempt >= len(keys) - 1:
-                        self.key_pool.broadcast_model_cooldown(
-                            model=model_name,
-                            cooldown_sec=model_lock_sec,
-                            reason=last_429_reason,
-                            is_daily=is_daily,
-                        )
                     try:
                         get_usage_tracker().record_call(
                             provider="groq",
@@ -190,6 +195,7 @@ class GroqProvider(BaseAIProvider):
                             failed_gen = response.json().get("error", {}).get("failed_generation", "")
                             if failed_gen and "{" in failed_gen and "}" in failed_gen:
                                 setattr(response, "_used_key", key_slot.key)
+                                setattr(response, "_used_key_slot", key_slot)
                                 return response
                         except Exception:
                             pass
@@ -211,6 +217,7 @@ class GroqProvider(BaseAIProvider):
                             key_slot.update_from_response(fallback_resp, model=model_name)
                             if fallback_resp.status_code == 200:
                                 setattr(fallback_resp, "_used_key", key_slot.key)
+                                setattr(fallback_resp, "_used_key_slot", key_slot)
                                 return fallback_resp
                             if fallback_resp.status_code == 429:
                                 last_429_reason = (
@@ -220,13 +227,6 @@ class GroqProvider(BaseAIProvider):
                                 )
                                 model_lock_sec = key_slot.get_model_cooldown_remaining(model_name) or (key_slot.retry_after_sec or 3.0)
                                 is_daily = key_slot.status == KeyStatus.DAILY_EXHAUSTED
-                                if is_daily or attempt >= len(keys) - 1:
-                                    self.key_pool.broadcast_model_cooldown(
-                                        model=model_name,
-                                        cooldown_sec=model_lock_sec,
-                                        reason=last_429_reason,
-                                        is_daily=is_daily,
-                                    )
                                 try:
                                     get_usage_tracker().record_call(
                                         provider="groq",
@@ -262,6 +262,7 @@ class GroqProvider(BaseAIProvider):
                 if response.is_error:
                     response.raise_for_status()
                 setattr(response, "_used_key", key_slot.key)
+                setattr(response, "_used_key_slot", key_slot)
                 return response
 
             except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as net_err:
