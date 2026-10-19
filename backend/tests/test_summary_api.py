@@ -323,16 +323,17 @@ async def test_dedicated_situation_summary_fallback_chain():
     cfg = orchestrator.get_stage_config("situation_summary")
     assert cfg.stage_id == "situation_summary"
     assert cfg.provider == "groq"
-    assert cfg.model_name == "openai/gpt-oss-120b"
+    assert cfg.model_name == "qwen/qwen3.8-27b"
 
     fallback_models = [fb.model_name for fb in cfg.fallbacks]
-    # Ensure GLM is the first fallback, followed by Gemini 3.5 flash lite
-    assert fallback_models[0] == "coding-glm-5.3-free", "GLM must be the first fallback!"
-    assert fallback_models[1] == "gemini-3.5-flash-lite", "Gemini 3.5 flash lite must be the second fallback!"
+    assert fallback_models[0] == "openai/gpt-oss-120b"
+    assert fallback_models[1] == "coding-glm-5.3-free"
+    assert fallback_models[2] == "gemini-3.5-flash-lite"
     assert "gemini-3.1-flash-lite" in fallback_models
-    assert "gemma-4-31b-it" in fallback_models
 
-    # Ensure Mistral and lightweight models are NOT present in the situation summary chain
+    # Ensure Mistral, Gemma, and lightweight models are NOT present in the situation summary chain
+    assert "gemma-4-31b-it" not in fallback_models
+    assert "gemma-4-26b-a4b-it" not in fallback_models
     assert "mistral-large-2512" not in fallback_models
     assert "mistral-small-2603" not in fallback_models
     assert "ministral-14b-2512" not in fallback_models
@@ -341,12 +342,23 @@ async def test_dedicated_situation_summary_fallback_chain():
     assert "@cf/meta/llama-3.2-1b-instruct" not in fallback_models
     assert "openai/gpt-oss-20b" not in fallback_models
 
-    # 3. Test execution failover through the chain: Groq -> GLM -> Gemini
+    # Also verify Stage 3 summarization is primed with Qwen and zero Gemma/Mistral
+    sum_cfg = orchestrator.get_stage_config("summarization")
+    assert sum_cfg.provider == "groq"
+    assert sum_cfg.model_name == "qwen/qwen3.8-27b"
+    sum_fallbacks = [fb.model_name for fb in sum_cfg.fallbacks]
+    assert "openai/gpt-oss-120b" in sum_fallbacks
+    assert "gemini-3.5-flash-lite" in sum_fallbacks
+    assert "gemma-4-26b-a4b-it" not in sum_fallbacks
+    assert "gemma-4-31b-it" not in sum_fallbacks
+    assert "ministral-14b-2512" not in sum_fallbacks
+
+    # 3. Test execution failover through the chain: Qwen -> Groq 120b -> GLM -> Gemini
     call_log = []
 
     async def mock_runner(provider, model, temperature, raise_on_error=True):
         call_log.append(f"{provider.provider_name}:{model}")
-        if model in ("openai/gpt-oss-120b", "coding-glm-5.3-free"):
+        if model in ("qwen/qwen3.8-27b", "openai/gpt-oss-120b", "coding-glm-5.3-free"):
             raise RuntimeError(f"Simulated 429 Quota Exhaustion on {model}")
         # gemini-3.5-flash-lite catches and succeeds!
         return {"status": "ok", "synthesizer": f"{provider.provider_name}:{model}"}
@@ -357,6 +369,7 @@ async def test_dedicated_situation_summary_fallback_chain():
         fallback_heuristic_fn=lambda: {"status": "heuristic"},
     )
 
+    assert "groq:qwen/qwen3.8-27b" in call_log
     assert "groq:openai/gpt-oss-120b" in call_log
     assert "aihubmix:coding-glm-5.3-free" in call_log
     assert "gemini:gemini-3.5-flash-lite" in call_log
