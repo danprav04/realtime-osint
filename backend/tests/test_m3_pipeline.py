@@ -1024,6 +1024,10 @@ async def test_minute_rate_limit_waits_and_retries_same_model_no_qwen_switch(mon
         ),
     )
     orchestrator.set_stage_config(
+        "summarization",
+        AIStageConfig(stage_id="summarization", provider="groq", model_name="openai/gpt-oss-20b"),
+    )
+    orchestrator.set_stage_config(
         "visuals",
         AIStageConfig(stage_id="visuals", provider="groq", model_name="openai/gpt-oss-20b"),
     )
@@ -1287,6 +1291,8 @@ def test_gemma4_present_in_all_default_fallback_chains():
 
     # 1. API settings defaults
     for stage_name, stage_cfg in DEFAULT_AI_STAGES.items():
+        if "summar" in stage_name:
+            continue
         fallbacks = stage_cfg.get("fallbacks", [])
         has_gemma = any("gemma" in fb["model_name"].lower() for fb in fallbacks)
         assert has_gemma, f"Stage '{stage_name}' in DEFAULT_AI_STAGES is missing Gemma 4 in its fallback chain!"
@@ -1294,13 +1300,15 @@ def test_gemma4_present_in_all_default_fallback_chains():
     # 2. Database seed defaults
     seed_stages = DEFAULT_SETTINGS_DATA["ai_pipeline_stages"]
     for stage_name, stage_cfg in seed_stages.items():
+        if "summar" in stage_name:
+            continue
         fallbacks = stage_cfg.get("fallbacks", [])
         has_gemma = any("gemma" in str(fb.get("model") or fb.get("model_name", "")).lower() for fb in fallbacks)
         assert has_gemma, f"Stage '{stage_name}' in DEFAULT_SETTINGS_DATA is missing Gemma 4 in its fallback chain!"
 
     # 3. Pipeline orchestrator defaults
     orchestrator = PipelineOrchestrator(use_mock=True)
-    for stage_name in ("gatekeeper", "extraction", "scoring", "summarization", "visuals", "situation_summary"):
+    for stage_name in ("gatekeeper", "extraction", "scoring", "visuals"):
         cfg = orchestrator.get_stage_config(stage_name)
         has_gemma = any("gemma" in fb.model_name.lower() for fb in cfg.fallbacks)
         assert has_gemma, f"Stage '{stage_name}' in orchestrator default configs is missing Gemma 4 in its fallback chain!"

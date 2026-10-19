@@ -282,9 +282,9 @@ docker compose ps
 docker stats
 ```
 
-- **Dashboard UI**: [http://localhost:3000](http://localhost:3000)
-- **FastAPI OpenAPI Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Health Telemetry**: [http://localhost:8000/api/health](http://localhost:8000/api/health)
+- **Dashboard UI**: [http://localhost:26816](http://localhost:26816)
+- **FastAPI OpenAPI Docs**: [http://localhost:24176/docs](http://localhost:24176/docs)
+- **Health Telemetry**: [http://localhost:24176/api/health](http://localhost:24176/api/health)
 - **Default API Key**: `osint_secret_key_2026` (configurable via `API_KEY` in `.env`)
 
 ---

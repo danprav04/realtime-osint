@@ -53,7 +53,10 @@ def get_engine_args(url: str) -> Dict[str, Any]:
     }
 
     if "sqlite" in url:
-        engine_kwargs["connect_args"] = {"check_same_thread": False}
+        engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 60}
+        engine_kwargs["pool_size"] = 25
+        engine_kwargs["max_overflow"] = 25
+        engine_kwargs["pool_timeout"] = 60.0
     else:
         # PostgreSQL / asyncpg connection pooling tuned for 1GB RAM budget
         engine_kwargs["pool_size"] = settings.DB_POOL_SIZE

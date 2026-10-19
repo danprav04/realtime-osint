@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from backend.app.config import get_settings
 from backend.app.db.models import Base, Event, Theme, utc_now
 from backend.app.main import create_app
-from backend.app.pipeline.orchestrator import get_pipeline_orchestrator
+from backend.app.pipeline.orchestrator import PipelineOrchestrator, get_pipeline_orchestrator
 from backend.app.services.summary_service import SituationSummaryService
 
 
@@ -309,7 +309,7 @@ async def test_dedicated_situation_summary_fallback_chain():
     uses only flagship reasoning models in its fallback chain, and correctly
     resolves all situational aliases without capturing event summarization.
     """
-    orchestrator = get_pipeline_orchestrator()
+    orchestrator = PipelineOrchestrator(use_mock=True)
 
     # 1. Alias normalization tests
     assert orchestrator._normalize_stage_id("situation_summary") == "situation_summary"

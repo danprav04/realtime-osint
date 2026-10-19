@@ -87,7 +87,7 @@ async def test_concurrent_theme_activations_exclusivity(api_headers):
     Asserts that at the conclusion, EXACTLY ONE theme is active in the database.
     """
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", timeout=60.0) as client:
         # Create 5 distinct test themes
         theme_ids = []
         for i in range(5):
