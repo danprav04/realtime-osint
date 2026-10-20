@@ -61,10 +61,9 @@ DEFAULT_AI_STAGES = {
         "temperature": 0.2,
         "fallbacks": [
             {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
+            {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.5-flash-lite", "temperature": 0.2},
             {"provider": "gemini", "model_name": "gemini-3.1-flash-lite", "temperature": 0.2},
-            {"provider": "aihubmix", "model_name": "coding-glm-5.3-free", "temperature": 0.2},
-            {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.2},
         ],
     },
     "visuals": {
@@ -89,6 +88,46 @@ DEFAULT_AI_STAGES = {
         ],
     },
 }
+
+
+# Permitted strong models for summaries (Stage 3 Summarization & Stage 5 Situational Summary / SitRep).
+# All Mistral models (ministral-3b/8b/14b, codestral), Gemma, Cloudflare, and lightweight 20B models are strictly forbidden on summaries.
+STRONG_SUMMARY_PROVIDERS = {"groq", "gemini", "aihubmix"}
+STRONG_SUMMARY_MODELS = {
+    # Groq Flagships
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-120b",
+    # Gemini Flagships
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    # AIHubMix Flagship
+    "coding-glm-5.3-free",
+    "coding-glm-5.3-flash-free",
+}
+
+
+def is_strong_summary_model(provider: Optional[str], model_name: Optional[str]) -> bool:
+    """Return True if the provider and model constitute an executive-grade strong reasoning model for summaries."""
+    if not provider or not model_name:
+        return False
+    p = str(provider).lower().strip()
+    m = str(model_name).lower().strip()
+
+    # Explicitly reject weak, edge, or banned model families
+    if p in ("mistral", "mistralai", "cloudflare"):
+        return False
+    if any(weak in m for weak in ("mistral", "ministral", "codestral", "gemma", "llama-3.2", "llama-3.1", "gpt-oss-20b")):
+        return False
+
+    if p == "groq" and m in ("qwen/qwen3.8-27b", "openai/gpt-oss-120b"):
+        return True
+    if p == "gemini" and ("gemini-3.5" in m or "gemini-3.1" in m or "gemini-2.5" in m or m in STRONG_SUMMARY_MODELS):
+        return True
+    if p == "aihubmix" and ("coding-glm-5.3" in m or m in STRONG_SUMMARY_MODELS):
+        return True
+
+    return m in STRONG_SUMMARY_MODELS
 
 
 def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -135,60 +174,62 @@ def _normalize_stage_dict(raw: Dict[str, Any]) -> Dict[str, Any]:
                 cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[norm_k].get("fallbacks", []))
         else:
             # 2. Token-heavy Stage 3 (Summarization) and Situational Summary:
-            # Neither Mistral nor Gemma must be used for summaries (Mistral is too weak, Gemma has strict 16k TPM limits & latency spikes).
-            # Prefer Qwen (qwen/qwen3.8-27b) or flagship reasoning models.
-            primary_model_str = str(cfg.get("model_name") or cfg.get("model", "")).lower()
-            if cfg.get("provider") in ("mistral", "mistralai") or "gemma" in primary_model_str:
+            # ONLY strong reasoning models are permitted (Groq Qwen 27B / GPT-OSS 120B, AIHubMix GLM-5.3, Gemini 3.5/3.1/2.5 Flash).
+            # All Mistral models (ministral-3b/8b/14b, codestral), Gemma, Cloudflare, and 20B models are strictly barred.
+            if not is_strong_summary_model(cfg.get("provider"), cfg.get("model_name")):
                 cfg["provider"] = "groq"
                 cfg["model_name"] = "qwen/qwen3.8-27b"
 
             default_stage_key = norm_k if norm_k in DEFAULT_AI_STAGES else "situation_summary"
             if cfg.get("provider") == "aihubmix":
                 cfg["model_name"] = "coding-glm-5.3-flash-free" if "flash" in str(cfg.get("model_name") or cfg.get("model", "")) else "coding-glm-5.3-free"
-                # Strip any aihubmix, mistral, or gemma fallbacks
-                if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
-                    cfg["fallbacks"] = [
-                        (dict(fb, model_name=fb.get("model_name") or fb.get("model")) if isinstance(fb, dict) else fb)
-                        for fb in cfg["fallbacks"]
-                        if not (isinstance(fb, dict) and (
-                            fb.get("provider") in ("aihubmix", "mistral", "mistralai") or
-                            "gemma" in str(fb.get("model_name") or fb.get("model", "")).lower()
-                        ))
+
+            # Purge any weak models from fallbacks
+            raw_fallbacks = cfg.get("fallbacks")
+            if raw_fallbacks and isinstance(raw_fallbacks, list):
+                filtered_fb = []
+                has_aihubmix = (cfg.get("provider") == "aihubmix")
+                for fb in raw_fallbacks:
+                    if not isinstance(fb, dict):
+                        continue
+                    fb_copy = dict(fb)
+                    if "model" in fb_copy and "model_name" not in fb_copy:
+                        fb_copy["model_name"] = fb_copy["model"]
+                    fb_p = fb_copy.get("provider")
+                    fb_m = fb_copy.get("model_name")
+
+                    if not is_strong_summary_model(fb_p, fb_m):
+                        continue  # Strip weak model (Mistral, Gemma, Cloudflare, 20b, etc.)
+
+                    if fb_p == "aihubmix":
+                        if has_aihubmix:
+                            continue  # Max 1 aihubmix model due to shared quota
+                        has_aihubmix = True
+                        if not fb_copy.get("model_name"):
+                            fb_copy["model_name"] = "coding-glm-5.3-free"
+
+                    filtered_fb.append(fb_copy)
+
+                if not filtered_fb:
+                    # If all fallbacks were weak models, restore default strong fallbacks
+                    default_fallbacks = copy.deepcopy(DEFAULT_AI_STAGES[default_stage_key]["fallbacks"])
+                    filtered_fb = [
+                        fb for fb in default_fallbacks
+                        if not (fb.get("provider") == cfg.get("provider") and fb.get("model_name") == cfg.get("model_name"))
                     ]
-                elif "fallbacks" not in cfg:
-                    cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[default_stage_key]["fallbacks"])
+                cfg["fallbacks"] = filtered_fb
             else:
-                # Primary is not aihubmix: allow at most ONE aihubmix fallback, and NO mistral or gemma fallbacks
-                if "fallbacks" in cfg and isinstance(cfg["fallbacks"], list):
-                    filtered_fb = []
-                    has_aihubmix = False
-                    for fb in cfg["fallbacks"]:
-                        if isinstance(fb, dict):
-                            fb_copy = dict(fb)
-                            if "model" in fb_copy and "model_name" not in fb_copy:
-                                fb_copy["model_name"] = fb_copy["model"]
-                            fb_model_lower = str(fb_copy.get("model_name", "")).lower()
-                            if fb_copy.get("provider") in ("mistral", "mistralai"):
-                                continue  # Purge mistral from summaries
-                            if "gemma" in fb_model_lower:
-                                continue  # Purge gemma from summaries
-                            if fb_copy.get("provider") == "aihubmix":
-                                if not has_aihubmix:
-                                    if not fb_copy.get("model_name"):
-                                        fb_copy["model_name"] = "coding-glm-5.3-free" if norm_k == "situation_summary" else "coding-glm-5.3-flash-free"
-                                    filtered_fb.append(fb_copy)
-                                    has_aihubmix = True
-                                # Drop subsequent aihubmix models: shared quota makes them redundant
-                            else:
-                                filtered_fb.append(fb_copy)
-                        else:
-                            filtered_fb.append(fb)
-                    cfg["fallbacks"] = filtered_fb
-                elif "fallbacks" not in cfg:
-                    cfg["fallbacks"] = copy.deepcopy(DEFAULT_AI_STAGES[default_stage_key]["fallbacks"])
+                default_fallbacks = copy.deepcopy(DEFAULT_AI_STAGES[default_stage_key]["fallbacks"])
+                cfg["fallbacks"] = [
+                    fb for fb in default_fallbacks
+                    if not (fb.get("provider") == cfg.get("provider") and fb.get("model_name") == cfg.get("model_name"))
+                ]
 
         out[norm_k] = cfg
-    return out
+
+    # Return only the 6 canonical stages to guarantee no duplicate alias keys
+    canonical_keys = ("gatekeeper", "extraction", "scoring", "summarization", "visuals", "situation_summary")
+    return {k: out[k] for k in canonical_keys if k in out}
 
 
 @router.get("", dependencies=[Depends(require_api_key)])

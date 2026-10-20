@@ -208,7 +208,11 @@ class SituationSummaryService:
 
                     matching_theme_entries = [
                         e for k, e in cache_map.items()
-                        if k.startswith(f"{theme_key}:") and isinstance(e, dict) and e.get("payload")
+                        if k.startswith(f"{theme_key}:")
+                        and isinstance(e, dict)
+                        and e.get("payload")
+                        and not any(w in str(e["payload"].get("active_ai_model", "")).lower() for w in ("ministral", "mistral", "gemma", "gpt-oss-20b"))
+                        and not str(e["payload"].get("executive_bluf", "")).startswith("BLUF: Situational posture for")
                     ]
                     if matching_theme_entries:
                         latest_entry = max(
@@ -220,7 +224,11 @@ class SituationSummaryService:
                 # 3. Any most recently generated summary across the cache map
                 valid_entries = [
                     e for e in cache_map.values()
-                    if isinstance(e, dict) and e.get("payload") and isinstance(e.get("payload"), dict)
+                    if isinstance(e, dict)
+                    and e.get("payload")
+                    and isinstance(e.get("payload"), dict)
+                    and not any(w in str(e["payload"].get("active_ai_model", "")).lower() for w in ("ministral", "mistral", "gemma", "gpt-oss-20b"))
+                    and not str(e["payload"].get("executive_bluf", "")).startswith("BLUF: Situational posture for")
                 ]
                 if valid_entries:
                     latest_entry = max(

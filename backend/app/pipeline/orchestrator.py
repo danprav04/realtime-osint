@@ -153,10 +153,9 @@ class PipelineOrchestrator:
                 temperature=0.2,
                 fallbacks=[
                     AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-120b", temperature=0.2),
+                    AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-free", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.5-flash-lite", temperature=0.2),
                     AIFallbackConfig(provider="gemini", model_name="gemini-3.1-flash-lite", temperature=0.2),
-                    AIFallbackConfig(provider="aihubmix", model_name="coding-glm-5.3-free", temperature=0.2),
-                    AIFallbackConfig(provider="groq", model_name="openai/gpt-oss-20b", temperature=0.2),
                 ],
             ),
             "visuals": AIStageConfig(
@@ -565,15 +564,11 @@ class PipelineOrchestrator:
                     settings_list = res.scalars().all()
                     for setting in settings_list:
                         if setting.key == "ai_pipeline_stages" and setting.value_json:
-                            canonical_keys = {"gatekeeper", "extraction", "scoring", "summarization", "visuals", "situation_summary"}
-                            sorted_items = sorted(
-                                setting.value_json.items(),
-                                key=lambda item: 1 if str(item[0]).lower().strip() in canonical_keys else 0,
-                            )
-                            for stage_id, cfg_data in sorted_items:
-                                if stage_id.startswith("_") or not isinstance(cfg_data, dict):
+                            from backend.app.api.settings import _normalize_stage_dict
+                            normalized_stages = _normalize_stage_dict(setting.value_json)
+                            for norm_id, cfg_data in normalized_stages.items():
+                                if not isinstance(cfg_data, dict):
                                     continue
-                                norm_id = self._normalize_stage_id(stage_id)
                                 raw_fallbacks = cfg_data.get("fallbacks")
                                 if raw_fallbacks is None and norm_id in self._stage_configs:
                                     parsed_fallbacks = list(self._stage_configs[norm_id].fallbacks)
@@ -714,16 +709,27 @@ class PipelineOrchestrator:
                 "api_key_override": fb.api_key_override or stage_cfg.api_key_override,
             })
 
-        # Ensure Gemma 4 is present at every fallback chain at least somewhere (highest RPD: 14,400 / 30 RPM),
-        # providing an expansive safety net before falling back to deterministic offline heuristics.
-        has_gemma = any("gemma" in str(cand.get("model_name", "")).lower() for cand in candidates)
-        if not has_gemma:
-            candidates.append({
-                "provider": "gemini",
-                "model_name": "gemma-4-26b-a4b-it",
-                "temperature": stage_cfg.temperature,
-                "api_key_override": stage_cfg.api_key_override,
-            })
+        norm_stage = self._normalize_stage_id(stage_id)
+        is_summary_stage = norm_stage in ("summarization", "situation_summary")
+        if not is_summary_stage:
+            # Ensure Gemma 4 is present at every non-summary fallback chain at least somewhere (highest RPD: 14,400 / 30 RPM),
+            # providing an expansive safety net before falling back to deterministic offline heuristics.
+            has_gemma = any("gemma" in str(cand.get("model_name", "")).lower() for cand in candidates)
+            if not has_gemma:
+                candidates.append({
+                    "provider": "gemini",
+                    "model_name": "gemma-4-26b-a4b-it",
+                    "temperature": stage_cfg.temperature,
+                    "api_key_override": stage_cfg.api_key_override,
+                })
+        else:
+            # Summary stages (Stage 3 Summarization & Stage 5 Situational Briefing) ONLY permit strong reasoning models.
+            # All Mistral (ministral-3b/8b/14b, codestral), Gemma, Cloudflare, and 20B models are strictly pruned.
+            from backend.app.api.settings import is_strong_summary_model
+            candidates = [
+                cand for cand in candidates
+                if is_strong_summary_model(cand.get("provider"), cand.get("model_name"))
+            ]
 
         for idx, cand in enumerate(candidates):
             p_name = cand["provider"]

@@ -675,6 +675,7 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
             seeded_counts["settings"] += 1
             logger.info(f"Seeded system setting: {key}")
         elif key == "ai_pipeline_stages" and existing_setting and isinstance(existing_setting.value_json, dict):
+            from backend.app.api.settings import _normalize_stage_dict
             # If not explicitly customized via UI, keep synchronized with DEFAULT_AI_STAGES
             if not existing_setting.value_json.get("_customized", False):
                 existing_setting.value_json = copy.deepcopy(DEFAULT_AI_STAGES)
@@ -682,75 +683,43 @@ async def seed_initial_data(session: AsyncSession) -> Dict[str, Any]:
                 session.add(existing_setting)
                 logger.info("Synchronized ai_pipeline_stages with code defaults (DEFAULT_AI_STAGES).")
             else:
-                # Auto-repair existing customized setting if fallback chains are missing, empty, or use deprecated models
+                # Normalize and auto-repair existing customized setting to ensure strong models on summaries
                 cur_stages = copy.deepcopy(existing_setting.value_json)
-                repaired = False
-                for s_key, s_def in val.items():
-                    matched_cur = None
-                    for cur_k in cur_stages:
-                        if ("situation" in s_key or "sitrep" in s_key) and ("situation" in cur_k or "sitrep" in cur_k):
-                            matched_cur = cur_k
-                            break
-                        if ("situation" in s_key or "sitrep" in s_key) != ("situation" in cur_k or "sitrep" in cur_k):
-                            continue
-                        if (
-                            s_key in cur_k
-                            or cur_k in s_key
-                            or ("score" in s_key and "score" in cur_k)
-                            or ("extract" in s_key and "extract" in cur_k)
-                            or ("summar" in s_key and "summar" in cur_k)
-                            or ("vis" in s_key and "vis" in cur_k)
-                        ):
-                            matched_cur = cur_k
-                            break
-                    if matched_cur:
-                        target_stage = cur_stages[matched_cur]
-                        # Check and migrate primary model if deprecated or 0-RPM/403
-                        for m_field in ("model", "model_name"):
-                            m_val = target_stage.get(m_field)
-                            if m_val == "llama-3.3-70b-versatile":
-                                target_stage[m_field] = "openai/gpt-oss-120b"
-                                repaired = True
-                            elif m_val in ("mistral-small-2603", "mistral-large-2512"):
-                                target_stage[m_field] = "ministral-14b-2512"
-                                repaired = True
-                        # Check fallbacks
-                        if not target_stage.get("fallbacks"):
-                            target_stage["fallbacks"] = list(s_def.get("fallbacks", []))
-                            repaired = True
-                        else:
-                            for fb in target_stage["fallbacks"]:
-                                for m_field in ("model", "model_name"):
-                                    fb_val = fb.get(m_field)
-                                    if fb_val == "llama-3.3-70b-versatile":
-                                        fb[m_field] = "openai/gpt-oss-120b"
-                                        repaired = True
-                                    elif fb_val == "mistral-small-2603":
-                                        fb[m_field] = "ministral-14b-2512"
-                                        repaired = True
-                                    elif fb_val == "mistral-large-2512":
-                                        fb[m_field] = "codestral-2508"
-                                        repaired = True
-                            # Ensure Gemma 4 is present at every fallback chain at least somewhere (highest RPD: 14,400)
-                            has_gemma = any(
-                                "gemma" in str(fb.get("model_name") or fb.get("model", "")).lower()
-                                for fb in target_stage["fallbacks"]
-                            )
-                            if not has_gemma:
-                                target_stage["fallbacks"].append({
-                                    "provider": "gemini",
-                                    "model": "gemma-4-26b-a4b-it",
-                                    "temperature": target_stage.get("temperature", 0.2),
-                                })
-                                repaired = True
-                    else:
-                        cur_stages[s_key] = s_def
-                        repaired = True
-                if repaired:
-                    existing_setting.value_json = cur_stages
+                normalized = _normalize_stage_dict(cur_stages)
+                normalized["_customized"] = True
+                if cur_stages != normalized:
+                    existing_setting.value_json = normalized
                     flag_modified(existing_setting, "value_json")
                     session.add(existing_setting)
-                    logger.info("Auto-repaired AI pipeline fallback chains (including Gemma 4 presence) and replaced deprecated models in existing database settings.")
+                    logger.info("Auto-repaired AI pipeline stages and enforced strong models on summaries.")
+
+    # 3.b Clear any stale or weak AI situational summary caches (e.g. mistral / stub fallbacks)
+    try:
+        cache_stmt = select(SystemSettings).where(
+            SystemSettings.key == "ai_situational_summary_cache"
+        )
+        cache_setting = (await session.execute(cache_stmt)).scalars().first()
+        if cache_setting and isinstance(cache_setting.value_json, dict):
+            cache_map = dict(cache_setting.value_json)
+            cleaned_cache = {}
+            for k, entry in cache_map.items():
+                if isinstance(entry, dict) and "payload" in entry:
+                    payload = entry["payload"]
+                    act_model = str(payload.get("active_ai_model", "")).lower()
+                    bluf = str(payload.get("executive_bluf", ""))
+                    # Purge any cached summary generated by mistral/ministral or containing placeholder stub
+                    if any(w in act_model for w in ("ministral", "mistral", "gemma", "gpt-oss-20b")) or "Situational posture for" in bluf:
+                        continue
+                    cleaned_cache[k] = entry
+                else:
+                    cleaned_cache[k] = entry
+            if len(cleaned_cache) != len(cache_map):
+                cache_setting.value_json = cleaned_cache
+                flag_modified(cache_setting, "value_json")
+                session.add(cache_setting)
+                logger.info("Purged stale/weak AI situational summary caches from database.")
+    except Exception as cache_exc:
+        logger.warning(f"Failed to cleanse summary cache: {cache_exc}")
 
     # 4. Sync persisted UI api_keys into runtime environment if not already provided via .env
     import os

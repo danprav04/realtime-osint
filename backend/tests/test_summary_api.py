@@ -342,16 +342,22 @@ async def test_dedicated_situation_summary_fallback_chain():
     assert "@cf/meta/llama-3.2-1b-instruct" not in fallback_models
     assert "openai/gpt-oss-20b" not in fallback_models
 
-    # Also verify Stage 3 summarization is primed with Qwen and zero Gemma/Mistral
+    # Also verify Stage 3 summarization is primed with Qwen and zero Gemma/Mistral/20B
     sum_cfg = orchestrator.get_stage_config("summarization")
     assert sum_cfg.provider == "groq"
     assert sum_cfg.model_name == "qwen/qwen3.8-27b"
     sum_fallbacks = [fb.model_name for fb in sum_cfg.fallbacks]
     assert "openai/gpt-oss-120b" in sum_fallbacks
     assert "gemini-3.5-flash-lite" in sum_fallbacks
+    assert "gemini-3.1-flash-lite" in sum_fallbacks
+    assert "coding-glm-5.3-free" in sum_fallbacks
     assert "gemma-4-26b-a4b-it" not in sum_fallbacks
     assert "gemma-4-31b-it" not in sum_fallbacks
     assert "ministral-14b-2512" not in sum_fallbacks
+    assert "ministral-8b-2512" not in sum_fallbacks
+    assert "ministral-3b-2512" not in sum_fallbacks
+    assert "openai/gpt-oss-20b" not in sum_fallbacks
+    assert "@cf/meta/llama-3.2-1b-instruct" not in sum_fallbacks
 
     # 3. Test execution failover through the chain: Qwen -> Groq 120b -> GLM -> Gemini
     call_log = []
@@ -455,5 +461,82 @@ async def test_situation_summary_ai_failure_shows_last_summary_with_warning(asyn
     assert fallback_result["warning"] is not None
     assert "AI summary creation unavailable" in fallback_result["warning"]
     assert "Displaying the last verified situational summary" in fallback_result["warning"]
+
+
+def test_strong_summary_models_enforcement():
+    """
+    Verify that only strong reasoning models can be configured or executed on
+    Stage 3 (summarization) and Stage 5 (situation_summary).
+    All Mistral models (ministral-14b/8b/3b, codestral), Gemma, Cloudflare, and
+    lightweight 20B models must be strictly barred.
+    """
+    from backend.app.api.settings import _normalize_stage_dict, is_strong_summary_model
+
+    # 1. Direct model capability classifier verification
+    assert is_strong_summary_model("groq", "qwen/qwen3.8-27b") is True
+    assert is_strong_summary_model("groq", "openai/gpt-oss-120b") is True
+    assert is_strong_summary_model("aihubmix", "coding-glm-5.3-free") is True
+    assert is_strong_summary_model("gemini", "gemini-3.5-flash-lite") is True
+    assert is_strong_summary_model("gemini", "gemini-3.1-flash-lite") is True
+    assert is_strong_summary_model("gemini", "gemini-2.5-flash") is True
+
+    # Weak / edge models must return False
+    assert is_strong_summary_model("mistral", "ministral-14b-2512") is False
+    assert is_strong_summary_model("mistral", "ministral-8b-2512") is False
+    assert is_strong_summary_model("mistral", "ministral-3b-2512") is False
+    assert is_strong_summary_model("mistral", "codestral-2508") is False
+    assert is_strong_summary_model("mistral", "mistral-small-2603") is False
+    assert is_strong_summary_model("mistral", "mistral-large-2512") is False
+    assert is_strong_summary_model("gemini", "gemma-4-26b-a4b-it") is False
+    assert is_strong_summary_model("gemini", "gemma-4-31b-it") is False
+    assert is_strong_summary_model("groq", "openai/gpt-oss-20b") is False
+    assert is_strong_summary_model("cloudflare", "@cf/meta/llama-3.2-1b-instruct") is False
+    assert is_strong_summary_model("cloudflare", "@cf/meta/llama-3.1-8b-instruct-fp8-fast") is False
+
+    # 2. Normalization cleanses dirty/weak summary configs
+    dirty_input = {
+        "situation_summary": {
+            "provider": "mistral",
+            "model_name": "ministral-14b-2512",
+            "temperature": 0.1,
+            "fallbacks": [
+                {"provider": "gemini", "model_name": "gemma-4-26b-a4b-it", "temperature": 0.2},
+                {"provider": "groq", "model_name": "openai/gpt-oss-20b", "temperature": 0.2},
+                {"provider": "cloudflare", "model_name": "@cf/meta/llama-3.2-1b-instruct", "temperature": 0.2},
+                {"provider": "groq", "model_name": "openai/gpt-oss-120b", "temperature": 0.2},
+                {"provider": "mistral", "model_name": "ministral-8b-2512", "temperature": 0.2},
+            ],
+        },
+        "summarization": {
+            "provider": "mistral",
+            "model_name": "ministral-8b-2512",
+            "temperature": 0.2,
+            "fallbacks": [
+                {"provider": "gemini", "model_name": "gemma-4-31b-it"},
+                {"provider": "groq", "model_name": "openai/gpt-oss-20b"},
+            ],
+        },
+    }
+
+    normalized = _normalize_stage_dict(dirty_input)
+
+    # Both stages must have their primary model replaced with a strong model
+    for s_key in ("situation_summary", "summarization"):
+        stage = normalized[s_key]
+        assert is_strong_summary_model(stage["provider"], stage["model_name"]) is True
+        assert stage["provider"] != "mistral"
+        assert "ministral" not in stage["model_name"]
+        assert "gemma" not in stage["model_name"]
+        assert "gpt-oss-20b" not in stage["model_name"]
+
+        # All fallbacks must be strong models
+        for fb in stage["fallbacks"]:
+            assert is_strong_summary_model(fb["provider"], fb["model_name"]) is True
+            assert fb["provider"] != "mistral"
+            assert "ministral" not in fb["model_name"]
+            assert "gemma" not in fb["model_name"]
+            assert "gpt-oss-20b" not in fb["model_name"]
+            assert "llama-3.2" not in fb["model_name"]
+
 
 

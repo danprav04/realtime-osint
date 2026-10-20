@@ -27,6 +27,41 @@ interface AIConfigMatrixProps {
   onRefresh: () => void;
 }
 
+// Strong reasoning models permitted on Stage 3 Summarization & Stage 5 Situational Briefing
+export const isStrongSummaryModel = (provider?: string, modelName?: string): boolean => {
+  if (!provider || !modelName) return false;
+  const p = provider.toLowerCase().trim();
+  const m = modelName.toLowerCase().trim();
+  if (['mistral', 'mistralai', 'cloudflare'].includes(p)) return false;
+  if (m.includes('mistral') || m.includes('ministral') || m.includes('codestral') || m.includes('gemma') || m.includes('llama') || m.includes('gpt-oss-20b')) return false;
+  if (p === 'groq' && (m === 'qwen/qwen3.8-27b' || m === 'openai/gpt-oss-120b')) return true;
+  if (p === 'gemini' && (m.includes('gemini-3.5') || m.includes('gemini-3.1') || m.includes('gemini-2.5'))) return true;
+  if (p === 'aihubmix' && m.includes('coding-glm-5.3')) return true;
+  return ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'coding-glm-5.3-free', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'].includes(m);
+};
+
+export const sanitizeSummaryStage = (cfg: AIStageConfig): AIStageConfig => {
+  const stage = { ...cfg };
+  if (!isStrongSummaryModel(stage.provider, stage.model_name)) {
+    stage.provider = 'groq';
+    stage.model_name = 'qwen/qwen3.8-27b';
+  }
+  const cleanFallbacks = (stage.fallbacks || []).filter((fb) =>
+    isStrongSummaryModel(fb.provider, fb.model_name)
+  );
+  if (cleanFallbacks.length === 0) {
+    stage.fallbacks = [
+      { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
+      { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
+      { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+      { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
+    ];
+  } else {
+    stage.fallbacks = cleanFallbacks;
+  }
+  return stage;
+};
+
 export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: AIConfigMatrixProps) {
   const defaultStage = (
     provider: AIProvider,
@@ -67,8 +102,21 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     initialSettings
       ? {
           gatekeeper: initialSettings.gatekeeper || defaultGatekeeperStage(),
-          situation_summary: initialSettings.situation_summary || defaultSituationSummaryStage(),
-          ...initialSettings,
+          extraction: initialSettings.extraction || defaultStage('groq', 'qwen/qwen3.8-27b'),
+          scoring: initialSettings.scoring || defaultStage('mistral', 'codestral-2508'),
+          summarization: sanitizeSummaryStage(
+            initialSettings.summarization ||
+              defaultStage('groq', 'qwen/qwen3.8-27b', [
+                { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
+                { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
+                { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+                { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
+              ])
+          ),
+          visuals: initialSettings.visuals || defaultStage('groq', 'openai/gpt-oss-20b'),
+          situation_summary: sanitizeSummaryStage(
+            initialSettings.situation_summary || defaultSituationSummaryStage()
+          ),
         }
       : {
           gatekeeper: defaultGatekeeperStage(),
@@ -86,10 +134,9 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           ]),
           summarization: defaultStage('groq', 'qwen/qwen3.8-27b', [
             { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
+            { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
             { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
-            { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
-            { provider: 'groq', model_name: 'openai/gpt-oss-20b', temperature: 0.2 },
           ]),
           visuals: defaultStage('groq', 'openai/gpt-oss-20b', [
             { provider: 'mistral', model_name: 'ministral-8b-2512', temperature: 0.2 },
@@ -104,8 +151,21 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     if (initialSettings) {
       setSettings({
         gatekeeper: initialSettings.gatekeeper || defaultGatekeeperStage(),
-        situation_summary: initialSettings.situation_summary || defaultSituationSummaryStage(),
-        ...initialSettings,
+        extraction: initialSettings.extraction || defaultStage('groq', 'qwen/qwen3.8-27b'),
+        scoring: initialSettings.scoring || defaultStage('mistral', 'codestral-2508'),
+        summarization: sanitizeSummaryStage(
+          initialSettings.summarization ||
+            defaultStage('groq', 'qwen/qwen3.8-27b', [
+              { provider: 'groq', model_name: 'openai/gpt-oss-120b', temperature: 0.2 },
+              { provider: 'aihubmix', model_name: 'coding-glm-5.3-free', temperature: 0.2 },
+              { provider: 'gemini', model_name: 'gemini-3.5-flash-lite', temperature: 0.2 },
+              { provider: 'gemini', model_name: 'gemini-3.1-flash-lite', temperature: 0.2 },
+            ])
+        ),
+        visuals: initialSettings.visuals || defaultStage('groq', 'openai/gpt-oss-20b'),
+        situation_summary: sanitizeSummaryStage(
+          initialSettings.situation_summary || defaultSituationSummaryStage()
+        ),
       });
     }
   }, [initialSettings]);
@@ -153,27 +213,33 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
   ];
 
   const handleProviderChange = (stageKey: keyof AIPipelineSettings, provider: AIProvider) => {
+    const isSummary = stageKey === 'summarization' || stageKey === 'situation_summary';
     let defaultModel = 'gemini-3.5-flash-lite';
     if (provider === 'groq') {
-      defaultModel = stageKey === 'situation_summary' ? 'openai/gpt-oss-120b' : 'qwen/qwen3.8-27b';
+      defaultModel = isSummary ? 'qwen/qwen3.8-27b' : 'qwen/qwen3.8-27b';
     } else if (provider === 'aihubmix') {
       defaultModel = 'coding-glm-5.3-free';
+    } else if (provider === 'gemini') {
+      defaultModel = 'gemini-3.5-flash-lite';
     } else if (provider === 'mistral') {
-      defaultModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : stageKey === 'situation_summary' ? 'mistral-large-2512' : 'ministral-8b-2512';
+      defaultModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512';
     } else if (provider === 'cloudflare') {
       defaultModel = stageKey === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
     } else if (provider === 'zai') {
       defaultModel = 'glm-4.7-flash';
     } else if (provider === 'siliconflow') {
-      defaultModel = stageKey === 'situation_summary' ? 'Qwen/Qwen2.5-14B-Instruct' : 'Qwen/Qwen2.5-7B-Instruct';
+      defaultModel = 'Qwen/Qwen2.5-7B-Instruct';
     }
     setSettings((prev) => {
       const stage = prev[stageKey];
       if (!stage) return prev;
       // Strip any aihubmix from fallbacks if aihubmix is primary (shared quota across models)
-      const cleanedFallbacks = provider === 'aihubmix'
+      let cleanedFallbacks = provider === 'aihubmix'
         ? (stage.fallbacks || []).filter((f) => f.provider !== 'aihubmix')
         : (stage.fallbacks || []);
+      if (isSummary) {
+        cleanedFallbacks = cleanedFallbacks.filter((f) => isStrongSummaryModel(f.provider, f.model_name));
+      }
       return {
         ...prev,
         [stageKey]: {
@@ -220,21 +286,25 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
     suggestedProvider?: AIProvider,
     suggestedModel?: string
   ) => {
+    const isSummary = stageKey === 'summarization' || stageKey === 'situation_summary';
     setSettings((prev) => {
       const stage = prev[stageKey];
       if (!stage) return prev;
       const existing = stage.fallbacks || [];
       const currentProvider = stage.provider;
-      const providerCycle: AIProvider[] = ['mistral', 'cloudflare', 'groq', 'gemini', 'siliconflow', 'zai'];
-      const nextProvider = suggestedProvider || providerCycle.find((p) => p !== currentProvider && !existing.some((f) => f.provider === p)) || 'mistral';
+      const providerCycle: AIProvider[] = isSummary
+        ? ['groq', 'gemini', 'aihubmix']
+        : ['mistral', 'cloudflare', 'groq', 'gemini', 'siliconflow', 'zai'];
+      const nextProvider = suggestedProvider || providerCycle.find((p) => p !== currentProvider && !existing.some((f) => f.provider === p)) || (isSummary ? 'gemini' : 'mistral');
       let nextModel = suggestedModel;
       if (!nextModel) {
-        if (nextProvider === 'gemini') nextModel = stageKey === 'situation_summary' ? 'gemini-3.5-flash-lite' : 'gemini-3.1-flash-lite';
-        else if (nextProvider === 'groq') nextModel = stageKey === 'situation_summary' ? 'openai/gpt-oss-120b' : 'qwen/qwen3.8-27b';
-        else if (nextProvider === 'mistral') nextModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : stageKey === 'situation_summary' ? 'mistral-large-2512' : 'ministral-8b-2512';
+        if (nextProvider === 'gemini') nextModel = 'gemini-3.5-flash-lite';
+        else if (nextProvider === 'groq') nextModel = isSummary ? 'openai/gpt-oss-120b' : 'qwen/qwen3.8-27b';
+        else if (nextProvider === 'aihubmix') nextModel = 'coding-glm-5.3-free';
+        else if (nextProvider === 'mistral') nextModel = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512';
         else if (nextProvider === 'cloudflare') nextModel = stageKey === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
         else if (nextProvider === 'zai') nextModel = 'glm-4.7-flash';
-        else if (nextProvider === 'siliconflow') nextModel = stageKey === 'situation_summary' ? 'Qwen/Qwen2.5-14B-Instruct' : 'Qwen/Qwen2.5-7B-Instruct';
+        else if (nextProvider === 'siliconflow') nextModel = 'Qwen/Qwen2.5-7B-Instruct';
         else nextModel = 'coding-glm-5.3-free';
       }
 
@@ -287,18 +357,19 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
           [field]: value,
         };
         if (field === 'provider') {
+          const isSummary = stageKey === 'summarization' || stageKey === 'situation_summary';
           if (value === 'gemini') {
-            updated.model_name = stageKey === 'situation_summary' ? 'gemini-3.5-flash-lite' : 'gemini-3.1-flash-lite';
+            updated.model_name = 'gemini-3.5-flash-lite';
           } else if (value === 'groq') {
-            updated.model_name = stageKey === 'situation_summary' ? 'openai/gpt-oss-120b' : 'qwen/qwen3.8-27b';
+            updated.model_name = isSummary ? 'qwen/qwen3.8-27b' : 'qwen/qwen3.8-27b';
           } else if (value === 'mistral') {
-            updated.model_name = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : stageKey === 'situation_summary' ? 'mistral-large-2512' : 'ministral-8b-2512';
+            updated.model_name = stageKey === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512';
           } else if (value === 'cloudflare') {
             updated.model_name = stageKey === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
           } else if (value === 'zai') {
             updated.model_name = 'glm-4.7-flash';
           } else if (value === 'siliconflow') {
-            updated.model_name = stageKey === 'situation_summary' ? 'Qwen/Qwen2.5-14B-Instruct' : 'Qwen/Qwen2.5-7B-Instruct';
+            updated.model_name = 'Qwen/Qwen2.5-7B-Instruct';
           } else if (value === 'aihubmix') {
             updated.model_name = 'coding-glm-5.3-free';
           }
@@ -601,6 +672,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
         <div className="grid grid-cols-1 gap-4">
           {stages.map((stage) => {
             const currentStageConfig = settings[stage.key] || defaultGatekeeperStage();
+            const isSummaryStage = stage.key === 'summarization' || stage.key === 'situation_summary';
             const isGemini = currentStageConfig.provider === 'gemini';
             const isGroq = currentStageConfig.provider === 'groq';
             const isMistral = currentStageConfig.provider === 'mistral';
@@ -624,6 +696,11 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                     <p className="text-[11px] text-zinc-400">{stage.desc}</p>
                   </div>
                   <div className="flex items-center space-x-2">
+                    {isSummaryStage && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                        🔒 Strong Models Only
+                      </span>
+                    )}
                     {fallbacks.length > 0 && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-accent-indigo/15 text-accent-indigo border border-accent-indigo/30">
                         {fallbacks.length} fallback{fallbacks.length > 1 ? 's' : ''} active
@@ -682,14 +759,24 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                         }
                         className="w-full rounded-lg bg-surface-card px-3 py-2 text-zinc-100 hairline-border focus:outline-none focus:border-accent-indigo"
                       >
-                        <option value="groq">Groq Cloud (LPU Inference)</option>
-                        <option value="gemini">Google Gemini API</option>
-                        <option value="mistral">Mistral AI (La Plateforme)</option>
-                        <option value="cloudflare">Cloudflare Workers AI (10K Neurons)</option>
-                        <option value="zai">Z.ai / Zhipu ($0 Flash)</option>
-                        <option value="siliconflow">SiliconFlow (Free Catalog)</option>
-                        {(stage.key === 'scoring' || stage.key === 'summarization' || stage.key === 'situation_summary') && (
-                          <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
+                        {isSummaryStage ? (
+                          <>
+                            <option value="groq">Groq Cloud (LPU Inference — Flagship Reasoning)</option>
+                            <option value="gemini">Google Gemini API (3.5 / 3.1 Flash-Lite)</option>
+                            <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="groq">Groq Cloud (LPU Inference)</option>
+                            <option value="gemini">Google Gemini API</option>
+                            <option value="mistral">Mistral AI (La Plateforme)</option>
+                            <option value="cloudflare">Cloudflare Workers AI (10K Neurons)</option>
+                            <option value="zai">Z.ai / Zhipu ($0 Flash)</option>
+                            <option value="siliconflow">SiliconFlow (Free Catalog)</option>
+                            {stage.key === 'scoring' && (
+                              <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
+                            )}
+                          </>
                         )}
                       </select>
                     </div>
@@ -763,19 +850,34 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                       />
                       <datalist id={`models-${stage.key}`}>
                         {isGemini ? (
-                          <>
-                            <option value="gemma-4-26b-a4b-it">gemma-4-26b-a4b-it (High Quota | 30 RPM / 14,400 RPD)</option>
-                            <option value="gemma-4-31b-it">gemma-4-31b-it (High Quota | 30 RPM / 14,400 RPD)</option>
-                            <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Fastest ~0.4s | 500 RPD)</option>
-                            <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Secondary Quota)</option>
-                            <option value="gemini-2.5-flash">gemini-2.5-flash (Balanced)</option>
-                          </>
+                          isSummaryStage ? (
+                            <>
+                              <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Fastest ~0.4s | 500 RPD)</option>
+                              <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Secondary Quota)</option>
+                              <option value="gemini-2.5-flash">gemini-2.5-flash (Balanced)</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="gemma-4-26b-a4b-it">gemma-4-26b-a4b-it (High Quota | 30 RPM / 14,400 RPD)</option>
+                              <option value="gemma-4-31b-it">gemma-4-31b-it (High Quota | 30 RPM / 14,400 RPD)</option>
+                              <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Fastest ~0.4s | 500 RPD)</option>
+                              <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Secondary Quota)</option>
+                              <option value="gemini-2.5-flash">gemini-2.5-flash (Balanced)</option>
+                            </>
+                          )
                         ) : isGroq ? (
-                          <>
-                            <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Fastest Multilingual | 1K RPD)</option>
-                            <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Deep Reasoning | 1K RPD)</option>
-                            <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (Lightweight | 1K RPD)</option>
-                          </>
+                          isSummaryStage ? (
+                            <>
+                              <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Fastest Multilingual | 1K RPD)</option>
+                              <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Deep Reasoning | 1K RPD)</option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Fastest Multilingual | 1K RPD)</option>
+                              <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Deep Reasoning | 1K RPD)</option>
+                              <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (Lightweight | 1K RPD)</option>
+                            </>
+                          )
                         ) : isMistral ? (
                           <>
                             <option value="ministral-3b-2512">ministral-3b-2512 (Ultra-fast Gatekeeper | 12.5 RPS / 1.3M TPM)</option>
@@ -808,36 +910,62 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                       </datalist>
                       <div className="flex flex-wrap gap-1 mt-1.5">
                         {isGemini ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleModelChange(stage.key, 'gemma-4-26b-a4b-it')}
-                              className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan transition-colors"
-                            >
-                              🔥 gemma-4-26b (14.4K RPD)
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleModelChange(stage.key, 'gemma-4-31b-it')}
-                              className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan transition-colors"
-                            >
-                              🔥 gemma-4-31b (14.4K RPD)
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleModelChange(stage.key, 'gemini-3.5-flash-lite')}
-                              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
-                            >
-                              ⚡ 3.5-flash-lite
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleModelChange(stage.key, 'gemini-3.1-flash-lite')}
-                              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
-                            >
-                              ⚡ 3.1-flash-lite
-                            </button>
-                          </>
+                          isSummaryStage ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleModelChange(stage.key, 'gemini-3.5-flash-lite')}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                              >
+                                ⚡ 3.5-flash-lite
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleModelChange(stage.key, 'gemini-3.1-flash-lite')}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                              >
+                                ⚡ 3.1-flash-lite
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleModelChange(stage.key, 'gemini-2.5-flash')}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                              >
+                                ⚡ 2.5-flash
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleModelChange(stage.key, 'gemma-4-26b-a4b-it')}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan transition-colors"
+                              >
+                                🔥 gemma-4-26b (14.4K RPD)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleModelChange(stage.key, 'gemma-4-31b-it')}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-accent-cyan/10 hover:bg-accent-cyan/20 text-accent-cyan transition-colors"
+                              >
+                                🔥 gemma-4-31b (14.4K RPD)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleModelChange(stage.key, 'gemini-3.5-flash-lite')}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                              >
+                                ⚡ 3.5-flash-lite
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleModelChange(stage.key, 'gemini-3.1-flash-lite')}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
+                              >
+                                ⚡ 3.1-flash-lite
+                              </button>
+                            </>
+                          )
                         ) : isGroq ? (
                           <>
                             <button
@@ -988,71 +1116,127 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                     </div>
 
                     <div className="flex items-center space-x-1.5">
-                      {/* Quick preset button for Gemma 4 (Highest RPD) */}
-                      {!fallbacks.some((f) => f.model_name?.includes('gemma')) && (
-                        <button
-                          type="button"
-                          onClick={() => handleAddFallback(stage.key, 'gemini', 'gemma-4-26b-a4b-it')}
-                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-md transition-colors"
-                          title="Gemma 4 has the largest quota (14,400 RPD / 30 RPM)"
-                        >
-                          <span>+ Add Gemma 4 (14.4K RPD)</span>
-                        </button>
-                      )}
-                      {/* Quick preset button for Mistral */}
-                      {!fallbacks.some((f) => f.provider === 'mistral') && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleAddFallback(
-                              stage.key,
-                              'mistral',
-                              stage.key === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512'
-                            )
-                          }
-                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-md transition-colors"
-                          title="Mistral Free Plan: 12.5 RPS / 1.3M TPM on Ministral-3B"
-                        >
-                          <span>+ Add Mistral ({stage.key === 'gatekeeper' ? '12.5 RPS' : '8B'})</span>
-                        </button>
-                      )}
-                      {/* Quick preset button for Cloudflare */}
-                      {!fallbacks.some((f) => f.provider === 'cloudflare') && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleAddFallback(
-                              stage.key,
-                              'cloudflare',
-                              stage.key === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast'
-                            )
-                          }
-                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-orange-300 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 rounded-md transition-colors"
-                          title="Cloudflare Workers AI: 10,000 Neurons/day (~4.1K RPD on 1B)"
-                        >
-                          <span>+ Add Cloudflare (~4K RPD)</span>
-                        </button>
-                      )}
-                      {/* Quick preset button */}
-                      {isGemini && !fallbacks.some((f) => f.model_name === 'gemini-3.1-flash-lite') && (
-                        <button
-                          type="button"
-                          onClick={() => handleAddFallback(stage.key, 'gemini', 'gemini-3.1-flash-lite')}
-                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/10 hover:bg-accent-cyan/20 border border-accent-cyan/20 rounded-md transition-colors"
-                        >
-                          <span>+ Add 3.1 Flash Lite</span>
-                        </button>
-                      )}
-                      {/* Quick preset button for AI Hub Mix free flagship: on scoring, summarization, situation_summary, and ONLY if primary is not AI Hub Mix and no AI Hub Mix in fallbacks */}
-                      {(stage.key === 'scoring' || stage.key === 'summarization' || stage.key === 'situation_summary') && currentStageConfig.provider !== 'aihubmix' && !fallbacks.some((f) => f.provider === 'aihubmix') && (
-                        <button
-                          type="button"
-                          onClick={() => handleAddFallback(stage.key, 'aihubmix', 'coding-glm-5.3-free')}
-                          className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/30 rounded-md transition-colors"
-                          title="AI Hub Mix GLM-5.3 Flagship: Strongest model with 1.05M context reasoning"
-                        >
-                          <span>+ Add GLM-5.3 (1.05M Free)</span>
-                        </button>
+                      {isSummaryStage ? (
+                        <>
+                          {/* Quick preset buttons for summary stages: ONLY strong models */}
+                          {!fallbacks.some((f) => f.model_name === 'openai/gpt-oss-120b') && currentStageConfig.model_name !== 'openai/gpt-oss-120b' && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddFallback(stage.key, 'groq', 'openai/gpt-oss-120b')}
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/10 hover:bg-accent-cyan/20 border border-accent-cyan/20 rounded-md transition-colors"
+                              title="Groq GPT-OSS 120B Flagship Reasoning"
+                            >
+                              <span>+ Add 120B (Groq)</span>
+                            </button>
+                          )}
+                          {!fallbacks.some((f) => f.model_name === 'qwen/qwen3.8-27b') && currentStageConfig.model_name !== 'qwen/qwen3.8-27b' && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddFallback(stage.key, 'groq', 'qwen/qwen3.8-27b')}
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/10 hover:bg-accent-cyan/20 border border-accent-cyan/20 rounded-md transition-colors"
+                              title="Groq Qwen 27B Reasoning"
+                            >
+                              <span>+ Add Qwen 27B</span>
+                            </button>
+                          )}
+                          {!fallbacks.some((f) => f.model_name === 'gemini-3.5-flash-lite') && currentStageConfig.model_name !== 'gemini-3.5-flash-lite' && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddFallback(stage.key, 'gemini', 'gemini-3.5-flash-lite')}
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-md transition-colors"
+                            >
+                              <span>+ Add 3.5 Flash-Lite</span>
+                            </button>
+                          )}
+                          {!fallbacks.some((f) => f.model_name === 'gemini-3.1-flash-lite') && currentStageConfig.model_name !== 'gemini-3.1-flash-lite' && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddFallback(stage.key, 'gemini', 'gemini-3.1-flash-lite')}
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/10 hover:bg-accent-cyan/20 border border-accent-cyan/20 rounded-md transition-colors"
+                            >
+                              <span>+ Add 3.1 Flash-Lite</span>
+                            </button>
+                          )}
+                          {currentStageConfig.provider !== 'aihubmix' && !fallbacks.some((f) => f.provider === 'aihubmix') && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddFallback(stage.key, 'aihubmix', 'coding-glm-5.3-free')}
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/30 rounded-md transition-colors"
+                              title="AI Hub Mix GLM-5.3 Flagship: Strongest model with 1.05M context reasoning"
+                            >
+                              <span>+ Add GLM-5.3 (1.05M Free)</span>
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {/* Quick preset button for Gemma 4 (Highest RPD) */}
+                          {!fallbacks.some((f) => f.model_name?.includes('gemma')) && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddFallback(stage.key, 'gemini', 'gemma-4-26b-a4b-it')}
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-md transition-colors"
+                              title="Gemma 4 has the largest quota (14,400 RPD / 30 RPM)"
+                            >
+                              <span>+ Add Gemma 4 (14.4K RPD)</span>
+                            </button>
+                          )}
+                          {/* Quick preset button for Mistral */}
+                          {!fallbacks.some((f) => f.provider === 'mistral') && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleAddFallback(
+                                  stage.key,
+                                  'mistral',
+                                  stage.key === 'gatekeeper' ? 'ministral-3b-2512' : 'ministral-8b-2512'
+                                )
+                              }
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-md transition-colors"
+                              title="Mistral Free Plan: 12.5 RPS / 1.3M TPM on Ministral-3B"
+                            >
+                              <span>+ Add Mistral ({stage.key === 'gatekeeper' ? '12.5 RPS' : '8B'})</span>
+                            </button>
+                          )}
+                          {/* Quick preset button for Cloudflare */}
+                          {!fallbacks.some((f) => f.provider === 'cloudflare') && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleAddFallback(
+                                  stage.key,
+                                  'cloudflare',
+                                  stage.key === 'gatekeeper' ? '@cf/meta/llama-3.2-1b-instruct' : '@cf/meta/llama-3.1-8b-instruct-fp8-fast'
+                                )
+                              }
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-orange-300 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 rounded-md transition-colors"
+                              title="Cloudflare Workers AI: 10,000 Neurons/day (~4.1K RPD on 1B)"
+                            >
+                              <span>+ Add Cloudflare (~4K RPD)</span>
+                            </button>
+                          )}
+                          {/* Quick preset button */}
+                          {isGemini && !fallbacks.some((f) => f.model_name === 'gemini-3.1-flash-lite') && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddFallback(stage.key, 'gemini', 'gemini-3.1-flash-lite')}
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/10 hover:bg-accent-cyan/20 border border-accent-cyan/20 rounded-md transition-colors"
+                            >
+                              <span>+ Add 3.1 Flash Lite</span>
+                            </button>
+                          )}
+                          {/* Quick preset button for AI Hub Mix on scoring */}
+                          {stage.key === 'scoring' && currentStageConfig.provider !== 'aihubmix' && !fallbacks.some((f) => f.provider === 'aihubmix') && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddFallback(stage.key, 'aihubmix', 'coding-glm-5.3-free')}
+                              className="inline-flex items-center space-x-1 px-2 py-1 text-[10px] font-semibold text-accent-cyan bg-accent-cyan/15 hover:bg-accent-cyan/25 border border-accent-cyan/30 rounded-md transition-colors"
+                              title="AI Hub Mix GLM-5.3 Flagship: Strongest model with 1.05M context reasoning"
+                            >
+                              <span>+ Add GLM-5.3 (1.05M Free)</span>
+                            </button>
+                          )}
+                        </>
                       )}
                       <button
                         type="button"
@@ -1106,14 +1290,26 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                 }
                                 className="w-full rounded-md bg-canvas-recessed px-2.5 py-1.5 text-zinc-100 hairline-border focus:outline-none focus:border-accent-indigo text-xs"
                               >
-                                <option value="groq">Groq Cloud</option>
-                                <option value="gemini">Gemini API</option>
-                                <option value="mistral">Mistral AI</option>
-                                <option value="cloudflare">Cloudflare Workers AI</option>
-                                <option value="zai">Z.ai (Zhipu)</option>
-                                <option value="siliconflow">SiliconFlow</option>
-                                {(stage.key === 'scoring' || stage.key === 'summarization' || stage.key === 'situation_summary') && currentStageConfig.provider !== 'aihubmix' && (
-                                  <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
+                                {isSummaryStage ? (
+                                  <>
+                                    <option value="groq">Groq Cloud</option>
+                                    <option value="gemini">Gemini API</option>
+                                    {currentStageConfig.provider !== 'aihubmix' && (
+                                      <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
+                                    )}
+                                  </>
+                                ) : (
+                                  <>
+                                    <option value="groq">Groq Cloud</option>
+                                    <option value="gemini">Gemini API</option>
+                                    <option value="mistral">Mistral AI</option>
+                                    <option value="cloudflare">Cloudflare Workers AI</option>
+                                    <option value="zai">Z.ai (Zhipu)</option>
+                                    <option value="siliconflow">SiliconFlow</option>
+                                    {stage.key === 'scoring' && currentStageConfig.provider !== 'aihubmix' && (
+                                      <option value="aihubmix">AI Hub Mix (GLM-5.3 Flagship)</option>
+                                    )}
+                                  </>
                                 )}
                               </select>
                             </div>
@@ -1126,7 +1322,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                 onChange={(e) => handleUpdateFallback(stage.key, idx, 'model_name', e.target.value)}
                                 placeholder={
                                   fbIsGemini
-                                    ? 'gemma-4-26b-a4b-it'
+                                    ? 'gemini-3.5-flash-lite'
                                     : fbIsGroq
                                     ? 'qwen/qwen3.8-27b'
                                     : fbIsMistral
@@ -1144,38 +1340,64 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                               <div className="flex flex-wrap items-center justify-between gap-1 mt-1">
                                 <div className="flex flex-wrap gap-1">
                                   {fbIsGemini ? (
-                                    <>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-3.1-flash-lite')}
-                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
-                                      >
-                                        3.1-flash-lite
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-2.5-flash')}
-                                        className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
-                                      >
-                                        2.5-flash
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemma-4-26b-a4b-it')}
-                                        className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 hover:text-emerald-300 font-semibold"
-                                        title="Google AI Studio Gemma 4: 14,400 RPD / 30 RPM"
-                                      >
-                                        🔥 gemma-4-26b
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemma-4-31b-it')}
-                                        className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 hover:text-emerald-300 font-semibold"
-                                        title="Google AI Studio Gemma 4: 14,400 RPD / 30 RPM"
-                                      >
-                                        🔥 gemma-4-31b
-                                      </button>
-                                    </>
+                                    isSummaryStage ? (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-3.5-flash-lite')}
+                                          className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                        >
+                                          3.5-flash-lite
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-3.1-flash-lite')}
+                                          className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                        >
+                                          3.1-flash-lite
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-2.5-flash')}
+                                          className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                        >
+                                          2.5-flash
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-3.1-flash-lite')}
+                                          className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                        >
+                                          3.1-flash-lite
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemini-2.5-flash')}
+                                          className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-zinc-200"
+                                        >
+                                          2.5-flash
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemma-4-26b-a4b-it')}
+                                          className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 hover:text-emerald-300 font-semibold"
+                                          title="Google AI Studio Gemma 4: 14,400 RPD / 30 RPM"
+                                        >
+                                          🔥 gemma-4-26b
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleUpdateFallback(stage.key, idx, 'model_name', 'gemma-4-31b-it')}
+                                          className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 hover:text-emerald-300 font-semibold"
+                                          title="Google AI Studio Gemma 4: 14,400 RPD / 30 RPM"
+                                        >
+                                          🔥 gemma-4-31b
+                                        </button>
+                                      </>
+                                    )
                                   ) : fbIsGroq ? (
                                     <>
                                       <button
@@ -1193,7 +1415,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                         gpt-oss-120b
                                       </button>
                                     </>
-                                  ) : fbIsMistral ? (
+                                  ) : fbIsMistral && !isSummaryStage ? (
                                     <>
                                       <button
                                         type="button"
@@ -1224,7 +1446,7 @@ export function AIConfigMatrix({ initialSettings, systemSettings, onRefresh }: A
                                         🧠 8b (3.13 RPS)
                                       </button>
                                     </>
-                                  ) : fbIsCloudflare ? (
+                                  ) : fbIsCloudflare && !isSummaryStage ? (
                                     <>
                                       <button
                                         type="button"
